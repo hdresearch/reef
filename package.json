@@ -1,0 +1,19 @@
+{
+  "name": "vers-agent-services-core",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@mariozechner/pi-ai": "^0.54.2",
+    "@mariozechner/pi-coding-agent": "^0.54.2",
+    "@sinclair/typebox": "^0.34.48",
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "hono": "^4.12.2",
+    "ulid": "^3.0.2"
+  }
+}
