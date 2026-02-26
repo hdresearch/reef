@@ -14,10 +14,11 @@ export VERS_AUTH_TOKEN=your-secret-token
 bun run start
 ```
 
-Out of the box, reef starts with three service modules:
+Out of the box, reef starts with four service modules:
 
 ```
   services:
+    /agent — Run tasks using pi as the coding agent
     /docs — Auto-generated API documentation
     /installer — Install, update, and remove service modules
     /services — Service module manager
@@ -25,7 +26,7 @@ Out of the box, reef starts with three service modules:
   reef running on :3000
 ```
 
-These give you runtime management, installation, and API docs. They're not special — they're regular service modules that happen to ship in `services/`. You can remove them and replace them with whatever you want.
+These give you an agent loop, runtime management, installation, and API docs. They're not special — they're regular service modules that happen to ship in `services/`. You can remove them and replace them with whatever you want.
 
 ### Adding the example services
 
