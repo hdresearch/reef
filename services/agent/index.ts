@@ -1,17 +1,21 @@
 /**
- * Agent service — run tasks using pi as the coding agent.
+ * Agent service — run tasks and interactive sessions using pi.
  *
- * Spawns `pi -p` (print mode) with a task, streams output, tracks runs.
- * Pi already has read/write/edit/bash tools. If reef is installed as a
- * pi package, the agent also gets fleet tools.
+ * Fire-and-forget tasks (automation):
+ *   POST   /agent/tasks              — submit a task (spawns pi -p)
+ *   GET    /agent/tasks              — list runs
+ *   GET    /agent/tasks/:id          — get run status + output
+ *   POST   /agent/tasks/:id/cancel   — cancel a running task
  *
- *   POST   /agent/tasks          — submit a task
- *   GET    /agent/tasks          — list runs
- *   GET    /agent/tasks/:id      — get run status + output
- *   POST   /agent/tasks/:id/cancel — cancel a running task
+ * Interactive sessions (chat):
+ *   POST   /agent/sessions           — start a session (spawns pi --mode rpc)
+ *   GET    /agent/sessions           — list sessions
+ *   GET    /agent/sessions/:id/events — SSE stream of pi events
+ *   POST   /agent/sessions/:id/message — send a message
+ *   POST   /agent/sessions/:id/abort — abort current operation
+ *   DELETE /agent/sessions/:id       — end session
  *
- * The agent can curl reef's own API to reload services it creates:
- *   curl -X POST localhost:3000/services/reload/new-service
+ * The UI service (examples/services/ui) provides the chat web interface.
  *
  * Config (env vars):
  *   PI_PATH        — path to pi binary (default: "pi")
@@ -20,16 +24,35 @@
  */
 
 import { Hono } from "hono";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { ulid } from "ulid";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ServiceModule, ServiceContext } from "../src/core/types.js";
 
 let ctx: ServiceContext;
+let piAvailable = false;
 
 // =============================================================================
-// Run tracking
+// Shared config
+// =============================================================================
+
+function piPath(): string {
+  return process.env.PI_PATH || "pi";
+}
+function piModel(): string {
+  return process.env.PI_MODEL || "claude-sonnet-4-20250514";
+}
+function piProvider(): string {
+  return process.env.PI_PROVIDER || "anthropic";
+}
+function serverPort(): number {
+  return parseInt(process.env.PORT || "3000", 10);
+}
+
+// =============================================================================
+// Fire-and-forget tasks
 // =============================================================================
 
 interface Run {
@@ -44,15 +67,10 @@ interface Run {
 }
 
 const runs = new Map<string, Run>();
-const processes = new Map<string, ChildProcess>();
+const taskProcesses = new Map<string, ChildProcess>();
 
-// =============================================================================
-// Build the system prompt append
-// =============================================================================
-
-function buildContext(projectRoot: string, port: number): string {
+function buildSystemAppend(projectRoot: string, port: number): string {
   const lines: string[] = [];
-
   lines.push(`You are working inside a reef server (running on localhost:${port}).`);
   lines.push(`Project root: ${projectRoot}`);
   lines.push("");
@@ -60,60 +78,42 @@ function buildContext(projectRoot: string, port: number): string {
   lines.push("- Service modules go in services/<name>/index.ts");
   lines.push("- Each module default-exports a ServiceModule (see src/core/types.ts)");
   lines.push("- After writing a service, reload it:");
-  lines.push(`  curl -X POST localhost:${port}/services/reload/<name> -H "Authorization: Bearer $VERS_AUTH_TOKEN"`);
+  lines.push(
+    `  curl -X POST localhost:${port}/services/reload/<name> -H "Authorization: Bearer $VERS_AUTH_TOKEN"`,
+  );
   lines.push("- Example services are in examples/services/");
-  lines.push("- The create-service skill has full documentation");
   lines.push("");
 
-  // Include the create-service skill if available
   const skillPath = join(projectRoot, "skills/create-service/SKILL.md");
   if (existsSync(skillPath)) {
-    const skill = readFileSync(skillPath, "utf-8");
     lines.push("## Create-service skill reference");
     lines.push("");
-    lines.push(skill);
+    lines.push(readFileSync(skillPath, "utf-8"));
   }
 
   return lines.join("\n");
 }
 
-// =============================================================================
-// Spawn pi
-// =============================================================================
-
-function spawnPi(
-  run: Run,
-  projectRoot: string,
-  port: number,
-): ChildProcess {
-  const piPath = process.env.PI_PATH || "pi";
-  const model = process.env.PI_MODEL || "claude-sonnet-4-20250514";
-  const provider = process.env.PI_PROVIDER || "anthropic";
-  const contextText = buildContext(projectRoot, port);
-
+function spawnTask(run: Run, projectRoot: string, port: number): ChildProcess {
+  const contextText = buildSystemAppend(projectRoot, port);
   const args = [
-    "-p",                               // print mode — non-interactive
-    "--no-session",                      // ephemeral, no session file
-    "--provider", provider,
-    "--model", model,
+    "-p",
+    "--no-session",
+    "--provider", piProvider(),
+    "--model", piModel(),
     "--append-system-prompt", contextText,
     run.task,
   ];
 
-  const child = spawn(piPath, args, {
+  const child = spawn(piPath(), args, {
     cwd: projectRoot,
-    env: {
-      ...process.env,
-      // Pass through auth so pi can curl reef
-      VERS_AUTH_TOKEN: process.env.VERS_AUTH_TOKEN || "",
-    },
+    env: { ...process.env, VERS_AUTH_TOKEN: process.env.VERS_AUTH_TOKEN || "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
   child.stdout?.on("data", (chunk: Buffer) => {
     run.output += chunk.toString();
   });
-
   child.stderr?.on("data", (chunk: Buffer) => {
     run.output += chunk.toString();
   });
@@ -121,26 +121,122 @@ function spawnPi(
   child.on("close", (code) => {
     run.exitCode = code;
     run.finishedAt = new Date().toISOString();
-
-    if (run.status === "cancelled") {
-      // Already cancelled, don't overwrite
-    } else if (code === 0) {
-      run.status = "done";
-    } else {
-      run.status = "error";
+    if (run.status !== "cancelled") {
+      run.status = code === 0 ? "done" : "error";
     }
-
-    processes.delete(run.id);
+    taskProcesses.delete(run.id);
   });
 
   child.on("error", (err) => {
     run.output += `\nProcess error: ${err.message}`;
     run.status = "error";
     run.finishedAt = new Date().toISOString();
-    processes.delete(run.id);
+    taskProcesses.delete(run.id);
   });
 
   return child;
+}
+
+// =============================================================================
+// Interactive sessions (pi RPC mode)
+// =============================================================================
+
+interface Session {
+  id: string;
+  process: ChildProcess;
+  rl: ReadlineInterface;
+  sseClients: Set<ReadableStreamDefaultController<Uint8Array>>;
+  status: "active" | "closed";
+  createdAt: string;
+  model: string;
+  provider: string;
+  recentEvents: string[];
+}
+
+const sessions = new Map<string, Session>();
+const MAX_RECENT_EVENTS = 200;
+
+function spawnSession(id: string): Session {
+  const projectRoot = process.cwd();
+  const contextText = buildSystemAppend(projectRoot, serverPort());
+
+  const args = [
+    "--mode", "rpc",
+    "--no-session",
+    "--provider", piProvider(),
+    "--model", piModel(),
+    "--append-system-prompt", contextText,
+  ];
+
+  const child = spawn(piPath(), args, {
+    cwd: projectRoot,
+    env: { ...process.env, VERS_AUTH_TOKEN: process.env.VERS_AUTH_TOKEN || "" },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  const session: Session = {
+    id,
+    process: child,
+    rl: createInterface({ input: child.stdout! }),
+    sseClients: new Set(),
+    status: "active",
+    createdAt: new Date().toISOString(),
+    model: piModel(),
+    provider: piProvider(),
+    recentEvents: [],
+  };
+
+  session.rl.on("line", (line) => {
+    try {
+      JSON.parse(line);
+      const sseData = `data: ${line}\n\n`;
+      const encoded = new TextEncoder().encode(sseData);
+      for (const controller of session.sseClients) {
+        try {
+          controller.enqueue(encoded);
+        } catch {
+          session.sseClients.delete(controller);
+        }
+      }
+      session.recentEvents.push(line);
+      if (session.recentEvents.length > MAX_RECENT_EVENTS) {
+        session.recentEvents.shift();
+      }
+    } catch {}
+  });
+
+  child.stderr?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString().trim();
+    if (text) console.log(`  [agent] session ${id} stderr: ${text}`);
+  });
+
+  child.on("close", () => {
+    session.status = "closed";
+    for (const controller of session.sseClients) {
+      try { controller.close(); } catch {}
+    }
+    session.sseClients.clear();
+  });
+
+  return session;
+}
+
+function sendToSession(session: Session, command: Record<string, unknown>): boolean {
+  if (session.status !== "active" || !session.process.stdin?.writable) return false;
+  session.process.stdin.write(JSON.stringify(command) + "\n");
+  return true;
+}
+
+function endSession(session: Session): void {
+  session.status = "closed";
+  session.process.kill("SIGTERM");
+  setTimeout(() => {
+    try { session.process.kill("SIGKILL"); } catch {}
+  }, 3000);
+  for (const controller of session.sseClients) {
+    try { controller.close(); } catch {}
+  }
+  session.sseClients.clear();
 }
 
 // =============================================================================
@@ -149,114 +245,143 @@ function spawnPi(
 
 const routes = new Hono();
 
+// ---------------------------------------------------------------------------
+// Tasks (fire-and-forget)
+// ---------------------------------------------------------------------------
+
 routes.post("/tasks", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const task = (body.task as string)?.trim();
 
-  if (!task) {
-    return c.json({ error: "task is required" }, 400);
-  }
-
-  // Check pi is available
-  const piPath = process.env.PI_PATH || "pi";
-  try {
-    const { execSync } = await import("node:child_process");
-    execSync(`${piPath} --help`, { stdio: "ignore", timeout: 5000 });
-  } catch {
-    return c.json({ error: `pi not found at "${piPath}". Set PI_PATH env var.` }, 500);
-  }
+  if (!task) return c.json({ error: "task is required" }, 400);
+  if (!piAvailable) return c.json({ error: `pi not found at "${piPath()}". Set PI_PATH env var.` }, 500);
 
   const id = ulid();
-  const port = parseInt(process.env.PORT || "3000", 10);
-  const projectRoot = process.cwd();
-
-  const run: Run = {
-    id,
-    task,
-    status: "running",
-    output: "",
-    createdAt: new Date().toISOString(),
-  };
-
+  const run: Run = { id, task, status: "running", output: "", createdAt: new Date().toISOString() };
   runs.set(id, run);
 
-  const child = spawnPi(run, projectRoot, port);
+  const child = spawnTask(run, process.cwd(), serverPort());
   run.pid = child.pid;
-  processes.set(id, child);
+  taskProcesses.set(id, child);
 
-  console.log(`  [agent] started run ${id}: ${task.slice(0, 80)}${task.length > 80 ? "..." : ""}`);
-
-  return c.json({
-    id: run.id,
-    status: run.status,
-    task: run.task,
-    createdAt: run.createdAt,
-  }, 201);
+  console.log(`  [agent] task ${id}: ${task.slice(0, 80)}${task.length > 80 ? "..." : ""}`);
+  return c.json({ id, status: run.status, task, createdAt: run.createdAt }, 201);
 });
 
 routes.get("/tasks", (c) => {
-  const items = Array.from(runs.values()).map((r) => ({
-    id: r.id,
-    task: r.task,
-    status: r.status,
-    createdAt: r.createdAt,
-    finishedAt: r.finishedAt,
-  }));
-
-  // Most recent first
-  items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-
+  const items = Array.from(runs.values())
+    .map(({ id, task, status, createdAt, finishedAt }) => ({ id, task, status, createdAt, finishedAt }))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   return c.json({ runs: items, count: items.length });
 });
 
 routes.get("/tasks/:id", (c) => {
-  const id = c.req.param("id");
-  const run = runs.get(id);
+  const run = runs.get(c.req.param("id"));
+  if (!run) return c.json({ error: "run not found" }, 404);
 
-  if (!run) {
-    return c.json({ error: "run not found" }, 404);
-  }
-
-  // Support ?tail=N to get last N characters of output
   const tail = parseInt(c.req.query("tail") || "0", 10);
   const output = tail > 0 ? run.output.slice(-tail) : run.output;
-
-  return c.json({
-    ...run,
-    output,
-    outputLength: run.output.length,
-  });
+  return c.json({ ...run, output, outputLength: run.output.length });
 });
 
 routes.post("/tasks/:id/cancel", (c) => {
-  const id = c.req.param("id");
-  const run = runs.get(id);
+  const run = runs.get(c.req.param("id"));
+  if (!run) return c.json({ error: "run not found" }, 404);
+  if (run.status !== "running") return c.json({ error: `run is already ${run.status}` }, 400);
 
-  if (!run) {
-    return c.json({ error: "run not found" }, 404);
-  }
-
-  if (run.status !== "running") {
-    return c.json({ error: `run is already ${run.status}` }, 400);
-  }
-
-  const child = processes.get(id);
+  const child = taskProcesses.get(run.id);
   if (child) {
     child.kill("SIGTERM");
-    // Give it a moment, then force kill
-    setTimeout(() => {
-      if (processes.has(id)) {
-        child.kill("SIGKILL");
-      }
-    }, 5000);
+    setTimeout(() => { if (taskProcesses.has(run.id)) child.kill("SIGKILL"); }, 5000);
   }
-
   run.status = "cancelled";
   run.finishedAt = new Date().toISOString();
+  console.log(`  [agent] cancelled task ${run.id}`);
+  return c.json({ id: run.id, status: "cancelled" });
+});
 
-  console.log(`  [agent] cancelled run ${id}`);
+// ---------------------------------------------------------------------------
+// Sessions (interactive chat via pi RPC)
+// ---------------------------------------------------------------------------
 
-  return c.json({ id, status: "cancelled" });
+routes.post("/sessions", (c) => {
+  if (!piAvailable) return c.json({ error: `pi not found at "${piPath()}". Set PI_PATH env var.` }, 500);
+
+  const id = ulid();
+  const session = spawnSession(id);
+  sessions.set(id, session);
+
+  console.log(`  [agent] session ${id} started`);
+  return c.json({ id, status: session.status, createdAt: session.createdAt, model: session.model }, 201);
+});
+
+routes.get("/sessions", (c) => {
+  const items = Array.from(sessions.values()).map(({ id, status, createdAt, model }) => ({
+    id, status, createdAt, model,
+  }));
+  return c.json({ sessions: items, count: items.length });
+});
+
+routes.get("/sessions/:id/events", (c) => {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "session not found" }, 404);
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const evt of session.recentEvents) {
+        controller.enqueue(new TextEncoder().encode(`data: ${evt}\n\n`));
+      }
+      session.sseClients.add(controller);
+    },
+    cancel(controller) {
+      session.sseClients.delete(controller);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "Transfer-Encoding": "chunked",
+    },
+  });
+});
+
+routes.post("/sessions/:id/message", async (c) => {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "session not found" }, 404);
+  if (session.status !== "active") return c.json({ error: "session is closed" }, 400);
+
+  const body = await c.req.json().catch(() => ({}));
+  const message = (body.message as string)?.trim();
+  if (!message) return c.json({ error: "message is required" }, 400);
+
+  const streamingBehavior = body.streamingBehavior as string | undefined;
+  const command: Record<string, unknown> = { type: "prompt", message };
+  if (streamingBehavior) command.streamingBehavior = streamingBehavior;
+
+  const ok = sendToSession(session, command);
+  if (!ok) return c.json({ error: "failed to send to pi process" }, 500);
+
+  return c.json({ ok: true });
+});
+
+routes.post("/sessions/:id/abort", (c) => {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "session not found" }, 404);
+
+  sendToSession(session, { type: "abort" });
+  return c.json({ ok: true });
+});
+
+routes.delete("/sessions/:id", (c) => {
+  const session = sessions.get(c.req.param("id"));
+  if (!session) return c.json({ error: "session not found" }, 404);
+
+  endSession(session);
+  console.log(`  [agent] session ${session.id} ended`);
+  return c.json({ id: session.id, status: "closed" });
 });
 
 // =============================================================================
@@ -265,53 +390,74 @@ routes.post("/tasks/:id/cancel", (c) => {
 
 const agent: ServiceModule = {
   name: "agent",
-  description: "Run tasks using pi as the coding agent",
+  description: "Run tasks and interactive sessions using pi",
   routes,
 
   init(serviceCtx: ServiceContext) {
     ctx = serviceCtx;
+    try {
+      execSync(`${piPath()} --help`, { stdio: "ignore", timeout: 5000 });
+      piAvailable = true;
+      console.log(`  [agent] pi found at "${piPath()}"`);
+    } catch {
+      console.warn(`  [agent] pi not found at "${piPath()}" — set PI_PATH env var`);
+    }
   },
 
   routeDocs: {
     "POST /tasks": {
-      summary: "Submit a task for the agent to execute",
-      detail:
-        "Spawns a pi agent in print mode to accomplish the task. " +
-        "The agent has full read/write/edit/bash tools and can reload " +
-        "services via reef's API. Returns immediately with a run ID.",
-      body: {
-        task: {
-          type: "string",
-          required: true,
-          description: "What you want the agent to do",
-        },
-      },
-      response: "{ id, status: 'running', task, createdAt }",
+      summary: "Submit a fire-and-forget task",
+      detail: "Spawns pi in print mode. Returns immediately with a run ID.",
+      body: { task: { type: "string", required: true, description: "What to do" } },
+      response: "{ id, status, task, createdAt }",
     },
     "GET /tasks": {
-      summary: "List all runs",
-      response: "{ runs: [{ id, task, status, createdAt, finishedAt? }], count }",
+      summary: "List all task runs",
+      response: "{ runs: [...], count }",
     },
     "GET /tasks/:id": {
-      summary: "Get run status and output",
-      detail: "Use ?tail=N to get just the last N characters of output.",
-      params: {
-        id: { type: "string", required: true, description: "Run ID" },
-      },
-      query: {
-        tail: {
-          type: "number",
-          description: "Return only the last N characters of output",
-        },
-      },
-      response: "{ id, task, status, output, outputLength, createdAt, finishedAt?, exitCode? }",
+      summary: "Get task run status and output",
+      params: { id: { type: "string", required: true, description: "Run ID" } },
+      query: { tail: { type: "number", description: "Last N chars of output" } },
+      response: "{ id, task, status, output, outputLength, ... }",
     },
     "POST /tasks/:id/cancel": {
       summary: "Cancel a running task",
-      params: {
-        id: { type: "string", required: true, description: "Run ID" },
-      },
+      params: { id: { type: "string", required: true, description: "Run ID" } },
       response: "{ id, status: 'cancelled' }",
+    },
+    "POST /sessions": {
+      summary: "Start an interactive chat session",
+      detail: "Spawns pi in RPC mode. Connect to /sessions/:id/events for SSE stream.",
+      response: "{ id, status, createdAt, model }",
+    },
+    "GET /sessions": {
+      summary: "List all sessions",
+      response: "{ sessions: [...], count }",
+    },
+    "GET /sessions/:id/events": {
+      summary: "SSE stream of pi events",
+      params: { id: { type: "string", required: true, description: "Session ID" } },
+      response: "text/event-stream",
+    },
+    "POST /sessions/:id/message": {
+      summary: "Send a message to a session",
+      params: { id: { type: "string", required: true, description: "Session ID" } },
+      body: {
+        message: { type: "string", required: true, description: "Message text" },
+        streamingBehavior: { type: "string", description: "'steer' or 'followUp' (if agent is mid-response)" },
+      },
+      response: "{ ok: true }",
+    },
+    "POST /sessions/:id/abort": {
+      summary: "Abort current operation in a session",
+      params: { id: { type: "string", required: true, description: "Session ID" } },
+      response: "{ ok: true }",
+    },
+    "DELETE /sessions/:id": {
+      summary: "End a session",
+      params: { id: { type: "string", required: true, description: "Session ID" } },
+      response: "{ id, status: 'closed' }",
     },
   },
 };

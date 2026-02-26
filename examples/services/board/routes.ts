@@ -213,5 +213,123 @@ export function createRoutes(
     return c.json({ tasks, count: tasks.length });
   });
 
+  // ─── UI Panel ───
+
+  routes.get("/_panel", (c) => {
+    return c.html(`
+<style>
+.panel-board { padding: 8px; }
+.panel-board .status-group { margin-bottom: 12px; }
+.panel-board .status-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  padding: 4px 8px; color: var(--text-dim, #666); display: flex; align-items: center; gap: 8px;
+}
+.panel-board .status-label .count {
+  background: var(--bg-card, #1a1a1a); padding: 1px 6px; border-radius: 3px; font-size: 10px;
+}
+.panel-board .task-card {
+  background: var(--bg-card, #1a1a1a); border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px; padding: 10px 12px; margin: 4px 0; cursor: pointer;
+  transition: border-color 0.15s;
+}
+.panel-board .task-card:hover { border-color: #444; }
+.panel-board .task-card .title { color: var(--text-bright, #eee); font-weight: 500; margin-bottom: 4px; }
+.panel-board .task-card .meta {
+  font-size: 11px; color: var(--text-dim, #666); display: flex; gap: 12px; flex-wrap: wrap;
+}
+.panel-board .task-card .tag {
+  background: #222; padding: 1px 6px; border-radius: 3px; font-size: 10px; color: var(--blue, #5af);
+}
+.panel-board .task-card .assignee { color: var(--purple, #a7f); }
+.panel-board .task-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.panel-board .bump-btn {
+  background: none; border: 1px solid var(--border, #2a2a2a); border-radius: 3px;
+  color: var(--text-dim, #666); cursor: pointer; font-size: 11px; padding: 2px 6px;
+  font-family: inherit; transition: all 0.15s;
+}
+.panel-board .bump-btn:hover { border-color: var(--accent, #4f9); color: var(--accent, #4f9); }
+.panel-board .score { font-weight: 700; color: var(--yellow, #fd0); }
+.panel-board .score.dim { color: var(--text-dim, #666); font-weight: 400; }
+.panel-board .notes { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border, #2a2a2a); font-size: 11px; display: none; }
+.panel-board .task-card.expanded .notes { display: block; }
+.panel-board .note { padding: 2px 0; color: var(--text-dim, #666); }
+.panel-board .note-author { color: var(--purple, #a7f); }
+.panel-board .note-type { color: var(--orange, #f93); font-size: 10px; }
+.panel-board .status-open { border-left: 3px solid var(--blue, #5af); }
+.panel-board .status-in_progress { border-left: 3px solid var(--yellow, #fd0); }
+.panel-board .status-in_review { border-left: 3px solid var(--orange, #f93); }
+.panel-board .status-blocked { border-left: 3px solid var(--red, #f55); }
+.panel-board .status-done { border-left: 3px solid var(--accent, #4f9); opacity: 0.6; }
+.panel-board .empty { color: var(--text-dim, #666); font-style: italic; padding: 20px; text-align: center; }
+</style>
+
+<div class="panel-board" id="board-root">
+  <div class="empty">Loading board…</div>
+</div>
+
+<script>
+(function() {
+  const root = document.getElementById('board-root');
+  const API = typeof PANEL_API !== 'undefined' ? PANEL_API : '/ui/api';
+  const ORDER = ['open', 'in_progress', 'in_review', 'blocked', 'done'];
+
+  function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+  function ago(iso) {
+    const ms = Date.now() - new Date(iso).getTime();
+    if (ms < 60000) return Math.floor(ms/1000) + 's ago';
+    if (ms < 3600000) return Math.floor(ms/60000) + 'm ago';
+    if (ms < 86400000) return Math.floor(ms/3600000) + 'h ago';
+    return Math.floor(ms/86400000) + 'd ago';
+  }
+
+  async function load() {
+    try {
+      const res = await fetch(API + '/board/tasks');
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      render(data.tasks || []);
+    } catch (e) {
+      root.innerHTML = '<div class="empty">Board unavailable: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function render(tasks) {
+    const grouped = {};
+    ORDER.forEach(s => grouped[s] = []);
+    tasks.forEach(t => (grouped[t.status] || grouped.open).push(t));
+
+    let html = '';
+    for (const status of ORDER) {
+      const items = grouped[status];
+      if (!items.length) continue;
+      html += '<div class="status-group"><div class="status-label">'
+        + status.replace(/_/g, ' ') + ' <span class="count">' + items.length + '</span></div>';
+      for (const t of items) {
+        const tags = (t.tags||[]).map(tag => '<span class="tag">' + esc(tag) + '</span>').join('');
+        const assignee = t.assignee ? '<span class="assignee">@' + esc(t.assignee) + '</span>' : '';
+        const notes = (t.notes||[]).map(n =>
+          '<div class="note"><span class="note-author">@' + esc(n.author) + '</span> <span class="note-type">' + esc(n.type) + '</span> ' + esc(n.content) + '</div>'
+        ).join('');
+        const score = t.score || 0;
+        html += '<div class="task-card status-' + status + '" onclick="this.classList.toggle(\\'expanded\\')">'
+          + '<div class="task-top"><div class="title">' + esc(t.title) + '</div>'
+          + '<button class="bump-btn" onclick="event.stopPropagation();fetch(\\'' + API + '/board/tasks/' + t.id + '/bump\\',{method:\\'POST\\'}).then(()=>window._boardLoad())"><span class="score' + (score ? '' : ' dim') + '">' + score + '</span></button></div>'
+          + '<div class="meta">' + assignee + tags + '<span>' + ago(t.createdAt) + '</span></div>'
+          + (notes ? '<div class="notes">' + notes + '</div>' : '')
+          + '</div>';
+      }
+      html += '</div>';
+    }
+    root.innerHTML = html || '<div class="empty">No tasks</div>';
+  }
+
+  window._boardLoad = load;
+  load();
+  setInterval(load, 10000);
+})();
+</script>
+`);
+  });
+
   return routes;
 }

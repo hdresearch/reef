@@ -3,72 +3,40 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Fleet Services</title>
+  <title>reef</title>
   <link rel="stylesheet" href="/ui/static/style.css">
 </head>
 <body>
-  <div class="header">
-    <h1>▸ Fleet Services</h1>
-    <nav class="tabs">
-      <button class="tab active" data-view="dashboard">Dashboard</button>
-      <button class="tab" data-view="log">Log</button>
-    </nav>
-    <div class="status">
-      <span id="conn-label">connecting</span>
-      <span class="dot" id="conn-dot"></span>
-    </div>
-  </div>
-
-  <div class="stats" id="stats-bar">
-    <div class="stat">tasks <span class="val" id="stat-total">-</span></div>
-    <div class="stat">open <span class="val" id="stat-open">-</span></div>
-    <div class="stat">blocked <span class="val" id="stat-blocked">-</span></div>
-    <div class="stat">events <span class="val" id="stat-events">-</span></div>
-    <div class="stat">vms <span class="val" id="stat-vms">-</span></div>
-  </div>
-
-  <!-- Dashboard view -->
-  <div class="view active" id="view-dashboard">
-    <div class="main">
-      <div class="panel">
-        <div class="panel-header">Board</div>
-        <div class="panel-body" id="board"></div>
+  <div id="app">
+    <header>
+      <h1>▸ reef</h1>
+      <nav class="tabs" id="tabs"></nav>
+      <div class="status" id="status">
+        <span class="dot"></span>
+        <span class="label">loading</span>
       </div>
-      <div class="panel">
-        <div class="panel-header">Feed</div>
-        <div class="panel-body" id="feed"></div>
-      </div>
-      <div class="panel-right">
-        <div class="panel">
-          <div class="panel-header">Registry</div>
-          <div class="panel-body" id="registry"></div>
+    </header>
+
+    <div id="panels"></div>
+
+    <!-- Chat is always built-in, not a panel -->
+    <div class="panel-view" id="view-chat">
+      <div class="chat-container">
+        <div class="chat-messages" id="chat-messages">
+          <div class="chat-empty">
+            <div class="chat-empty-title">reef agent</div>
+            <div class="chat-empty-sub">Send a message to start a session</div>
+          </div>
+        </div>
+        <div class="chat-input-area">
+          <textarea id="chat-input" placeholder="Send a message… (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
+          <button id="chat-send">Send</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Log view -->
-  <div class="view" id="view-log">
-    <div class="log-toolbar">
-      <div class="log-filters">
-        <select id="log-range">
-          <option value="1h">Last 1h</option>
-          <option value="6h">Last 6h</option>
-          <option value="24h" selected>Last 24h</option>
-          <option value="7d">Last 7d</option>
-        </select>
-        <input type="text" id="log-agent-filter" placeholder="filter by agent...">
-      </div>
-      <div class="log-meta">
-        <span class="log-count-val" id="log-count">-</span> entries
-        <span class="log-refresh-hint">auto-refresh 30s</span>
-      </div>
-    </div>
-    <div class="log-entries" id="log-entries">
-      <div class="empty">Loading log...</div>
-    </div>
-  </div>
-
-  <script type="module" src="/ui/static/app.js"></script>
+  <script>const PANEL_API = '/ui/api';</script>
+  <script src="/ui/static/app.js"></script>
 </body>
 </html>

@@ -108,5 +108,117 @@ export function createRoutes(store: FeedStore): Hono {
     });
   });
 
+  // ─── UI Panel ───
+
+  routes.get("/_panel", (c) => {
+    return c.html(`
+<style>
+.panel-feed { height: 100%; overflow-y: auto; }
+.panel-feed .event {
+  padding: 8px 16px; border-bottom: 1px solid var(--border, #2a2a2a);
+  font-size: 12px; animation: feedFadeIn 0.2s;
+}
+@keyframes feedFadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
+.panel-feed .ev-header { display: flex; gap: 8px; align-items: center; margin-bottom: 2px; }
+.panel-feed .ev-agent { color: var(--purple, #a7f); font-weight: 500; }
+.panel-feed .ev-type {
+  font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600;
+  background: #333; color: var(--text, #ccc);
+}
+.panel-feed .ev-time { color: var(--text-dim, #666); font-size: 10px; margin-left: auto; }
+.panel-feed .ev-summary { color: var(--text, #ccc); }
+.panel-feed .empty { color: var(--text-dim, #666); font-style: italic; padding: 20px; text-align: center; }
+.panel-feed .live-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent, #4f9); margin-right: 6px; animation: feedPulse 2s infinite;
+}
+@keyframes feedPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.panel-feed .feed-header {
+  padding: 8px 16px; border-bottom: 1px solid var(--border, #2a2a2a);
+  font-size: 11px; color: var(--text-dim, #666); background: var(--bg-panel, #111);
+  position: sticky; top: 0; z-index: 1;
+}
+</style>
+
+<div class="panel-feed" id="feed-root">
+  <div class="feed-header"><span class="live-dot"></span>Live feed</div>
+  <div id="feed-events"><div class="empty">Loading…</div></div>
+</div>
+
+<script>
+(function() {
+  const container = document.getElementById('feed-events');
+  const API = typeof PANEL_API !== 'undefined' ? PANEL_API : '/ui/api';
+
+  function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+  function ago(iso) {
+    const ms = Date.now() - new Date(iso).getTime();
+    if (ms < 60000) return Math.floor(ms/1000) + 's ago';
+    if (ms < 3600000) return Math.floor(ms/60000) + 'm ago';
+    return Math.floor(ms/3600000) + 'h ago';
+  }
+
+  function renderEvent(evt) {
+    const el = document.createElement('div');
+    el.className = 'event';
+    el.innerHTML = '<div class="ev-header">'
+      + '<span class="ev-agent">' + esc(evt.agent) + '</span>'
+      + '<span class="ev-type">' + esc(evt.type) + '</span>'
+      + '<span class="ev-time">' + (evt.timestamp ? ago(evt.timestamp) : '') + '</span>'
+      + '</div><div class="ev-summary">' + esc(evt.summary) + '</div>';
+    return el;
+  }
+
+  async function loadInitial() {
+    try {
+      const res = await fetch(API + '/feed/events?limit=100');
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      const events = Array.isArray(data) ? data : (data.events || []);
+      events.reverse();
+      container.innerHTML = '';
+      events.forEach(e => container.appendChild(renderEvent(e)));
+      if (!events.length) container.innerHTML = '<div class="empty">No events yet</div>';
+    } catch (e) {
+      container.innerHTML = '<div class="empty">Feed unavailable: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  // SSE for live updates
+  function startSSE() {
+    fetch(API + '/feed/stream').then(res => {
+      if (!res.ok) return;
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      (async function read() {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\\n');
+          buf = lines.pop() || '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const evt = JSON.parse(line.slice(6));
+                const empty = container.querySelector('.empty');
+                if (empty) empty.remove();
+                container.prepend(renderEvent(evt));
+              } catch {}
+            }
+          }
+        }
+      })().catch(() => setTimeout(startSSE, 5000));
+    }).catch(() => setTimeout(startSSE, 5000));
+  }
+
+  loadInitial();
+  startSSE();
+})();
+</script>
+`);
+  });
+
   return routes;
 }

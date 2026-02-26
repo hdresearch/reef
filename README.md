@@ -28,6 +28,21 @@ Out of the box, reef starts with four service modules:
 
 These give you an agent loop, runtime management, installation, and API docs. They're not special — they're regular service modules that happen to ship in `services/`. You can remove them and replace them with whatever you want.
 
+### Agent setup
+
+The agent service spawns [pi](https://github.com/badlogic/pi-mono) to execute tasks. Install pi and the Vers extension so agents get fleet tools:
+
+```bash
+npm install -g @mariozechner/pi-coding-agent
+pi install hdresearch/pi-vers
+```
+
+The agent service provides two modes:
+- **Fire-and-forget tasks** — `POST /agent/tasks` for automation
+- **Interactive chat** — `GET /agent/ui?token=YOUR_TOKEN` for a web-based chat interface
+
+The chat UI connects to pi via RPC mode with full streaming — you see text, tool calls, and results in real-time.
+
 ### Adding the example services
 
 Reef ships with a set of fleet coordination services in `examples/services/`. To use them, copy the ones you want:
