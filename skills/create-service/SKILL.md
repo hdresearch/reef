@@ -17,7 +17,7 @@ Read these files to understand the system:
 4. `src/core/client.ts` — the `FleetClient` injected into tools/behaviors
 5. `src/core/events.ts` — the `ServiceEventBus` for inter-module communication
 
-Look at `services/log/` for a minimal example and `services/board/` for a full-featured one.
+Look at `examples/services/log/` for a minimal example and `examples/services/board/` for a full-featured one.
 
 ## Architecture
 

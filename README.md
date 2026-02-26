@@ -2,40 +2,67 @@
 
 Self-improving fleet infrastructure. The minimum kernel agents need to build their own tools.
 
-Reef is a plugin-based server where every capability is a service module — a folder with an `index.ts`. Modules are discovered at startup, dispatched dynamically, and can be added, updated, or removed at runtime without restarting. The service manager and installer are themselves service modules.
-
-Agents use reef to coordinate, and reef uses agents to extend itself.
+Reef is a plugin-based server where every capability is a service module — a folder with an `index.ts`. Modules are discovered at startup, dispatched dynamically, and can be added, updated, or removed at runtime without restarting. Even the module manager and installer are service modules. Nothing is required. Everything is replaceable.
 
 ## Quickstart
 
 ```bash
-# Install dependencies
 bun install
 
-# Set an auth token
 export VERS_AUTH_TOKEN=your-secret-token
 
-# Start the server
 bun run start
 ```
 
+Out of the box, reef starts with three service modules:
+
 ```
   services:
-    /board — Shared task tracking
-    /feed — Activity event stream
-    /log — Append-only work log
-    /journal — Personal narrative log
-    /registry — VM service discovery
-    /usage — Cost & token tracking
-    /commits — VM snapshot ledger
-    /reports — Markdown reports
     /docs — Auto-generated API documentation
     /installer — Install, update, and remove service modules
     /services — Service module manager
-    /ui — Web dashboard
 
   reef running on :3000
 ```
+
+These give you runtime management, installation, and API docs. They're not special — they're regular service modules that happen to ship in `services/`. You can remove them and replace them with whatever you want.
+
+### Adding the example services
+
+Reef ships with a set of fleet coordination services in `examples/services/`. To use them, copy the ones you want:
+
+```bash
+# Copy everything
+cp -r examples/services/* services/
+
+# Or pick what you need
+cp -r examples/services/board services/
+cp -r examples/services/feed services/
+cp -r examples/services/log services/
+```
+
+Then reload:
+
+```bash
+curl -X POST localhost:3000/services/reload \
+  -H "Authorization: Bearer $VERS_AUTH_TOKEN"
+```
+
+No restart needed.
+
+| Example service | Description |
+|-----------------|-------------|
+| **board** | Shared task tracking with status workflow |
+| **feed** | Activity event stream across the fleet |
+| **log** | Append-only structured work log |
+| **journal** | Personal narrative log per agent |
+| **registry** | VM service discovery and heartbeats |
+| **usage** | Cost and token tracking |
+| **commits** | VM snapshot ledger |
+| **reports** | Markdown report storage |
+| **ui** | Web dashboard |
+
+These are one fleet's solution to one fleet's problem. Use them as-is, modify them, or throw them away and build your own.
 
 ## How it works
 
@@ -43,15 +70,11 @@ The server's only job is discovery, dispatch, and lifecycle. Everything else is 
 
 ```
 services/
-  board/index.ts       → /board/*
-  feed/index.ts        → /feed/*
-  installer/index.ts   → /installer/*
-  services/index.ts    → /services/*
-  docs/index.ts        → /docs/*
-  ...
+  your-service/
+    index.ts    → /your-service/*
 ```
 
-Each module exports a `ServiceModule` with routes (Hono), an optional store, optional LLM tools, and optional documentation:
+Each module exports a `ServiceModule` with routes, an optional store, and optional metadata:
 
 ```ts
 import { Hono } from "hono";
@@ -77,28 +100,32 @@ Drop that in `services/my-service/index.ts`, reload, and it's live at `/my-servi
 
 ## Runtime management
 
-No restarts needed. The server manages itself through its own API.
+The services manager module provides an API for managing modules without restarting.
 
 ```bash
-# Re-scan the services directory — picks up new, changed, and deleted modules
+# Re-scan — picks up new, changed, and deleted modules
 curl -X POST localhost:3000/services/reload \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN"
 
-# Reload a specific module after editing it
-curl -X POST localhost:3000/services/reload/board \
+# Reload a specific module
+curl -X POST localhost:3000/services/reload/my-service \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN"
 
 # Unload a module
-curl -X DELETE localhost:3000/services/board \
+curl -X DELETE localhost:3000/services/my-service \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN"
+
+# Export a module as a tarball
+curl localhost:3000/services/export/my-service \
+  -H "Authorization: Bearer $VERS_AUTH_TOKEN" > my-service.tar.gz
 ```
 
 ## Installing services
 
-Install from git, local paths, or other reef instances.
+The installer module handles git repos, local paths, and other reef instances.
 
 ```bash
-# From GitHub
+# From GitHub (shorthand, HTTPS, or SSH)
 curl -X POST localhost:3000/installer/install \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
@@ -115,21 +142,9 @@ curl -X POST localhost:3000/installer/install \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"from": "http://other-reef:3000", "name": "their-service", "token": "their-token"}'
-
-# Update (git pull or re-pull from remote)
-curl -X POST localhost:3000/installer/update \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "repo-name"}'
-
-# Remove
-curl -X POST localhost:3000/installer/remove \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "repo-name"}'
 ```
 
-Source formats for git install:
+Git source formats:
 
 | Format | Example |
 |--------|---------|
@@ -139,33 +154,53 @@ Source formats for git install:
 | SSH | `git@github.com:user/repo` |
 | Bare host | `gitlab.com/team/repo` |
 
+```bash
+# Update (git pull or re-pull from remote)
+curl -X POST localhost:3000/installer/update \
+  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "repo-name"}'
+
+# Remove (unload + delete)
+curl -X POST localhost:3000/installer/remove \
+  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "repo-name"}'
+
+# List externally installed packages
+curl localhost:3000/installer/installed \
+  -H "Authorization: Bearer $VERS_AUTH_TOKEN"
+```
+
 ## Auto-generated docs
 
-Every module's routes are documented automatically. Modules can add rich descriptions via `routeDocs`.
+The docs module documents every loaded service automatically. Modules can add rich descriptions via `routeDocs`.
 
 ```bash
-# JSON docs for all services
+# All services
 curl localhost:3000/docs
 
-# JSON docs for a specific service
+# Specific service
 curl localhost:3000/docs/board
 
-# HTML docs UI (no auth required)
+# HTML UI (no auth required)
 open http://localhost:3000/docs/ui
 ```
 
 ## Error handling
 
-Reef is designed so one bad module can't take down the server.
+One bad module can't take down the server.
 
-- **Import fails** → module skipped, others load normally
-- **`init()` throws** → module removed from registry, others keep running
-- **Route handler throws** → returns `500 { error: "internal service error" }`
-- **Runtime `loadModule()` fails** → rolled back, no half-initialized state
+| Failure | What happens |
+|---------|--------------|
+| Import fails | Module skipped, others load normally |
+| `init()` throws | Module removed from registry, others keep running |
+| Route handler throws | Returns `500 { error: "internal service error" }` |
+| Runtime `loadModule()` fails | Rolled back — no half-initialized state |
 
 ## pi extension
 
-Reef doubles as a [pi](https://github.com/badlogic/pi-mono) package. Install it and agents get LLM tools for every service that defines them:
+Reef is also a [pi](https://github.com/badlogic/pi-mono) package. Install it and agents get LLM tools for every service that defines them:
 
 ```bash
 pi install /path/to/reef
@@ -180,7 +215,7 @@ Modules without client-side code are automatically excluded from the extension.
 
 ## Creating a service
 
-Reef ships with a `create-service` skill that teaches agents (or humans) the full pattern. Read it at `skills/create-service/SKILL.md`, or if you have reef installed as a pi package, the skill is available automatically.
+Reef ships with a `create-service` skill at `skills/create-service/SKILL.md` that covers the full pattern — stores, routes, tools, behaviors, route documentation, and testing. If you have reef installed as a pi package, the skill is available to agents automatically.
 
 The short version:
 
@@ -193,32 +228,14 @@ services/your-service/
   behaviors.ts  — Event handlers and timers (pi extension)
 ```
 
-## Built-in services
-
-| Service | Description |
-|---------|-------------|
-| **board** | Shared task tracking with status workflow |
-| **feed** | Activity event stream across the fleet |
-| **log** | Append-only structured work log |
-| **journal** | Personal narrative log per agent |
-| **registry** | VM service discovery and heartbeats |
-| **usage** | Cost and token tracking |
-| **commits** | VM snapshot ledger |
-| **reports** | Markdown report storage |
-| **docs** | Auto-generated API documentation |
-| **installer** | Install/update/remove modules from git, local, or other instances |
-| **services** | Runtime module management and export |
-| **ui** | Web dashboard |
-
 ## Tests
 
 ```bash
 bun test
 ```
 
-60 tests covering discovery, dynamic dispatch, auth, error handling, service context, the services manager, the installer (local, git, fleet-to-fleet), and source parsing.
+60 tests covering discovery, dispatch, auth, error handling, service context, runtime management, installation (local, git, fleet-to-fleet), and source parsing.
 
 ## Requirements
 
-- [Bun](https://bun.sh) runtime
-- That's it
+- [Bun](https://bun.sh)
