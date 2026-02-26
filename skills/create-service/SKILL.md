@@ -501,6 +501,114 @@ curl -X POST http://localhost:3000/installer/install \
   -d '{"from": "http://other-reef:3000", "name": "their-service", "token": "their-token"}'
 ```
 
+## UI Panels
+
+Services can contribute a panel to the web dashboard. The UI service discovers panels dynamically — no hardcoded knowledge of which services exist.
+
+**Convention**: Add a `GET /_panel` route that returns an HTML fragment with scoped `<style>` and `<script>` tags.
+
+```ts
+// In routes.ts
+routes.get("/_panel", (c) => {
+  return c.html(`
+<style>
+.panel-myservice { padding: 8px; }
+.panel-myservice .card {
+  background: var(--bg-card, #1a1a1a);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px; padding: 10px; margin: 4px 0;
+}
+.panel-myservice .empty {
+  color: var(--text-dim, #666); font-style: italic;
+  padding: 20px; text-align: center;
+}
+</style>
+
+<div class="panel-myservice" id="myservice-root">
+  <div class="empty">Loading…</div>
+</div>
+
+<script>
+(function() {
+  const root = document.getElementById('myservice-root');
+  const API = typeof PANEL_API !== 'undefined' ? PANEL_API : '/ui/api';
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+  }
+
+  async function load() {
+    try {
+      const res = await fetch(API + '/myservice/items');
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      render(data.items || []);
+    } catch (e) {
+      root.innerHTML = '<div class="empty">Unavailable: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function render(items) {
+    if (!items.length) {
+      root.innerHTML = '<div class="empty">No items</div>';
+      return;
+    }
+    root.innerHTML = items.map(item =>
+      '<div class="card">' + esc(item.name) + '</div>'
+    ).join('');
+  }
+
+  load();
+  setInterval(load, 10000); // poll every 10s
+})();
+</script>
+`);
+});
+```
+
+**Panel rules**:
+- **Scope CSS** to `.panel-<name>` — prevents conflicts with other panels
+- **Wrap JS in an IIFE** — prevents global namespace pollution
+- **Use `PANEL_API`** for API calls — this goes through the UI's auth proxy
+- **Use CSS variables** (`var(--bg-card)`, `var(--border)`, etc.) — matches the UI theme
+- **Handle errors gracefully** — show a message if the service API is down
+- **Poll for updates** — panels aren't automatically refreshed
+
+Available CSS variables from the UI theme:
+- `--bg`, `--bg-panel`, `--bg-card` — backgrounds
+- `--border` — borders
+- `--text`, `--text-dim`, `--text-bright` — text colors
+- `--accent`, `--blue`, `--purple`, `--yellow`, `--red`, `--orange` — accent colors
+
+**How it works**: The UI service calls `GET /services` on load, then tries `GET /<service>/_panel` for each loaded module. Services that return HTML get a tab in the dashboard. Tabs appear and disappear automatically as services are loaded/unloaded.
+
+**SSE in panels**: For live-updating panels (like a feed), use `fetch()` with a streaming reader instead of `EventSource` — this lets you go through the API proxy which injects auth:
+
+```js
+fetch(API + '/feed/stream').then(res => {
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  (async function read() {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\\n');
+      buf = lines.pop() || '';
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const event = JSON.parse(line.slice(6));
+          // render the event
+        }
+      }
+    }
+  })().catch(() => setTimeout(startSSE, 5000));
+});
+```
+
 ## Checklist
 
 Before considering the service done:
@@ -518,3 +626,4 @@ Before considering the service done:
 - [ ] Hot-loads via `POST /services/reload/your-service`
 - [ ] Routes work via curl
 - [ ] Shows up in `GET /docs/your-service`
+- [ ] UI panel added (`GET /_panel`) if the service has data worth showing
