@@ -1,8 +1,21 @@
 {
-  "name": "vers-agent-services-core",
-  "module": "index.ts",
+  "name": "vers-fleet-services",
+  "version": "0.1.0",
+  "description": "Plugin-based coordination services for Vers agent fleets",
   "type": "module",
-  "private": true,
+  "scripts": {
+    "dev": "bun --watch run src/main.ts",
+    "start": "bun run src/main.ts",
+    "test": "bun test"
+  },
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./src/extension.ts"]
+  },
+  "dependencies": {
+    "hono": "^4.12.2",
+    "ulid": "^3.0.2"
+  },
   "devDependencies": {
     "@mariozechner/pi-ai": "^0.54.2",
     "@mariozechner/pi-coding-agent": "^0.54.2",
@@ -11,9 +24,5 @@
   },
   "peerDependencies": {
     "typescript": "^5"
-  },
-  "dependencies": {
-    "hono": "^4.12.2",
-    "ulid": "^3.0.2"
   }
 }

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { FleetClient } from "../../core/types.js";
+import type { FleetClient } from "../src/core/types.js";
 import { Type } from "@sinclair/typebox";
 
 export function registerTools(pi: ExtensionAPI, client: FleetClient) {

@@ -3,7 +3,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { FleetClient } from "../../core/types.js";
+import type { FleetClient } from "../src/core/types.js";
 
 export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;

@@ -7,16 +7,37 @@
 
 import { Hono } from "hono";
 import { bearerAuth } from "./auth.js";
-import type { ServiceModule } from "./types.js";
+import { discoverServiceModules } from "./discover.js";
+import { ServiceEventBus } from "./events.js";
+import type { ServiceModule, ServiceContext } from "./types.js";
+
+export const DEFAULT_SERVICES_DIR = "./services";
 
 export interface ServerOptions {
-  modules: ServiceModule[];
+  modules?: ServiceModule[];
+  servicesDir?: string;
   port?: number;
 }
 
-export function createServer(options: ServerOptions) {
-  const { modules, port = 3000 } = options;
+export async function createServer(options: ServerOptions) {
+  const modules = options.modules ?? await discoverServiceModules(
+    options.servicesDir ?? process.env.SERVICES_DIR ?? DEFAULT_SERVICES_DIR,
+  );
   const app = new Hono();
+  const events = new ServiceEventBus();
+
+  // Build store map for cross-module access
+  const stores = new Map<string, unknown>();
+  for (const mod of modules) {
+    if (mod.store) stores.set(mod.name, mod.store);
+  }
+
+  const ctx: ServiceContext = {
+    events,
+    getStore<T = unknown>(name: string): T | undefined {
+      return stores.get(name) as T | undefined;
+    },
+  };
 
   // Health check — always unauthenticated
   app.get("/health", (c) =>
@@ -32,7 +53,6 @@ export function createServer(options: ServerOptions) {
     if (!mod.routes) continue;
 
     if (mod.mountAtRoot) {
-      // Root-mounted modules handle their own auth (UI, webhooks, etc.)
       app.route("/", mod.routes);
     } else {
       if (mod.requiresAuth !== false) {
@@ -42,14 +62,19 @@ export function createServer(options: ServerOptions) {
     }
   }
 
-  return { app, modules };
+  // Initialize modules — all routes mounted, safe to cross-reference
+  for (const mod of modules) {
+    mod.init?.(ctx);
+  }
+
+  return { app, modules, events, ctx };
 }
 
 /**
  * Start the server and wire up graceful shutdown.
  */
-export function startServer(options: ServerOptions) {
-  const { app, modules } = createServer(options);
+export async function startServer(options: ServerOptions = {}) {
+  const { app, modules } = await createServer(options);
   const port = options.port ?? parseInt(process.env.PORT || "3000", 10);
 
   if (!process.env.VERS_AUTH_TOKEN) {

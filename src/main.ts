@@ -1,14 +1,11 @@
 /**
- * Entrypoint — loads all service modules and starts the server.
+ * Server entrypoint — discovers service modules and starts the server.
+ *
+ * Configure via env vars:
+ *   SERVICES_DIR  — path to services directory (default: ./services)
+ *   PORT          — server port (default: 3000)
  */
 
 import { startServer } from "./core/server.js";
-import board from "./services/board/index.js";
-import feed from "./services/feed/index.js";
-import registry from "./services/registry/index.js";
-import log from "./services/log/index.js";
-import ui from "./services/ui/index.js";
 
-startServer({
-  modules: [board, feed, registry, log, ui],
-});
+await startServer();

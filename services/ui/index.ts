@@ -2,7 +2,7 @@
  * UI service module — web dashboard with magic link auth and API proxy.
  */
 
-import type { ServiceModule } from "../../core/types.js";
+import type { ServiceModule } from "../src/core/types.js";
 import { createRoutes } from "./routes.js";
 
 const ui: ServiceModule = {

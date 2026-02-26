@@ -2,7 +2,7 @@
  * Registry service module — VM service discovery for agent fleets.
  */
 
-import type { ServiceModule, FleetClient } from "../../core/types.js";
+import type { ServiceModule, FleetClient } from "../src/core/types.js";
 import { RegistryStore } from "./store.js";
 import { createRoutes } from "./routes.js";
 import { registerTools } from "./tools.js";

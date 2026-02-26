@@ -1,19 +1,19 @@
 /**
  * Board HTTP routes.
  *
- * Receives a store instance — doesn't create its own.
+ * Receives a store instance and a lazy event bus getter.
+ * Emits board:task_created, board:task_updated, board:task_deleted.
  */
 
 import { Hono } from "hono";
-import type {
-  BoardStore,
-  TaskFilters,
-  TaskStatus,
-  AddArtifactInput,
-} from "./store.js";
+import type { BoardStore, TaskFilters, TaskStatus, AddArtifactInput } from "./store.js";
 import { NotFoundError, ValidationError } from "./store.js";
+import type { ServiceEventBus } from "../src/core/events.js";
 
-export function createRoutes(store: BoardStore): Hono {
+export function createRoutes(
+  store: BoardStore,
+  getEvents: () => ServiceEventBus | null = () => null,
+): Hono {
   const routes = new Hono();
 
   // Create a task
@@ -21,6 +21,7 @@ export function createRoutes(store: BoardStore): Hono {
     try {
       const body = await c.req.json();
       const task = store.createTask(body);
+      getEvents()?.fire("board:task_created", { task });
       return c.json(task, 201);
     } catch (e) {
       if (e instanceof ValidationError) return c.json({ error: e.message }, 400);
@@ -55,6 +56,7 @@ export function createRoutes(store: BoardStore): Hono {
     try {
       const body = await c.req.json();
       const task = store.updateTask(c.req.param("id"), body);
+      getEvents()?.fire("board:task_updated", { task, changes: body });
       return c.json(task);
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
@@ -67,6 +69,7 @@ export function createRoutes(store: BoardStore): Hono {
   routes.delete("/tasks/:id", (c) => {
     const deleted = store.deleteTask(c.req.param("id"));
     if (!deleted) return c.json({ error: "task not found" }, 404);
+    getEvents()?.fire("board:task_deleted", { taskId: c.req.param("id") });
     return c.json({ deleted: true });
   });
 
@@ -143,6 +146,7 @@ export function createRoutes(store: BoardStore): Hono {
       }
 
       const task = store.getTask(id);
+      getEvents()?.fire("board:task_updated", { task, changes: { status: "in_review" } });
       return c.json(task);
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
@@ -166,7 +170,9 @@ export function createRoutes(store: BoardStore): Hono {
         type: "update",
       });
 
-      return c.json(store.getTask(id));
+      const task = store.getTask(id);
+      getEvents()?.fire("board:task_updated", { task, changes: { status: "done" } });
+      return c.json(task);
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
       if (e instanceof ValidationError) return c.json({ error: e.message }, 400);
@@ -190,7 +196,9 @@ export function createRoutes(store: BoardStore): Hono {
         type: "update",
       });
 
-      return c.json(store.getTask(id));
+      const task = store.getTask(id);
+      getEvents()?.fire("board:task_updated", { task, changes: { status: "open" } });
+      return c.json(task);
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
       if (e instanceof ValidationError) return c.json({ error: e.message }, 400);

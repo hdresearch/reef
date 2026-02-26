@@ -7,6 +7,7 @@
 
 import type { Hono } from "hono";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ServiceEventBus } from "./events.js";
 
 // =============================================================================
 // Tool result types (matching pi's expected shape)
@@ -63,6 +64,18 @@ export interface WidgetContribution {
 }
 
 // =============================================================================
+// ServiceContext — passed to modules during server-side initialization
+// =============================================================================
+
+export interface ServiceContext {
+  /** Server-side event bus for inter-module communication */
+  events: ServiceEventBus;
+
+  /** Get another module's store by service name. Returns undefined if not found. */
+  getStore<T = unknown>(serviceName: string): T | undefined;
+}
+
+// =============================================================================
 // ServiceModule — the plugin interface
 // =============================================================================
 
@@ -89,6 +102,12 @@ export interface ServiceModule {
     flush?(): void;
     close?(): Promise<void>;
   };
+
+  /**
+   * Server-side initialization hook. Called after all modules are loaded,
+   * so you can subscribe to events or look up other modules' stores.
+   */
+  init?(ctx: ServiceContext): void;
 
   // --- Client side (pi extension) ---
 

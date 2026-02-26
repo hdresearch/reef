@@ -1,4 +1,4 @@
-import type { ServiceModule } from "../../core/types.js";
+import type { ServiceModule } from "../src/core/types.js";
 import { LogStore } from "./store.js";
 import { createRoutes } from "./routes.js";
 import { registerTools } from "./tools.js";
