@@ -609,6 +609,74 @@ fetch(API + '/feed/stream').then(res => {
 });
 ```
 
+## Testing
+
+Tests live alongside the service they test. Use `createTestHarness()` to spin up a server with just your module — no port binding, no external dependencies.
+
+```ts
+// examples/services/your-service/your-service.test.ts
+
+import { describe, test, expect, afterAll } from "bun:test";
+import { createTestHarness, type TestHarness } from "../../../src/core/testing.js";
+import yourService from "./index.js";
+
+let t: TestHarness;
+
+const setup = (async () => {
+  t = await createTestHarness({ services: [yourService] });
+})();
+
+afterAll(() => t?.cleanup());
+
+describe("your-service", () => {
+  test("creates an item", async () => {
+    await setup;
+    const { status, data } = await t.json("/your-service/items", {
+      method: "POST",
+      auth: true,
+      body: { name: "test" },
+    });
+    expect(status).toBe(201);
+    expect(data.name).toBe("test");
+  });
+
+  test("lists items", async () => {
+    await setup;
+    const { data } = await t.json<{ items: any[] }>("/your-service/items", {
+      auth: true,
+    });
+    expect(data.items.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("requires auth", async () => {
+    await setup;
+    const { status } = await t.json("/your-service/items");
+    expect(status).toBe(401);
+  });
+});
+```
+
+Run with:
+
+```bash
+bun test examples/services/your-service/your-service.test.ts
+```
+
+**`createTestHarness()` options**:
+- `services` — array of service modules to load (module objects or dynamic imports)
+- `authToken` — override the test auth token (default: `"test-token"`)
+
+**`TestHarness` API**:
+- `t.fetch(path, opts?)` — make a request. `{ auth: true }` adds the bearer token
+- `t.json<T>(path, opts?)` — fetch + parse JSON, returns `{ status, data }`
+- `t.cleanup()` — remove temp dirs, restore env vars
+
+**Tips**:
+- Tests share a single harness instance for speed — use `await setup` at the top of each test
+- Call `t.cleanup()` in `afterAll` to avoid leaking temp directories
+- If your service depends on another module, include both: `services: [dep, yourService]`
+- The harness sets `VERS_AUTH_TOKEN` automatically — `{ auth: true }` uses it
+
 ## Checklist
 
 Before considering the service done:
@@ -627,3 +695,4 @@ Before considering the service done:
 - [ ] Routes work via curl
 - [ ] Shows up in `GET /docs/your-service`
 - [ ] UI panel added (`GET /_panel`) if the service has data worth showing
+- [ ] Tests written alongside the service (`your-service.test.ts`)
