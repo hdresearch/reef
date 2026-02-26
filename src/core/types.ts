@@ -142,4 +142,53 @@ export interface ServiceModule {
 
   /** Services this module depends on (for load ordering) */
   dependencies?: string[];
+
+  /**
+   * Route documentation. Keyed by "METHOD /path" (path relative to module root).
+   * Used by the docs service to generate API documentation.
+   *
+   * @example
+   * routeDocs: {
+   *   "POST /tasks": {
+   *     summary: "Create a task",
+   *     body: {
+   *       title: { type: "string", required: true, description: "Task title" },
+   *       assignee: { type: "string", description: "Agent or user to assign to" },
+   *     },
+   *     response: "The created task object with generated ID and timestamps",
+   *   },
+   *   "GET /tasks": {
+   *     summary: "List tasks with optional filters",
+   *     query: {
+   *       status: { type: "string", description: "open | in_progress | in_review | blocked | done" },
+   *     },
+   *   },
+   * }
+   */
+  routeDocs?: Record<string, RouteDocs>;
+}
+
+// =============================================================================
+// Route documentation types
+// =============================================================================
+
+export interface ParamDoc {
+  type: string;
+  required?: boolean;
+  description?: string;
+}
+
+export interface RouteDocs {
+  /** Short description of what this endpoint does */
+  summary: string;
+  /** Longer explanation, usage notes, or examples */
+  detail?: string;
+  /** URL path parameters (e.g. :id) */
+  params?: Record<string, ParamDoc>;
+  /** Query string parameters */
+  query?: Record<string, ParamDoc>;
+  /** Request body fields (for POST/PATCH/PUT) */
+  body?: Record<string, ParamDoc>;
+  /** Description of the response */
+  response?: string;
 }

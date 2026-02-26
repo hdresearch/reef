@@ -12,9 +12,9 @@
  * so init() hooks can safely reference stores from upstream modules.
  */
 
-import { readdirSync, existsSync, watch } from "node:fs";
+import { readdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { ServiceModule, ServiceContext } from "./types.js";
+import type { ServiceModule } from "./types.js";
 
 // =============================================================================
 // Initial discovery
@@ -86,7 +86,7 @@ export function filterClientModules(modules: ServiceModule[]): ServiceModule[] {
 }
 
 // =============================================================================
-// Single-module loading (used by watcher and reload endpoints)
+// Single-module loading (used by reload and install endpoints)
 // =============================================================================
 
 /**
@@ -102,7 +102,6 @@ export async function loadServiceModule(
     throw new Error(`No index.ts found in ${dirPath}`);
   }
 
-  // Cache-bust so Bun re-imports the module on reload
   const mod = await import(`${indexPath}?t=${Date.now()}`);
   const serviceModule: ServiceModule = mod.default;
 
@@ -111,63 +110,6 @@ export async function loadServiceModule(
   }
 
   return serviceModule;
-}
-
-// =============================================================================
-// Watcher — auto-detect new service directories (adds only)
-// =============================================================================
-
-export interface WatcherOptions {
-  servicesDir: string;
-  liveModules: Map<string, ServiceModule>;
-  onNewDir: (dirName: string) => void;
-}
-
-/**
- * Watch the services directory for new subdirectories.
- * Only handles additions — updates and removes are explicit via /services endpoints.
- * Calls onNewDir when a directory appears that isn't already loaded.
- *
- * Returns a function to stop watching.
- */
-export function watchForNewServices(options: WatcherOptions): () => void {
-  const { servicesDir, liveModules, onNewDir } = options;
-  const resolved = resolve(servicesDir);
-
-  // Track known directories so we only fire for genuinely new ones
-  const knownDirs = new Set<string>();
-  if (existsSync(resolved)) {
-    for (const entry of readdirSync(resolved, { withFileTypes: true })) {
-      if (entry.isDirectory()) knownDirs.add(entry.name);
-    }
-  }
-
-  let debounce: ReturnType<typeof setTimeout> | null = null;
-
-  const watcher = watch(resolved, { persistent: false }, () => {
-    if (debounce) clearTimeout(debounce);
-    debounce = setTimeout(() => scan(), 500);
-  });
-
-  function scan() {
-    if (!existsSync(resolved)) return;
-
-    for (const entry of readdirSync(resolved, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      if (knownDirs.has(entry.name)) continue;
-
-      const indexPath = join(resolved, entry.name, "index.ts");
-      if (!existsSync(indexPath)) continue;
-
-      knownDirs.add(entry.name);
-      onNewDir(entry.name);
-    }
-  }
-
-  return () => {
-    watcher.close();
-    if (debounce) clearTimeout(debounce);
-  };
 }
 
 // =============================================================================
@@ -190,7 +132,7 @@ function topoSort(modules: ServiceModule[]): ServiceModule[] {
     }
 
     const mod = byName.get(name);
-    if (!mod) return; // dependency not present — skip silently
+    if (!mod) return;
 
     stack.add(name);
     for (const dep of mod.dependencies ?? []) {

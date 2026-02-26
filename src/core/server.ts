@@ -5,22 +5,20 @@
  *   1. Discover and load service modules at startup
  *   2. Dispatch requests to the right module
  *   3. Health check
- *   4. Watch for new service directories (adds only)
- *   5. Graceful shutdown
+ *   4. Graceful shutdown
  *
  * Everything else — including managing modules at runtime — is handled
- * by service modules themselves (see services/services/).
+ * by service modules themselves:
+ *   /services   — reload and unload modules
+ *   /installer  — install from git or local paths
+ *   /docs       — auto-generated API documentation
  */
 
 import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { Hono } from "hono";
 import { bearerAuth } from "./auth.js";
-import {
-  discoverServiceModules,
-  loadServiceModule,
-  watchForNewServices,
-} from "./discover.js";
+import { discoverServiceModules, loadServiceModule } from "./discover.js";
 import { ServiceEventBus } from "./events.js";
 import type { ServiceModule, ServiceContext } from "./types.js";
 
@@ -30,8 +28,6 @@ export interface ServerOptions {
   modules?: ServiceModule[];
   servicesDir?: string;
   port?: number;
-  /** Watch for new service directories at runtime. Default: false */
-  hot?: boolean;
 }
 
 export async function createServer(options: ServerOptions) {
@@ -40,6 +36,13 @@ export async function createServer(options: ServerOptions) {
   const initialModules = options.modules ?? await discoverServiceModules(servicesDir);
   const app = new Hono();
   const events = new ServiceEventBus();
+
+  // Catch any unhandled errors from service route handlers
+  app.onError((err, c) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`  [dispatch] error: ${msg}`);
+    return c.json({ error: "internal service error" }, 500);
+  });
 
   // ==========================================================================
   // Live module registry
@@ -88,13 +91,23 @@ export async function createServer(options: ServerOptions) {
     }
 
     registerModule(serviceModule, dirName);
-    serviceModule.init?.(ctx);
+
+    try {
+      serviceModule.init?.(ctx);
+    } catch (err) {
+      // Roll back — don't leave a half-initialized module in the registry
+      liveModules.delete(serviceModule.name);
+      stores.delete(serviceModule.name);
+      dirForModule.delete(serviceModule.name);
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Module "${serviceModule.name}" init() failed: ${msg}`);
+    }
 
     return { name: serviceModule.name, action: existed ? "updated" : "added" };
   }
 
   // ==========================================================================
-  // Service context — passed to all modules, including the services manager
+  // Service context — passed to all modules
   // ==========================================================================
 
   const ctx: ServiceContext = {
@@ -142,7 +155,6 @@ export async function createServer(options: ServerOptions) {
   async function dispatch(c: any) {
     const serviceName = c.req.param("service");
 
-    // Don't dispatch to health — it has its own static route
     if (serviceName === "health") return c.notFound();
 
     const mod = liveModules.get(serviceName);
@@ -161,18 +173,24 @@ export async function createServer(options: ServerOptions) {
     url.pathname = url.pathname.slice(prefix.length) || "/";
     const rewritten = new Request(url.toString(), c.req.raw);
 
-    return mod.routes.fetch(rewritten);
+    const response = await mod.routes.fetch(rewritten);
+
+    // If the sub-Hono returned a 500 (e.g. unhandled throw in route handler),
+    // normalize it to a JSON error response
+    if (response.status >= 500) {
+      return c.json({ error: "internal service error" }, response.status as any);
+    }
+
+    return response;
   }
 
-  // Root-mounted modules (UI, webhooks) — registered BEFORE the catch-all
-  // dispatch so their explicit routes take priority.
+  // Root-mounted modules (UI, webhooks) — registered before catch-all
   for (const mod of initialModules) {
     if (mod.mountAtRoot && mod.routes) {
       app.route("/", mod.routes);
     }
   }
 
-  // Catch-all dynamic dispatch — after root-mounted and static routes
   app.all("/:service{[^/]+}", dispatch);
   app.all("/:service{[^/]+}/*", dispatch);
 
@@ -185,39 +203,25 @@ export async function createServer(options: ServerOptions) {
   }
 
   for (const mod of initialModules) {
-    mod.init?.(ctx);
+    try {
+      mod.init?.(ctx);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`  [init] /${mod.name} failed — skipping: ${msg}`);
+      liveModules.delete(mod.name);
+      stores.delete(mod.name);
+      dirForModule.delete(mod.name);
+    }
   }
 
-  // ==========================================================================
-  // Watcher — auto-detect new directories (adds only)
-  // ==========================================================================
-
-  let stopWatching: (() => void) | undefined;
-  if (options.hot === true) {
-    stopWatching = watchForNewServices({
-      servicesDir,
-      liveModules,
-      onNewDir: async (dirName) => {
-        try {
-          const result = await loadFromDir(dirName);
-          console.log(`  [hot] /${result.name} — ${result.name}`);
-        } catch (err) {
-          console.error(
-            `  [hot] Failed to load services/${dirName}: ${err instanceof Error ? err.message : err}`,
-          );
-        }
-      },
-    });
-  }
-
-  return { app, liveModules, events, ctx, stopWatching };
+  return { app, liveModules, events, ctx };
 }
 
 /**
  * Start the server and wire up graceful shutdown.
  */
 export async function startServer(options: ServerOptions = {}) {
-  const { app, liveModules, stopWatching } = await createServer(options);
+  const { app, liveModules } = await createServer(options);
   const port = options.port ?? parseInt(process.env.PORT || "3000", 10);
 
   if (!process.env.VERS_AUTH_TOKEN) {
@@ -243,7 +247,6 @@ export async function startServer(options: ServerOptions = {}) {
 
   async function shutdown() {
     console.log("\n  shutting down...");
-    stopWatching?.();
     for (const mod of liveModules.values()) {
       if (mod.store?.flush) mod.store.flush();
       if (mod.store?.close) await mod.store.close();
