@@ -1,11 +1,11 @@
 ---
 name: create-service
-description: Create a new service module for vers-agent-services. Use when adding a new capability to the fleet coordination server — a new store, API routes, LLM tools, behaviors, or dashboard widget.
+description: Create a new service module for reef. Use when adding a new capability to the server — a new store, API routes, LLM tools, behaviors, or dashboard widget.
 ---
 
 # Create a Service Module
 
-This skill walks you through creating a new service module for the fleet coordination server. Service modules are self-contained plugins — drop a folder in `services/`, it gets discovered and loaded automatically.
+Service modules are self-contained plugins — a folder in `services/` with an `index.ts` that exports a `ServiceModule`. Modules present at startup are discovered automatically. New modules added at runtime are loaded via the services manager (`POST /services/reload`) or the installer (`POST /installer/install`). No import wiring, no registration.
 
 ## Before You Start
 
@@ -13,8 +13,9 @@ Read these files to understand the system:
 
 1. `src/core/types.ts` — the `ServiceModule` interface (the plugin contract)
 2. `src/core/discover.ts` — how modules are found and loaded
-3. `src/core/client.ts` — the `FleetClient` injected into tools/behaviors
-4. `src/core/events.ts` — the `ServiceEventBus` for inter-module communication
+3. `src/core/server.ts` — dynamic dispatch, error handling, lifecycle
+4. `src/core/client.ts` — the `FleetClient` injected into tools/behaviors
+5. `src/core/events.ts` — the `ServiceEventBus` for inter-module communication
 
 Look at `services/log/` for a minimal example and `services/board/` for a full-featured one.
 
@@ -30,7 +31,7 @@ services/
     behaviors.ts  — Automatic behaviors (event handlers, timers)
 ```
 
-The server discovers modules by scanning `services/*/index.ts`. Each must **default-export** a `ServiceModule` object. No registration or import wiring needed.
+At startup, the server scans `services/*/index.ts` and loads everything it finds. Each must **default-export** a `ServiceModule` object. At runtime, use `POST /services/reload` to pick up new or changed modules.
 
 A module has two halves:
 
@@ -40,6 +41,29 @@ A module has two halves:
 | **Client** | Agent VMs | `tools.ts`, `behaviors.ts` | LLM tools + automatic behaviors |
 
 Modules that only have server-side code (no tools, behaviors, or widget) are automatically excluded from the pi extension.
+
+## Runtime Management
+
+You don't need to restart the server to work with modules. The server provides runtime management via two built-in service modules:
+
+**Services manager** (`/services`):
+- `GET /services` — list loaded modules
+- `POST /services/reload` — re-scan directory, add new, update changed, remove deleted
+- `POST /services/reload/:name` — reload a specific module
+- `DELETE /services/:name` — unload a module
+- `GET /services/export/:name` — export a module as a tarball
+
+**Installer** (`/installer`):
+- `POST /installer/install` — install from git, local path, or another reef instance
+- `POST /installer/update` — pull latest and reload
+- `POST /installer/remove` — unload and delete
+- `GET /installer/installed` — list externally installed packages
+
+Workflow during development:
+1. Write your module in `services/your-service/`
+2. `POST /services/reload/your-service` to hot-load it (or reload to pick up changes)
+3. Test via curl
+4. Iterate without restarting
 
 ## Step-by-Step
 
@@ -51,7 +75,7 @@ mkdir -p services/your-service
 
 ### 2. Write the store (`store.ts`)
 
-The store owns all data and persistence. Two patterns exist:
+The store owns all data and persistence. Three patterns:
 
 **JSON file** (simple key-value or list data):
 
@@ -122,7 +146,6 @@ Key conventions:
 - Default file path in the constructor — no config needed
 - Expose `flush()` for graceful shutdown
 - Expose `close()` if using SQLite or other resources that need cleanup
-- Throw typed errors (`ValidationError`, `NotFoundError`) — routes catch these for proper HTTP status codes
 
 ### 3. Write the routes (`routes.ts`)
 
@@ -162,9 +185,44 @@ export function createRoutes(store: YourStore): Hono {
 }
 ```
 
-Routes are **bearer-auth protected by default**. If your service needs unauthenticated access (like the UI), set `requiresAuth: false` in the module definition.
+Routes are **bearer-auth protected by default**. If your service needs unauthenticated access (like docs), set `requiresAuth: false` in the module definition.
 
-### 4. Write the tools (`tools.ts`)
+**Error handling**: If a route handler throws, the server catches it and returns `{ "error": "internal service error" }` with status 500. This prevents one broken module from taking down the server. But you should still handle expected errors explicitly with proper status codes.
+
+### 4. Add route documentation (`routeDocs`)
+
+Add `routeDocs` to your module definition so the `/docs` service can generate API documentation automatically.
+
+```ts
+routeDocs: {
+  "POST /": {
+    summary: "Create a new item",
+    detail: "Creates an item and returns it with a generated ID.",
+    body: {
+      name: { type: "string", required: true, description: "Item name" },
+      status: { type: "string", required: false, description: "Initial status (default: active)" },
+    },
+    response: "{ id, name, status, createdAt }",
+  },
+  "GET /": {
+    summary: "List all items",
+    params: {
+      status: { type: "string", required: false, description: "Filter by status" },
+    },
+    response: "{ items: Item[], count }",
+  },
+  "GET /:id": {
+    summary: "Get a specific item",
+    response: "Item object or 404",
+  },
+},
+```
+
+The key format is `"METHOD /path"` (relative to the module's mount point). The `/docs` service combines this with auto-detected routes to produce both JSON (`GET /docs/your-service`) and HTML (`GET /docs/ui`) documentation.
+
+Modules without `routeDocs` still appear in the docs — they just show method + path without descriptions.
+
+### 5. Write the tools (`tools.ts`)
 
 LLM-callable tools registered on the pi extension. These are the agent's interface to your service.
 
@@ -185,13 +243,12 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       optionalParam: Type.Optional(Type.String({ description: "Optional context" })),
     }),
     async execute(_toolCallId, params) {
-      // Always check for base URL first
       if (!client.getBaseUrl()) return client.noUrl();
 
       try {
         const result = await client.api("POST", "/your-service", {
           ...params,
-          agent: client.agentName,  // Tag data with the calling agent
+          agent: client.agentName,
         });
         return client.ok(JSON.stringify(result, null, 2), { result });
       } catch (e: any) {
@@ -210,14 +267,14 @@ Tool conventions:
 - **Agent attribution**: Pass `client.agentName` so entries are tagged with who created them
 
 The `FleetClient` provides:
-- `client.api(method, path, body?)` — authenticated HTTP call to the fleet server
+- `client.api(method, path, body?)` — authenticated HTTP call to the reef server
 - `client.agentName` — this agent's name (from `VERS_AGENT_NAME` env var)
 - `client.vmId` — this agent's VM ID, if set
 - `client.ok(text, details?)` — successful tool result
 - `client.err(text)` — error tool result
 - `client.noUrl()` — standard error when `VERS_INFRA_URL` is not set
 
-### 5. Write behaviors (`behaviors.ts`) — optional
+### 6. Write behaviors (`behaviors.ts`) — optional
 
 Behaviors are automatic event handlers that run without the LLM deciding to call them. Use for:
 - Auto-publishing events on agent lifecycle (start, end, turn)
@@ -229,7 +286,6 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { FleetClient } from "../src/core/types.js";
 
 export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
-  // React to agent lifecycle
   pi.on("agent_start", async () => {
     if (!client.getBaseUrl()) return;
     try {
@@ -252,11 +308,6 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
   pi.on("session_shutdown", async () => {
     if (timer) { clearInterval(timer); timer = null; }
   });
-
-  // React to events from other extensions
-  pi.events.on("vers:agent_spawned", async (data) => {
-    // cross-extension coordination
-  });
 }
 ```
 
@@ -264,18 +315,17 @@ Behavior conventions:
 - **Always guard** with `if (!client.getBaseUrl()) return` — agents may not have infra configured
 - **Always try/catch** — a behavior error should never crash the agent
 - **Clean up timers** on `session_shutdown`
-- Use `pi.on()` for agent lifecycle events, `pi.events.on()` for cross-extension events
 
-### 6. Write the module definition (`index.ts`)
+### 7. Write the module definition (`index.ts`)
 
-This ties everything together. It's what the discovery system loads.
+This ties everything together.
 
 ```ts
 import type { ServiceModule } from "../src/core/types.js";
 import { YourStore } from "./store.js";
 import { createRoutes } from "./routes.js";
 import { registerTools } from "./tools.js";
-import { registerBehaviors } from "./behaviors.js";  // optional
+import { registerBehaviors } from "./behaviors.js";
 
 const store = new YourStore();
 
@@ -285,75 +335,94 @@ const yourService: ServiceModule = {
 
   // Server side
   routes: createRoutes(store),
-  store,                              // Exposed for graceful shutdown (flush/close)
+  store,
 
   // Client side (omit if server-only)
   registerTools,
-  registerBehaviors,                  // optional
+  registerBehaviors,
+
+  // Route documentation for /docs
+  routeDocs: {
+    "POST /": {
+      summary: "Create an item",
+      body: {
+        name: { type: "string", required: true, description: "Item name" },
+      },
+      response: "{ id, name, createdAt }",
+    },
+    "GET /": {
+      summary: "List all items",
+      response: "{ items: Item[], count }",
+    },
+  },
 
   // Optional: init hook for cross-module wiring
   init(ctx) {
-    // Subscribe to events from other modules
     ctx.events.on("board:task_created", (data) => {
-      // react to board changes
+      // react to events from other modules
     });
-
-    // Access another module's store directly (server-side only)
-    const feedStore = ctx.getStore("feed");
   },
 
-  // Optional: dependency ordering
-  dependencies: ["feed"],            // This module loads after "feed"
-
-  // Optional: widget contribution (shown in agent status bar)
-  widget: {
-    async getLines(client) {
-      try {
-        const res = await client.api("GET", "/your-service/stats");
-        return [`YourService: ${res.count} items`];
-      } catch { return []; }
-    },
-  },
+  // Optional
+  dependencies: ["feed"],            // Load after "feed"
+  requiresAuth: true,                // Default — set false for public endpoints
 };
 
 export default yourService;
 ```
 
-### 7. Test it
+### 8. Test it
 
-Start the server — your module should appear automatically:
-
-```bash
-bun run src/main.ts
-```
-
-Check the health endpoint:
+**No restart needed** — use the services manager:
 
 ```bash
+# Hot-load your new module
+curl -X POST http://localhost:3000/services/reload/your-service \
+  -H "Authorization: Bearer $VERS_AUTH_TOKEN"
+
+# Check it's loaded
 curl http://localhost:3000/health
-# Your service should be in the services list
-```
 
-Test your routes directly:
+# Check the auto-generated docs
+curl http://localhost:3000/docs/your-service
 
-```bash
-# Create
+# Test your routes
 curl -X POST http://localhost:3000/your-service \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"field": "value"}'
+  -d '{"name": "test"}'
 
-# List
 curl http://localhost:3000/your-service \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN"
 ```
+
+After making changes, reload without restarting:
+
+```bash
+curl -X POST http://localhost:3000/services/reload/your-service \
+  -H "Authorization: Bearer $VERS_AUTH_TOKEN"
+```
+
+## Error Handling
+
+The server is designed to be resilient to bad modules:
+
+- **Import errors** (syntax, missing deps): Module is skipped at startup, others keep loading
+- **`init()` throws**: Module is skipped and removed from the registry, others keep running
+- **Route handler throws**: Returns `500 { error: "internal service error" }` — doesn't crash the server
+- **`loadModule()` fails at runtime**: Rolled back — module is not left in a half-initialized state
+
+Your module should still handle errors properly:
+- Return appropriate HTTP status codes (400, 404, 409, etc.)
+- Wrap behaviors in try/catch (never crash the agent)
+- Check `client.getBaseUrl()` before making API calls in tools
 
 ## ServiceModule Interface Reference
 
 ```ts
 interface ServiceModule {
   name: string;                    // Route prefix, must be unique
-  description?: string;            // Shown in server startup log
+  description?: string;            // Shown in server startup log and docs
 
   // Server side
   routes?: Hono;                   // Mounted at /{name}/*
@@ -367,8 +436,25 @@ interface ServiceModule {
   registerBehaviors?(pi, client): void;
   widget?: { getLines(client): Promise<string[]> };
 
+  // Documentation
+  routeDocs?: Record<string, RouteDocs>;  // "METHOD /path" → docs
+
   // Metadata
   dependencies?: string[];         // Load after these modules
+}
+
+interface RouteDocs {
+  summary: string;
+  detail?: string;
+  params?: Record<string, ParamDoc>;   // Query/path parameters
+  body?: Record<string, ParamDoc>;     // Request body fields
+  response?: string;                    // Response shape description
+}
+
+interface ParamDoc {
+  type: string;
+  required?: boolean;
+  description: string;
 }
 ```
 
@@ -404,20 +490,15 @@ const serverOnly: ServiceModule = {
 export default serverOnly;
 ```
 
-### Using enums in tool parameters
+### Installing from another reef instance
 
-```ts
-import { StringEnum } from "@mariozechner/pi-ai";
+If another reef instance has a service you want:
 
-const STATUS = StringEnum(
-  ["active", "paused", "archived"] as const,
-  { description: "Item status" },
-);
-
-// In tool parameters:
-parameters: Type.Object({
-  status: Type.Optional(STATUS),
-})
+```bash
+curl -X POST http://localhost:3000/installer/install \
+  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"from": "http://other-reef:3000", "name": "their-service", "token": "their-token"}'
 ```
 
 ## Checklist
@@ -427,11 +508,13 @@ Before considering the service done:
 - [ ] `index.ts` default-exports a `ServiceModule`
 - [ ] `name` is unique across all services
 - [ ] Store handles missing `data/` directory (creates it)
-- [ ] Routes return proper HTTP status codes (201 for create, 400 for validation, 404 for not found)
+- [ ] Routes return proper HTTP status codes (201, 400, 404)
+- [ ] `routeDocs` added for all routes
 - [ ] Tools are prefixed with the service name (`servicename_verb`)
 - [ ] Tool descriptions explain *when* to use them
 - [ ] Every tool checks `client.getBaseUrl()` before making API calls
 - [ ] Behaviors are wrapped in try/catch
 - [ ] Behaviors clean up timers on `session_shutdown`
-- [ ] Server starts and shows the new service in `/health`
+- [ ] Hot-loads via `POST /services/reload/your-service`
 - [ ] Routes work via curl
+- [ ] Shows up in `GET /docs/your-service`

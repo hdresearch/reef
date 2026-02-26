@@ -70,7 +70,7 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
         name: data.label,
         role: data.role || "worker",
         address: data.address,
-        registeredBy: "fleet-services",
+        registeredBy: "reef",
         metadata: {
           agentId: data.label,
           commitId: data.commitId,
@@ -103,7 +103,7 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
         name: data.name,
         role: data.role || "lieutenant",
         address: data.address,
-        registeredBy: "fleet-services",
+        registeredBy: "reef",
         metadata: {
           agentId: data.name,
           role: data.ltRole,

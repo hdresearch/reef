@@ -243,7 +243,7 @@ export async function startServer(options: ServerOptions = {}) {
     hostname: "::",
   });
 
-  console.log(`\n  fleet-services running on :${port}\n`);
+  console.log(`\n  reef running on :${port}\n`);
 
   async function shutdown() {
     console.log("\n  shutting down...");

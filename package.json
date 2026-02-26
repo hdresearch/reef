@@ -1,7 +1,7 @@
 {
-  "name": "vers-fleet-services",
+  "name": "reef",
   "version": "0.1.0",
-  "description": "Plugin-based coordination services for Vers agent fleets",
+  "description": "Self-improving fleet infrastructure — the minimum kernel agents need to build their own tools",
   "type": "module",
   "scripts": {
     "dev": "bun --watch run src/main.ts",

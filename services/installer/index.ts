@@ -1,6 +1,6 @@
 /**
  * Installer service module — install, update, and remove service modules
- * from git repos, local paths, or other fleet-services instances.
+ * from git repos, local paths, or other reef instances.
  *
  *   POST   /installer/install   — install a service from a source
  *   POST   /installer/update    — pull latest and reload
@@ -539,10 +539,10 @@ const installer: ServiceModule = {
   routeDocs: {
     "POST /install": {
       summary: "Install a service module from a source",
-      detail: "Three modes: git clone (source), local symlink (source), or pull from another fleet-services instance (from + name). Installs dependencies and hot-loads the module.",
+      detail: "Three modes: git clone (source), local symlink (source), or pull from another reef instance (from + name). Installs dependencies and hot-loads the module.",
       body: {
         source: { type: "string", required: false, description: "Git URL, local path, or user/repo shorthand. Append @ref to pin." },
-        from: { type: "string", required: false, description: "Base URL of another fleet-services instance (e.g. http://host:3000)" },
+        from: { type: "string", required: false, description: "Base URL of another reef instance (e.g. http://host:3000)" },
         name: { type: "string", required: false, description: "Service name to pull (required with 'from')" },
         token: { type: "string", required: false, description: "Auth token for the remote instance (if needed)" },
       },

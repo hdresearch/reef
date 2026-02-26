@@ -1,5 +1,5 @@
 /**
- * Core types for the fleet services plugin system.
+ * Core types for the reef plugin system.
  *
  * A ServiceModule is the fundamental unit — it declares both server-side
  * routes and client-side pi extension behavior in one place.

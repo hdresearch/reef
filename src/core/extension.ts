@@ -46,7 +46,7 @@ export function createExtension(modules: ServiceModule[]) {
       }
 
       if (allLines.length > 1) {
-        ctx.ui.setWidget("fleet-services", allLines);
+        ctx.ui.setWidget("reef", allLines);
       }
     }
 
