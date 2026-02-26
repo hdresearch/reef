@@ -824,7 +824,7 @@ export default {
       body: {},
     });
     expect(status).toBe(400);
-    expect(data.error).toContain("source is required");
+    expect(data.error).toContain("required");
   });
 
   test("POST /installer/remove unloads and deletes", async () => {
@@ -1072,6 +1072,189 @@ export default { name: "updatable-svc", routes, requiresAuth: false };
     });
     expect(status).toBe(400);
     expect(data.error).toContain("local link");
+  });
+});
+
+describe("fleet-to-fleet install", () => {
+  const SOURCE_DIR = join(import.meta.dir, ".tmp-source-services");
+  const DEST_DIR = join(import.meta.dir, ".tmp-dest-services");
+  let sourceServer: ReturnType<typeof Bun.serve> | undefined;
+
+  /** Write the services manager + a test service into the source dir */
+  function setupSourceServer() {
+    mkdirSync(SOURCE_DIR, { recursive: true });
+
+    // Copy the services manager module (needed for /services/export/:name)
+    const managerSrc = join(import.meta.dir, "..", "services", "services");
+    const managerDst = join(SOURCE_DIR, "services");
+    mkdirSync(managerDst, { recursive: true });
+    const managerContent = readFileSync(join(managerSrc, "index.ts"), "utf-8")
+      .replace('"../src/core/types.js"', `"${join(import.meta.dir, "..", "src", "core", "types.js")}"`);
+    writeFileSync(join(managerDst, "index.ts"), managerContent);
+
+    // Write a service to export
+    const svcDir = join(SOURCE_DIR, "exportable");
+    mkdirSync(svcDir, { recursive: true });
+    writeFileSync(join(svcDir, "index.ts"), `
+import { Hono } from "hono";
+const routes = new Hono();
+routes.get("/", (c) => c.json({ pulled: true, origin: "source" }));
+export default {
+  name: "exportable",
+  description: "A service that can be exported",
+  routes,
+  requiresAuth: false,
+};
+`);
+    // Add an extra file to make sure multi-file services transfer
+    writeFileSync(join(svcDir, "helpers.ts"), `export const VERSION = 1;`);
+  }
+
+  async function setupDestServer() {
+    mkdirSync(DEST_DIR, { recursive: true });
+
+    // Copy the installer module
+    const installerSrc = join(import.meta.dir, "..", "services", "installer");
+    const installerDst = join(DEST_DIR, "installer");
+    mkdirSync(installerDst, { recursive: true });
+    const installerContent = readFileSync(join(installerSrc, "index.ts"), "utf-8")
+      .replace('"../src/core/types.js"', `"${join(import.meta.dir, "..", "src", "core", "types.js")}"`);
+    writeFileSync(join(installerDst, "index.ts"), installerContent);
+
+    return createServer({ servicesDir: DEST_DIR });
+  }
+
+  beforeEach(() => {
+    rmSync(SOURCE_DIR, { recursive: true, force: true });
+    rmSync(DEST_DIR, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    sourceServer?.stop();
+    sourceServer = undefined;
+    rmSync(SOURCE_DIR, { recursive: true, force: true });
+    rmSync(DEST_DIR, { recursive: true, force: true });
+  });
+
+  test("install a service from another instance", async () => {
+    setupSourceServer();
+
+    // Start source server on a real port
+    const source = await createServer({ servicesDir: SOURCE_DIR });
+    sourceServer = Bun.serve({
+      fetch: source.app.fetch,
+      port: 0, // random available port
+    });
+    const sourceUrl = `http://localhost:${sourceServer.port}`;
+
+    // Verify source has the export endpoint
+    const exportCheck = await fetch(`${sourceUrl}/services/export/exportable`, {
+      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+    });
+    expect(exportCheck.status).toBe(200);
+    expect(exportCheck.headers.get("Content-Type")).toBe("application/gzip");
+
+    // Set up destination server
+    const { app } = await setupDestServer();
+
+    // Install from the source
+    const install = await json(app, "/installer/install", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { from: sourceUrl, name: "exportable", token: AUTH_TOKEN },
+    });
+    expect(install.status).toBe(201);
+    expect(install.data.type).toBe("fleet");
+    expect(install.data.from).toBe(sourceUrl);
+    expect(install.data.name).toBe("exportable");
+
+    // Service is live on the destination
+    const { status, data } = await json(app, "/exportable");
+    expect(status).toBe(200);
+    expect(data.pulled).toBe(true);
+    expect(data.origin).toBe("source");
+
+    // Multi-file transfer worked
+    expect(existsSync(join(DEST_DIR, "exportable", "helpers.ts"))).toBe(true);
+
+    // Shows up in the installed list as fleet type
+    const installed = await json(app, "/installer/installed", { auth: AUTH_TOKEN });
+    const entry = installed.data.installed.find((e: any) => e.dirName === "exportable");
+    expect(entry.type).toBe("fleet");
+    expect(entry.source).toBe(`${sourceUrl}#exportable`);
+  });
+
+  test("from requires name", async () => {
+    const { app } = await setupDestServer();
+
+    const { status, data } = await json(app, "/installer/install", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { from: "http://localhost:9999" },
+    });
+    expect(status).toBe(400);
+    expect(data.error).toContain("name");
+  });
+
+  test("fails gracefully when remote is unreachable", async () => {
+    const { app } = await setupDestServer();
+
+    const { status, data } = await json(app, "/installer/install", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { from: "http://localhost:19999", name: "nope" },
+    });
+    expect(status).toBe(400);
+    expect(data.error).toBeDefined();
+  });
+
+  test("fails gracefully when remote service doesn't exist", async () => {
+    setupSourceServer();
+
+    const source = await createServer({ servicesDir: SOURCE_DIR });
+    sourceServer = Bun.serve({
+      fetch: source.app.fetch,
+      port: 0,
+    });
+    const sourceUrl = `http://localhost:${sourceServer.port}`;
+
+    const { app } = await setupDestServer();
+
+    const { status, data } = await json(app, "/installer/install", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { from: sourceUrl, name: "nonexistent", token: AUTH_TOKEN },
+    });
+    expect(status).toBe(400);
+    expect(data.error).toContain("404");
+  });
+
+  test("update re-pulls from the same remote", async () => {
+    setupSourceServer();
+
+    const source = await createServer({ servicesDir: SOURCE_DIR });
+    sourceServer = Bun.serve({
+      fetch: source.app.fetch,
+      port: 0,
+    });
+    const sourceUrl = `http://localhost:${sourceServer.port}`;
+
+    const { app } = await setupDestServer();
+
+    // Install
+    await json(app, "/installer/install", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { from: sourceUrl, name: "exportable", token: AUTH_TOKEN },
+    });
+
+    // Update (needs token for the remote)
+    const update = await json(app, "/installer/update", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { name: "exportable", token: AUTH_TOKEN },
+    });
+    expect(update.data.action).toBe("updated");
   });
 });
 

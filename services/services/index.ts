@@ -100,6 +100,40 @@ routes.post("/reload/:name", async (c) => {
   }
 });
 
+// Export a module as a tarball
+routes.get("/export/:name", async (c) => {
+  const name = c.req.param("name");
+  const mod = ctx.getModule(name);
+
+  if (!mod) {
+    return c.json({ error: `Module "${name}" not found` }, 404);
+  }
+
+  const dirPath = join(ctx.servicesDir, name);
+  if (!existsSync(dirPath)) {
+    return c.json({ error: `Service directory "${name}" not found on disk` }, 404);
+  }
+
+  try {
+    const { execSync } = await import("node:child_process");
+    const tarball = execSync(`tar -czf - -C "${ctx.servicesDir}" "${name}"`, {
+      maxBuffer: 50 * 1024 * 1024, // 50MB
+    });
+
+    return new Response(tarball, {
+      headers: {
+        "Content-Type": "application/gzip",
+        "Content-Disposition": `attachment; filename="${name}.tar.gz"`,
+        "X-Service-Name": mod.name,
+        "X-Service-Description": mod.description || "",
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: `Failed to export: ${msg}` }, 500);
+  }
+});
+
 // Unload a module
 routes.delete("/:name", async (c) => {
   const name = c.req.param("name");

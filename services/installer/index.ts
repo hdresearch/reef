@@ -1,6 +1,6 @@
 /**
  * Installer service module — install, update, and remove service modules
- * from git repos or local paths.
+ * from git repos, local paths, or other fleet-services instances.
  *
  *   POST   /installer/install   — install a service from a source
  *   POST   /installer/update    — pull latest and reload
@@ -8,11 +8,12 @@
  *   GET    /installer/installed — list installed packages with source info
  *
  * Sources:
- *   https://github.com/user/repo          — clone via git
- *   git@github.com:user/repo              — clone via SSH
- *   /absolute/path/to/service             — symlink a local directory
+ *   { source: "https://github.com/user/repo" }     — clone via git
+ *   { source: "git@github.com:user/repo" }         — clone via SSH
+ *   { source: "/absolute/path/to/service" }        — symlink a local directory
+ *   { from: "http://host:3000", name: "feed" }     — pull from another instance
  *
- * Installed services are tracked in data/installer.json so we know
+ * Installed services are tracked in .installer.json so we know
  * which services came from external sources vs. built-in.
  */
 
@@ -39,10 +40,10 @@ let ctx: ServiceContext;
 interface InstalledEntry {
   /** Directory name under services/ */
   dirName: string;
-  /** Original source (git URL or local path) */
+  /** Original source (git URL, local path, or fleet base URL) */
   source: string;
   /** How it was installed */
-  type: "git" | "local";
+  type: "git" | "local" | "fleet";
   /** When it was installed */
   installedAt: string;
   /** Git ref if pinned */
@@ -225,6 +226,65 @@ function installFromLocal(
   return targetDir;
 }
 
+async function installFromFleet(
+  baseUrl: string,
+  serviceName: string,
+  servicesDir: string,
+  authToken?: string,
+): Promise<string> {
+  const targetDir = join(servicesDir, serviceName);
+
+  if (existsSync(targetDir)) {
+    throw new Error(
+      `Directory "${serviceName}" already exists. Remove first.`,
+    );
+  }
+
+  // Fetch the tarball from the remote instance's export endpoint
+  const exportUrl = `${baseUrl.replace(/\/$/, "")}/services/export/${serviceName}`;
+  const headers: Record<string, string> = {};
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+
+  const response = await fetch(exportUrl, { headers });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(
+      `Failed to fetch "${serviceName}" from ${baseUrl}: ${response.status} ${body}`,
+    );
+  }
+
+  // Write tarball to a temp file and extract
+  const tarball = await response.arrayBuffer();
+  const tmpTar = join(servicesDir, `.${serviceName}.tar.gz`);
+
+  try {
+    writeFileSync(tmpTar, Buffer.from(tarball));
+    mkdirSync(targetDir, { recursive: true });
+    exec(`tar -xzf "${tmpTar}" -C "${servicesDir}"`);
+  } finally {
+    if (existsSync(tmpTar)) rmSync(tmpTar);
+  }
+
+  // Verify extraction worked
+  if (!existsSync(join(targetDir, "index.ts"))) {
+    rmSync(targetDir, { recursive: true, force: true });
+    throw new Error(
+      `Extracted tarball for "${serviceName}" has no index.ts`,
+    );
+  }
+
+  // Install dependencies if needed
+  if (existsSync(join(targetDir, "package.json"))) {
+    const hasBun = (() => {
+      try { exec("bun --version"); return true; } catch { return false; }
+    })();
+    exec(hasBun ? "bun install" : "npm install", targetDir);
+  }
+
+  return targetDir;
+}
+
 async function updateGit(entry: InstalledEntry, servicesDir: string): Promise<void> {
   const targetDir = join(servicesDir, entry.dirName);
 
@@ -256,17 +316,63 @@ const routes = new Hono();
 
 routes.post("/install", async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const source = body.source as string;
+  const source = (body.source as string)?.trim();
+  const from = (body.from as string)?.trim();
+  const name = (body.name as string)?.trim();
+  const token = (body.token as string)?.trim();
 
-  if (!source?.trim()) {
-    return c.json({ error: "source is required" }, 400);
+  // Fleet install: { from: "http://host:3000", name: "feed" }
+  if (from) {
+    if (!name) {
+      return c.json({ error: '"name" is required when using "from"' }, 400);
+    }
+
+    try {
+      const registry = loadRegistry();
+
+      if (findEntry(registry, name)) {
+        return c.json(
+          { error: `"${name}" is already installed. Use update or remove first.` },
+          409,
+        );
+      }
+
+      await installFromFleet(from, name, ctx.servicesDir, token);
+      console.log(`  [install] Pulled ${name} from ${from} → services/${name}`);
+
+      registry.push({
+        dirName: name,
+        source: `${from}#${name}`,
+        type: "fleet",
+        installedAt: new Date().toISOString(),
+      });
+      saveRegistry(registry);
+
+      const result = await ctx.loadModule(name);
+      console.log(`  [install] /${result.name} — loaded`);
+
+      return c.json({
+        name: result.name,
+        dirName: name,
+        from,
+        type: "fleet",
+        action: "installed",
+      }, 201);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ error: msg }, 400);
+    }
+  }
+
+  // Git / local install: { source: "..." }
+  if (!source) {
+    return c.json({ error: '"source" or "from"+"name" is required' }, 400);
   }
 
   try {
-    const parsed = parseSource(source.trim());
+    const parsed = parseSource(source);
     const registry = loadRegistry();
 
-    // Check if already installed
     if (findEntry(registry, parsed.dirName)) {
       return c.json(
         { error: `"${parsed.dirName}" is already installed. Use update or remove first.` },
@@ -276,7 +382,6 @@ routes.post("/install", async (c) => {
 
     const servicesDir = ctx.servicesDir;
 
-    // Install
     if (parsed.type === "git") {
       await installFromGit(parsed, servicesDir);
       console.log(`  [install] Cloned ${parsed.url} → services/${parsed.dirName}`);
@@ -288,7 +393,6 @@ routes.post("/install", async (c) => {
     // Verify it has an index.ts
     const indexPath = join(servicesDir, parsed.dirName, "index.ts");
     if (!existsSync(indexPath)) {
-      // Clean up
       rmSync(join(servicesDir, parsed.dirName), { recursive: true, force: true });
       return c.json(
         { error: `No index.ts found in ${parsed.dirName}. Not a valid service module.` },
@@ -296,24 +400,22 @@ routes.post("/install", async (c) => {
       );
     }
 
-    // Register in our tracking file
     registry.push({
       dirName: parsed.dirName,
-      source: source.trim(),
+      source,
       type: parsed.type,
       installedAt: new Date().toISOString(),
       ref: parsed.ref,
     });
     saveRegistry(registry);
 
-    // Load the module
     const result = await ctx.loadModule(parsed.dirName);
     console.log(`  [install] /${result.name} — loaded`);
 
     return c.json({
       name: result.name,
       dirName: parsed.dirName,
-      source: source.trim(),
+      source,
       type: parsed.type,
       action: "installed",
     }, 201);
@@ -326,6 +428,7 @@ routes.post("/install", async (c) => {
 routes.post("/update", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const name = (body.name as string)?.trim();
+  const token = (body.token as string)?.trim();
 
   if (!name) {
     return c.json({ error: "name is required (dirName or source)" }, 400);
@@ -339,12 +442,21 @@ routes.post("/update", async (c) => {
       return c.json({ error: `"${name}" is not installed via the installer` }, 404);
     }
 
-    if (entry.type !== "git") {
+    if (entry.type === "local") {
       return c.json({ error: `"${entry.dirName}" is a local link — updates are automatic` }, 400);
     }
 
-    await updateGit(entry, ctx.servicesDir);
-    console.log(`  [update] services/${entry.dirName} — pulled latest`);
+    if (entry.type === "fleet") {
+      // Re-pull from the same remote instance
+      const [baseUrl, serviceName] = entry.source.split("#");
+      const targetDir = join(ctx.servicesDir, entry.dirName);
+      if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
+      await installFromFleet(baseUrl, serviceName, ctx.servicesDir, token);
+      console.log(`  [update] services/${entry.dirName} — re-pulled from ${baseUrl}`);
+    } else {
+      await updateGit(entry, ctx.servicesDir);
+      console.log(`  [update] services/${entry.dirName} — pulled latest`);
+    }
 
     // Reload the module
     const result = await ctx.loadModule(entry.dirName);
@@ -427,11 +539,14 @@ const installer: ServiceModule = {
   routeDocs: {
     "POST /install": {
       summary: "Install a service module from a source",
-      detail: "Clones git repos or symlinks local paths into the services directory, installs dependencies, and hot-loads the module.",
+      detail: "Three modes: git clone (source), local symlink (source), or pull from another fleet-services instance (from + name). Installs dependencies and hot-loads the module.",
       body: {
-        source: { type: "string", required: true, description: "Git URL (https or SSH) or local path. Append @ref to pin a version." },
+        source: { type: "string", required: false, description: "Git URL, local path, or user/repo shorthand. Append @ref to pin." },
+        from: { type: "string", required: false, description: "Base URL of another fleet-services instance (e.g. http://host:3000)" },
+        name: { type: "string", required: false, description: "Service name to pull (required with 'from')" },
+        token: { type: "string", required: false, description: "Auth token for the remote instance (if needed)" },
       },
-      response: "{ name, dirName, source, type, action: 'installed' }",
+      response: "{ name, dirName, source|from, type, action: 'installed' }",
     },
     "POST /update": {
       summary: "Pull latest from git and reload",
