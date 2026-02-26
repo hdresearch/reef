@@ -12,14 +12,18 @@
  * so init() hooks can safely reference stores from upstream modules.
  */
 
-import { readdirSync, existsSync, statSync } from "node:fs";
+import { readdirSync, existsSync, watch } from "node:fs";
 import { join, resolve } from "node:path";
-import type { ServiceModule } from "./types.js";
+import type { ServiceModule, ServiceContext } from "./types.js";
+
+// =============================================================================
+// Initial discovery
+// =============================================================================
 
 /**
  * Discover and load all service modules from a directory.
  *
- * @param servicesDir - Path to the services directory (e.g. "./src/services")
+ * @param servicesDir - Path to the services directory (e.g. "./services")
  * @returns Topologically sorted array of ServiceModules
  */
 export async function discoverServiceModules(
@@ -79,6 +83,91 @@ export function filterClientModules(modules: ServiceModule[]): ServiceModule[] {
   return modules.filter(
     (m) => m.registerTools || m.registerBehaviors || m.widget,
   );
+}
+
+// =============================================================================
+// Single-module loading (used by watcher and reload endpoints)
+// =============================================================================
+
+/**
+ * Load a single service module from a directory.
+ * Uses cache-busting so re-imports pick up changes.
+ */
+export async function loadServiceModule(
+  dirPath: string,
+): Promise<ServiceModule> {
+  const indexPath = join(dirPath, "index.ts");
+
+  if (!existsSync(indexPath)) {
+    throw new Error(`No index.ts found in ${dirPath}`);
+  }
+
+  // Cache-bust so Bun re-imports the module on reload
+  const mod = await import(`${indexPath}?t=${Date.now()}`);
+  const serviceModule: ServiceModule = mod.default;
+
+  if (!serviceModule?.name) {
+    throw new Error(`No valid default export in ${indexPath}`);
+  }
+
+  return serviceModule;
+}
+
+// =============================================================================
+// Watcher — auto-detect new service directories (adds only)
+// =============================================================================
+
+export interface WatcherOptions {
+  servicesDir: string;
+  liveModules: Map<string, ServiceModule>;
+  onNewDir: (dirName: string) => void;
+}
+
+/**
+ * Watch the services directory for new subdirectories.
+ * Only handles additions — updates and removes are explicit via /services endpoints.
+ * Calls onNewDir when a directory appears that isn't already loaded.
+ *
+ * Returns a function to stop watching.
+ */
+export function watchForNewServices(options: WatcherOptions): () => void {
+  const { servicesDir, liveModules, onNewDir } = options;
+  const resolved = resolve(servicesDir);
+
+  // Track known directories so we only fire for genuinely new ones
+  const knownDirs = new Set<string>();
+  if (existsSync(resolved)) {
+    for (const entry of readdirSync(resolved, { withFileTypes: true })) {
+      if (entry.isDirectory()) knownDirs.add(entry.name);
+    }
+  }
+
+  let debounce: ReturnType<typeof setTimeout> | null = null;
+
+  const watcher = watch(resolved, { persistent: false }, () => {
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(() => scan(), 500);
+  });
+
+  function scan() {
+    if (!existsSync(resolved)) return;
+
+    for (const entry of readdirSync(resolved, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (knownDirs.has(entry.name)) continue;
+
+      const indexPath = join(resolved, entry.name, "index.ts");
+      if (!existsSync(indexPath)) continue;
+
+      knownDirs.add(entry.name);
+      onNewDir(entry.name);
+    }
+  }
+
+  return () => {
+    watcher.close();
+    if (debounce) clearTimeout(debounce);
+  };
 }
 
 // =============================================================================

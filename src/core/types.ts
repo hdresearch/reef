@@ -73,6 +73,24 @@ export interface ServiceContext {
 
   /** Get another module's store by service name. Returns undefined if not found. */
   getStore<T = unknown>(serviceName: string): T | undefined;
+
+  /** All currently loaded modules (read-only view). */
+  getModules(): ServiceModule[];
+
+  /** Get a loaded module by name. */
+  getModule(name: string): ServiceModule | undefined;
+
+  /**
+   * Load or reload a module from a directory under the services dir.
+   * Returns the module name and whether it was added or updated.
+   */
+  loadModule(dirName: string): Promise<{ name: string; action: "added" | "updated" }>;
+
+  /** Unload a module by name. Flushes and closes its store. */
+  unloadModule(name: string): Promise<void>;
+
+  /** The resolved services directory path. */
+  servicesDir: string;
 }
 
 // =============================================================================
