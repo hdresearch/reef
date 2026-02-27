@@ -10,7 +10,11 @@
   },
   "keywords": ["pi-package"],
   "pi": {
-    "extensions": ["./src/extension.ts"],
+    "extensions": [
+      "./src/extension.ts",
+      "./extensions/vers-vm.ts",
+      "./extensions/vers-vm-copy.ts"
+    ],
     "skills": ["./skills"]
   },
   "dependencies": {
