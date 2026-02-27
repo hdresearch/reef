@@ -336,7 +336,7 @@ function renderParamTable(
         : "";
       return `<div class="param-row">
         <span class="param-name">${esc(name)}${req}</span>
-        <span class="param-type">${esc(p.type)}</span>
+        <span class="param-type">${esc(p.type ?? "")}</span>
         <span class="param-desc">${esc(p.description ?? "")}</span>
       </div>`;
     })
