@@ -197,20 +197,59 @@ describe("services manager module", () => {
     // Has the right shape
     expect(data.services).toBeDefined();
     expect(data.routes).toBeDefined();
+    expect(data.substrate).toBeDefined();
     expect(data.count).toBeGreaterThanOrEqual(2); // services manager + test service
     expect(Array.isArray(data.services)).toBe(true);
     expect(Array.isArray(data.routes)).toBe(true);
 
+    // Substrate capabilities — base set always present
+    const caps = data.substrate.capabilities;
+    expect(caps).toContain("hosting.web");
+    expect(caps).toContain("state.persist");
+    expect(caps).toContain("event.trigger");
+
     // Services manager appears with its own routeDocs
     const mgr = data.services.find((s: any) => s.name === "services");
     expect(mgr).toBeDefined();
-    expect(mgr.capabilities).toContain("routes");
+    expect(mgr.features).toContain("routes");
     expect(mgr.routes).toBeDefined();
     expect(mgr.routes["GET /manifest"]).toBeDefined();
 
     // Test service appears
     const testSvc = data.services.find((s: any) => s.name === "mgr-manifest-test");
     expect(testSvc).toBeDefined();
+  });
+
+  test("manifest includes service-contributed capabilities", async () => {
+    // Write a service that declares seed capabilities
+    const dir = join(TEST_DIR, "mgr-cap-provider");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "index.ts"),
+      `
+import { Hono } from "hono";
+const routes = new Hono();
+routes.get("/", (c) => c.json({ ok: true }));
+export default {
+  name: "mgr-cap-provider",
+  routes,
+  requiresAuth: false,
+  capabilities: ["agent.spawn", "agent.lifecycle"],
+};
+`,
+    );
+
+    const { app } = await createWithManager();
+
+    const { data } = await json(app, "/services/manifest", { auth: AUTH_TOKEN });
+
+    // Service-contributed capabilities appear in substrate
+    expect(data.substrate.capabilities).toContain("agent.spawn");
+    expect(data.substrate.capabilities).toContain("agent.lifecycle");
+
+    // And in the service's own entry
+    const svc = data.services.find((s: any) => s.name === "mgr-cap-provider");
+    expect(svc.provides).toEqual(["agent.spawn", "agent.lifecycle"]);
   });
 
   test("management endpoints require auth", async () => {

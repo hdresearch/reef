@@ -144,6 +144,19 @@ export interface ServiceModule {
   dependencies?: string[];
 
   /**
+   * Seed capabilities this module provides to the substrate.
+   * Uses the capability taxonomy from the Seed Specification (§4).
+   *
+   * When a module is loaded, its capabilities are aggregated into the
+   * manifest's substrate declaration. Agents checking whether a seed
+   * can germinate here inspect this.
+   *
+   * @example
+   * capabilities: ["agent.spawn", "agent.communicate", "agent.lifecycle"]
+   */
+  capabilities?: string[];
+
+  /**
    * Route documentation. Keyed by "METHOD /path" (path relative to module root).
    * Used by the docs service to generate API documentation.
    *

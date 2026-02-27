@@ -460,6 +460,16 @@ const agent: ServiceModule = {
       response: "{ id, status: 'closed' }",
     },
   },
+
+  // Seed capabilities this service provides to the substrate
+  capabilities: [
+    "agent.spawn",              // POST /agent/tasks spawns pi processes
+    "agent.spawn.concurrent",   // multiple tasks can run simultaneously
+    "agent.communicate",        // POST /agent/sessions/:id/message
+    "agent.communicate.streaming", // GET /agent/sessions/:id/events (SSE)
+    "agent.communicate.bidirectional", // send messages to running sessions
+    "agent.lifecycle",          // list, cancel, abort, delete
+  ],
 };
 
 export default agent;

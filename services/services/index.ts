@@ -39,6 +39,42 @@ routes.get("/", (c) => {
 routes.get("/manifest", (c) => {
   const modules = ctx.getModules();
 
+  // =========================================================================
+  // Substrate capabilities (seed taxonomy §4)
+  // =========================================================================
+
+  // Base: reef always provides these
+  const capabilities = new Set([
+    "hosting.web",      // Hono HTTP server
+    "state.persist",    // services can persist data to disk
+    "event.trigger",    // ServiceEventBus
+  ]);
+
+  // Environment-detected
+  if (process.env.VERS_API_URL || process.env.VERS_VM_ID) {
+    capabilities.add("state.snapshot");
+    capabilities.add("state.snapshot.fast");
+    capabilities.add("state.branch");
+    capabilities.add("state.branch.fast");
+  }
+  if (process.env.VERS_PUBLIC_URL) {
+    capabilities.add("hosting.web.public");
+    capabilities.add("hosting.dns");
+  }
+
+  // Service-contributed: each module declares what it adds
+  for (const m of modules) {
+    if (m.capabilities) {
+      for (const cap of m.capabilities) {
+        capabilities.add(cap);
+      }
+    }
+  }
+
+  // =========================================================================
+  // Per-service entries
+  // =========================================================================
+
   const services = modules.map((m) => {
     const entry: Record<string, unknown> = {
       name: m.name,
@@ -62,22 +98,30 @@ routes.get("/manifest", (c) => {
       );
     }
 
-    // Capabilities
-    const capabilities: string[] = [];
-    if (m.routes) capabilities.push("routes");
-    if (m.registerTools) capabilities.push("tools");
-    if (m.registerBehaviors) capabilities.push("behaviors");
-    if (m.widget) capabilities.push("widget");
+    // Module-level features (what this service offers reef)
+    const features: string[] = [];
+    if (m.routes) features.push("routes");
+    if (m.registerTools) features.push("tools");
+    if (m.registerBehaviors) features.push("behaviors");
+    if (m.widget) features.push("widget");
     if (m.routeDocs) {
       const hasPanel = Object.keys(m.routeDocs).some((k) => k.includes("/_panel"));
-      if (hasPanel) capabilities.push("panel");
+      if (hasPanel) features.push("panel");
     }
-    entry.capabilities = capabilities;
+    entry.features = features;
+
+    // Seed capabilities this service provides
+    if (m.capabilities?.length) {
+      entry.provides = m.capabilities;
+    }
 
     return entry;
   });
 
-  // Flatten all documented routes across services
+  // =========================================================================
+  // Flat route index
+  // =========================================================================
+
   const allRoutes: Array<{ service: string; method: string; path: string; description: string | null }> = [];
   for (const m of modules) {
     if (!m.routeDocs) continue;
@@ -93,17 +137,16 @@ routes.get("/manifest", (c) => {
     }
   }
 
-  // Collect all event names from behaviors (convention: "service:event_name")
-  // We can't introspect these automatically, but we document the known pattern
-  const events = modules
-    .filter((m) => m.registerBehaviors)
-    .map((m) => m.name);
-
   return c.json({
+    // Substrate: what this reef instance can do (seed capability taxonomy)
+    substrate: {
+      capabilities: [...capabilities].sort(),
+    },
+    // Services: what's loaded and what each one offers
     services,
     routes: allRoutes,
     servicesWithTools: modules.filter((m) => m.registerTools).map((m) => m.name),
-    servicesWithBehaviors: events,
+    servicesWithBehaviors: modules.filter((m) => m.registerBehaviors).map((m) => m.name),
     servicesWithPanels: modules
       .filter((m) => m.routeDocs && Object.keys(m.routeDocs).some((k) => k.includes("/_panel")))
       .map((m) => m.name),
@@ -239,8 +282,8 @@ const services: ServiceModule = {
       response: "{ modules: [{ name, description, hasRoutes, hasTools, ... }], count }",
     },
     "GET /manifest": {
-      summary: "Machine-readable manifest of all services, routes, tools, and capabilities. Designed for agents to discover what reef can do.",
-      response: "{ services, routes, servicesWithTools, servicesWithBehaviors, servicesWithPanels, count }",
+      summary: "Machine-readable manifest of all services, routes, tools, and substrate capabilities. Designed for agents to discover what reef can do and whether a seed can germinate here.",
+      response: "{ substrate: { capabilities }, services: [{ name, description, features, provides?, routes? }], routes, servicesWithTools, servicesWithBehaviors, servicesWithPanels, count }",
     },
     "POST /reload": {
       summary: "Re-scan services directory — load new, update changed, remove deleted",
