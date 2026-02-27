@@ -1,6 +1,6 @@
 {
   "name": "@versdotsh/reef",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Self-improving fleet infrastructure — the minimum kernel agents need to build their own tools",
   "type": "module",
   "scripts": {

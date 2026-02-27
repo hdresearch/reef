@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.0
+
+- **Scaffold service** (`examples/services/scaffold/`) — generate structurally correct service module skeletons
+  - `POST /scaffold/preview` — generate files, return without writing
+  - `POST /scaffold/create` — generate, write to disk, optionally hot-load
+  - Generates index.ts, store.ts, routes.ts, tools.ts, behaviors.ts, panel HTML, test file
+- **Deploy endpoint** (`POST /services/deploy`) — validate, test, and load a service in one atomic operation
+  - Four steps: validate → test → load → verify
+  - Runs `bun test` on *.test.ts files; failing tests prevent loading
+  - Returns structured step-by-step results
+- **Seed provenance** — consolidated from standalone seeds service into installer + services manager
+  - Installer: `seed` field on registry entries, `GET /installer/seeds` for seed-grouped view
+  - Services manager: `POST /services/check` (capability pre-flight), `GET /services/conformance` (conformance manifest), `POST /services/seeds/register`, `PATCH /services/seeds/:hash`
+- **Pi extension tools** — `reef_manifest` and `reef_deploy` registered on the services manager
+  - Agents discover reef and deploy services without leaving the conversation
+- **Vers VM extensions** — bundled vers-vm.ts and vers-vm-copy.ts from pi-v
+  - Full VM lifecycle (create, branch, commit, restore), SSH routing, file transfer
+  - Auto-discovered by pi alongside reef's service tools
+- **Extension tests** — 28 tests covering FleetClient, discover, filterClientModules, createExtension
+- Substrate capability computation extracted into shared helper
+- 195 tests, 660 assertions across 15 files
+
 ## 0.1.6
 
 - Remove board, feed, and ui from `services/` — they were shipping as defaults but belong in `examples/services/`
