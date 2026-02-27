@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.4
+
+- Add updater service — auto-update reef from npm
+  - `GET /updater/status` — current version, latest available, update history
+  - `POST /updater/check` — check npm for newer version
+  - `POST /updater/apply` — apply update and restart
+  - Optional polling with `UPDATE_POLL_INTERVAL` (minutes)
+  - Optional auto-apply with `UPDATE_AUTO_APPLY=true`
+- 126 tests, 324 assertions
+
 ## 0.1.3
 
 - Add READMEs to all example services (board, commits, feed, journal, log, registry, reports, ui, usage)
