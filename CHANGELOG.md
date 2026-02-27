@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- Move updater service to `examples/services/` (not core infrastructure)
+
 ## 0.1.4
 
 - Add updater service — auto-update reef from npm
