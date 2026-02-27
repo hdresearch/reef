@@ -1,5 +1,5 @@
 import { describe, test, expect, afterAll } from "bun:test";
-import { createTestHarness, type TestHarness } from "../../src/core/testing.js";
+import { createTestHarness, type TestHarness } from "../../../src/core/testing.js";
 import updater from "./index.js";
 
 let t: TestHarness;

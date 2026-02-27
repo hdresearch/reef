@@ -18,7 +18,7 @@ import { Hono } from "hono";
 import { execSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ServiceModule, ServiceContext } from "../../src/core/types.js";
+import type { ServiceModule, ServiceContext } from "../src/core/types.js";
 
 interface UpdateRecord {
   from: string;
