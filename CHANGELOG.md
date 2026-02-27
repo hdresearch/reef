@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6
+
+- Remove board, feed, and ui from `services/` — they were shipping as defaults but belong in `examples/services/`
+- `services/` now only contains core infrastructure: agent, docs, installer, services
+
 ## 0.1.5
 
 - Move updater service to `examples/services/` (not core infrastructure)
