@@ -424,4 +424,163 @@ export default {
     expect(seed.capabilities.implemented).toContain("hosting.web");
     expect(seed.capabilities.missing).toContain("agent.spawn");
   });
+
+  // ===========================================================================
+  // Deploy
+  // ===========================================================================
+
+  test("POST /services/deploy validates, loads, and verifies", async () => {
+    writeService("deploy-good");
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/deploy", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { name: "deploy-good" },
+    });
+
+    expect(status).toBe(200);
+    expect(data.deployed).toBe(true);
+    expect(data.steps.length).toBeGreaterThanOrEqual(3); // validate, test (skipped), load, verify
+    expect(data.steps.find((s: any) => s.step === "validate").status).toBe("passed");
+    expect(data.steps.find((s: any) => s.step === "test").status).toBe("skipped");
+    expect(data.steps.find((s: any) => s.step === "load").status).toBe("passed");
+    expect(data.steps.find((s: any) => s.step === "verify").status).toBe("passed");
+  });
+
+  test("deploy fails on missing directory", async () => {
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/deploy", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { name: "nonexistent" },
+    });
+
+    expect(status).toBe(400);
+    expect(data.deployed).toBe(false);
+    expect(data.steps[0].step).toBe("validate");
+    expect(data.steps[0].status).toBe("failed");
+  });
+
+  test("deploy fails on missing index.ts", async () => {
+    mkdirSync(join(TEST_DIR, "no-index"), { recursive: true });
+    writeFileSync(join(TEST_DIR, "no-index", "README.md"), "nothing useful");
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/deploy", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { name: "no-index" },
+    });
+
+    expect(status).toBe(400);
+    expect(data.deployed).toBe(false);
+    expect(data.steps[0].status).toBe("failed");
+    expect(data.steps[0].detail).toContain("index.ts");
+  });
+
+  test("deploy fails on invalid module export", async () => {
+    const dir = join(TEST_DIR, "bad-export");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "index.ts"), `export default { noName: true };`);
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/deploy", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { name: "bad-export" },
+    });
+
+    expect(status).toBe(400);
+    expect(data.deployed).toBe(false);
+    expect(data.steps[0].step).toBe("validate");
+    expect(data.steps[0].status).toBe("failed");
+    expect(data.steps[0].detail).toContain("name");
+  });
+
+  test("deploy requires name", async () => {
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/deploy", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: {},
+    });
+
+    expect(status).toBe(400);
+    expect(data.error).toContain("name");
+  });
+
+  test("deploy with passing tests succeeds", async () => {
+    // Write a service with a passing test
+    const dir = join(TEST_DIR, "deploy-tested");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "index.ts"),
+      `
+import { Hono } from "hono";
+const routes = new Hono();
+routes.get("/", (c) => c.json({ ok: true }));
+export default { name: "deploy-tested", routes };
+`,
+    );
+    writeFileSync(
+      join(dir, "deploy-tested.test.ts"),
+      `
+import { test, expect } from "bun:test";
+test("basic math", () => { expect(1 + 1).toBe(2); });
+`,
+    );
+
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/deploy", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { name: "deploy-tested" },
+    });
+
+    expect(status).toBe(200);
+    expect(data.deployed).toBe(true);
+    const testStep = data.steps.find((s: any) => s.step === "test");
+    expect(testStep.status).toBe("passed");
+    expect(testStep.detail).toContain("1 passed");
+  });
+
+  test("deploy with failing tests stops before loading", async () => {
+    const dir = join(TEST_DIR, "deploy-fail-test");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "index.ts"),
+      `
+import { Hono } from "hono";
+const routes = new Hono();
+routes.get("/", (c) => c.json({ ok: true }));
+export default { name: "deploy-fail-test", routes };
+`,
+    );
+    writeFileSync(
+      join(dir, "deploy-fail-test.test.ts"),
+      `
+import { test, expect } from "bun:test";
+test("this fails", () => { expect(1).toBe(2); });
+`,
+    );
+
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/deploy", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { name: "deploy-fail-test" },
+    });
+
+    expect(status).toBe(400);
+    expect(data.deployed).toBe(false);
+    const testStep = data.steps.find((s: any) => s.step === "test");
+    expect(testStep.status).toBe("failed");
+    // Should not have a load step
+    expect(data.steps.find((s: any) => s.step === "load")).toBeUndefined();
+  });
 });

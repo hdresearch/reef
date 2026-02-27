@@ -326,6 +326,131 @@ routes.patch("/seeds/:hash", async (c) => {
   return c.json({ action: "updated", seed: meta });
 });
 
+// Deploy — validate, test, and load a service in one atomic operation
+routes.post("/deploy", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body?.name) return c.json({ error: "name is required" }, 400);
+
+  const name = String(body.name).trim();
+  const dirPath = join(ctx.servicesDir, name);
+
+  const result: {
+    name: string;
+    steps: Array<{ step: string; status: "passed" | "failed" | "skipped"; detail?: string }>;
+    deployed: boolean;
+  } = { name, steps: [], deployed: false };
+
+  // Step 1: Validate — directory and index.ts exist
+  if (!existsSync(dirPath)) {
+    result.steps.push({ step: "validate", status: "failed", detail: `Directory not found: ${name}/` });
+    return c.json(result, 400);
+  }
+
+  const indexPath = join(dirPath, "index.ts");
+  if (!existsSync(indexPath)) {
+    result.steps.push({ step: "validate", status: "failed", detail: `No index.ts in ${name}/` });
+    return c.json(result, 400);
+  }
+
+  // Try importing to check it exports a valid ServiceModule
+  try {
+    const mod = await import(`${indexPath}?t=${Date.now()}`);
+    const svc = mod.default;
+    if (!svc?.name) {
+      result.steps.push({ step: "validate", status: "failed", detail: "default export missing 'name' property" });
+      return c.json(result, 400);
+    }
+    result.steps.push({ step: "validate", status: "passed", detail: `exports ServiceModule "${svc.name}"` });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    result.steps.push({ step: "validate", status: "failed", detail: `import error: ${msg}` });
+    return c.json(result, 400);
+  }
+
+  // Step 2: Test — run bun test if test files exist
+  const { execSync } = await import("node:child_process");
+  const testFiles = readdirSync(dirPath).filter((f) => f.endsWith(".test.ts"));
+
+  if (testFiles.length > 0) {
+    try {
+      // bun test writes results to stderr, so merge streams
+      const output = execSync(`bun test ${testFiles.map((f) => join(dirPath, f)).join(" ")} 2>&1`, {
+        cwd: join(ctx.servicesDir, ".."),
+        timeout: 60_000,
+        encoding: "utf-8",
+      });
+      // Parse pass/fail from bun test output
+      const passMatch = output.match(/(\d+) pass/);
+      const failMatch = output.match(/(\d+) fail/);
+      const passed = passMatch ? parseInt(passMatch[1]) : 0;
+      const failed = failMatch ? parseInt(failMatch[1]) : 0;
+
+      if (failed > 0) {
+        result.steps.push({
+          step: "test",
+          status: "failed",
+          detail: `${passed} passed, ${failed} failed\n${output}`,
+        });
+        return c.json(result, 400);
+      }
+
+      result.steps.push({
+        step: "test",
+        status: "passed",
+        detail: `${passed} passed, ${failed} failed (${testFiles.length} file${testFiles.length > 1 ? "s" : ""})`,
+      });
+    } catch (err: any) {
+      // bun test exits non-zero on failure — stdout has merged output
+      const output = err.stdout || err.stderr || String(err);
+      const passMatch = output.match(/(\d+) pass/);
+      const failMatch = output.match(/(\d+) fail/);
+      const passed = passMatch ? parseInt(passMatch[1]) : 0;
+      const failed = failMatch ? parseInt(failMatch[1]) : 0;
+
+      result.steps.push({
+        step: "test",
+        status: "failed",
+        detail: `${passed} passed, ${failed} failed\n${output.slice(-2000)}`,
+      });
+      return c.json(result, 400);
+    }
+  } else {
+    result.steps.push({ step: "test", status: "skipped", detail: "no test files found" });
+  }
+
+  // Step 3: Load — activate the module
+  try {
+    const loadResult = await ctx.loadModule(name);
+    result.steps.push({
+      step: "load",
+      status: "passed",
+      detail: `${loadResult.action}: /${loadResult.name}`,
+    });
+    console.log(`  [deploy] /${loadResult.name} — ${loadResult.action}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    result.steps.push({ step: "load", status: "failed", detail: msg });
+    return c.json(result, 400);
+  }
+
+  // Step 4: Verify — confirm it's in the live modules
+  const loaded = ctx.getModule(name);
+  if (loaded) {
+    const routes = loaded.routeDocs ? Object.keys(loaded.routeDocs) : [];
+    result.steps.push({
+      step: "verify",
+      status: "passed",
+      detail: `live at /${name}` + (routes.length ? ` (${routes.length} routes)` : ""),
+    });
+    result.deployed = true;
+  } else {
+    result.steps.push({ step: "verify", status: "failed", detail: "module not found after load" });
+    return c.json(result, 500);
+  }
+
+  return c.json(result);
+});
+
 // Reload all — re-scan directory, add new, update changed, remove deleted
 routes.post("/reload", async (c) => {
   const servicesDir = ctx.servicesDir;
@@ -491,6 +616,13 @@ const services: ServiceModule = {
       },
       response: "{ action: 'updated', seed }",
     },
+    "POST /deploy": {
+      summary: "Validate, test, and load a service in one atomic operation. Returns structured step-by-step results.",
+      body: {
+        name: { type: "string", required: true, description: "Service directory name to deploy" },
+      },
+      response: "{ name, steps: [{ step, status, detail? }], deployed: boolean }",
+    },
     "POST /reload": {
       summary: "Re-scan services directory — load new, update changed, remove deleted",
       response: "{ results: [{ name, action }], errors }",
@@ -514,6 +646,7 @@ const services: ServiceModule = {
 
   // Reef-specific substrate capabilities
   capabilities: [
+    "reef.deploy",              // validate + test + load in one operation
     "reef.reload",              // hot-reload services without restart
     "reef.unload",              // remove services at runtime
     "reef.export",              // tarball services for fleet-to-fleet distribution
