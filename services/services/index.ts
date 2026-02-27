@@ -14,7 +14,9 @@
 import { readdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import type { ServiceModule, ServiceContext } from "../src/core/types.js";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import type { ServiceModule, ServiceContext, FleetClient } from "../src/core/types.js";
 
 /** Seed metadata stored alongside the installer registry */
 interface SeedMeta {
@@ -654,6 +656,57 @@ const services: ServiceModule = {
     "reef.seeds.conformance",   // serves conformance manifests
     "reef.seeds.check",         // capability pre-flight checks
   ],
+
+  registerTools(pi: ExtensionAPI, client: FleetClient) {
+    pi.registerTool({
+      name: "reef_manifest",
+      label: "Reef: Manifest",
+      description:
+        "Get the full manifest of this reef instance — all loaded services, their routes, tools, "
+        + "behaviors, panels, and the substrate's capabilities. Use this to discover what's available "
+        + "before building a new service, to check if a capability already exists, or to understand "
+        + "what tools and events you can use.",
+      parameters: Type.Object({}),
+      async execute(_id, _params) {
+        if (!client.getBaseUrl()) return client.noUrl();
+        try {
+          const manifest = await client.api("GET", "/services/manifest");
+          return client.ok(JSON.stringify(manifest, null, 2), { manifest });
+        } catch (e: any) {
+          return client.err(e.message);
+        }
+      },
+    });
+
+    pi.registerTool({
+      name: "reef_deploy",
+      label: "Reef: Deploy Service",
+      description:
+        "Deploy a service module — validates the module exports, runs its tests (if any), "
+        + "loads it into the server, and verifies it's live. Returns structured step-by-step "
+        + "results. Use after writing or editing service files to activate them. If tests fail, "
+        + "the service is not loaded and you get the test output to debug.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Service directory name (the folder name under services/)" }),
+      }),
+      async execute(_id, params) {
+        if (!client.getBaseUrl()) return client.noUrl();
+        try {
+          const result = await client.api("POST", "/services/deploy", { name: params.name });
+          const r = result as any;
+          const summary = r.deployed
+            ? `✓ ${r.name} deployed successfully`
+            : `✗ ${r.name} deployment failed`;
+          const steps = (r.steps || [])
+            .map((s: any) => `  ${s.status === "passed" ? "✓" : s.status === "skipped" ? "–" : "✗"} ${s.step}: ${s.detail || ""}`)
+            .join("\n");
+          return client.ok(`${summary}\n${steps}`, { result });
+        } catch (e: any) {
+          return client.err(e.message);
+        }
+      },
+    });
+  },
 
   init(serviceCtx: ServiceContext) {
     ctx = serviceCtx;
