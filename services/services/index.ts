@@ -306,6 +306,14 @@ const services: ServiceModule = {
     },
   },
 
+  // Reef-specific substrate capabilities
+  capabilities: [
+    "reef.reload",          // hot-reload services without restart
+    "reef.unload",          // remove services at runtime
+    "reef.export",          // tarball services for fleet-to-fleet distribution
+    "reef.manifest",        // machine-readable capability discovery
+  ],
+
   init(serviceCtx: ServiceContext) {
     ctx = serviceCtx;
   },

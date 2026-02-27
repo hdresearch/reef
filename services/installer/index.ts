@@ -569,6 +569,16 @@ const installer: ServiceModule = {
       response: "{ installed: [{ dirName, source, type, installedAt, ref? }], count }",
     },
   },
+
+  // Reef-specific substrate capabilities
+  capabilities: [
+    "reef.install",         // install services from git, local, or fleet at runtime
+    "reef.install.git",     // clone from git repos (GitHub shorthand, HTTPS, SSH)
+    "reef.install.local",   // symlink from local paths
+    "reef.install.fleet",   // pull from another reef instance
+    "reef.update",          // pull latest and hot-reload
+    "reef.remove",          // unload + delete installed services
+  ],
 };
 
 export default installer;

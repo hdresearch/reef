@@ -208,6 +208,11 @@ describe("services manager module", () => {
     expect(caps).toContain("state.persist");
     expect(caps).toContain("event.trigger");
 
+    // Reef-specific capabilities from the services manager itself
+    expect(caps).toContain("reef.reload");
+    expect(caps).toContain("reef.export");
+    expect(caps).toContain("reef.manifest");
+
     // Services manager appears with its own routeDocs
     const mgr = data.services.find((s: any) => s.name === "services");
     expect(mgr).toBeDefined();
