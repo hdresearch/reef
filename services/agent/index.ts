@@ -27,7 +27,7 @@ import { Hono } from "hono";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { ulid } from "ulid";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ServiceModule, ServiceContext } from "../src/core/types.js";
 
@@ -94,16 +94,39 @@ function buildSystemAppend(projectRoot: string, port: number): string {
   return lines.join("\n");
 }
 
+/** Discover all extension paths: src/extension.ts + extensions/*.ts */
+function discoverExtensions(projectRoot: string): string[] {
+  const paths: string[] = [];
+
+  // Main reef extension (service module tools)
+  const mainExt = join(projectRoot, "src", "extension.ts");
+  if (existsSync(mainExt)) paths.push(mainExt);
+
+  // Additional extensions (vers-vm, etc.)
+  const extDir = join(projectRoot, "extensions");
+  if (existsSync(extDir)) {
+    try {
+      for (const f of readdirSync(extDir)) {
+        if (f.endsWith(".ts") && !f.endsWith(".test.ts")) {
+          paths.push(join(extDir, f));
+        }
+      }
+    } catch {}
+  }
+
+  return paths;
+}
+
 function spawnTask(run: Run, projectRoot: string, port: number): ChildProcess {
   const contextText = buildSystemAppend(projectRoot, port);
-  const extensionPath = join(projectRoot, "src", "extension.ts");
+  const extensionArgs = discoverExtensions(projectRoot).flatMap((p) => ["--extension", p]);
   const args = [
     "-p",
     "--no-session",
     "--provider", piProvider(),
     "--model", piModel(),
     "--append-system-prompt", contextText,
-    ...(existsSync(extensionPath) ? ["--extension", extensionPath] : []),
+    ...extensionArgs,
     run.task,
   ];
 
@@ -161,7 +184,7 @@ const MAX_RECENT_EVENTS = 200;
 function spawnSession(id: string): Session {
   const projectRoot = process.cwd();
   const contextText = buildSystemAppend(projectRoot, serverPort());
-  const extensionPath = join(projectRoot, "src", "extension.ts");
+  const extensionArgs = discoverExtensions(projectRoot).flatMap((p) => ["--extension", p]);
 
   const args = [
     "--mode", "rpc",
@@ -169,7 +192,7 @@ function spawnSession(id: string): Session {
     "--provider", piProvider(),
     "--model", piModel(),
     "--append-system-prompt", contextText,
-    ...(existsSync(extensionPath) ? ["--extension", extensionPath] : []),
+    ...extensionArgs,
   ];
 
   const child = spawn(piPath(), args, {
