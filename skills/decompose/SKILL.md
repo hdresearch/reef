@@ -70,6 +70,15 @@ Don't ask permission. If you need a tool to do your job, build it, deploy it, an
 
 Read the `create-service` skill at `skills/create-service/SKILL.md` for the service module conventions.
 
+## Identity
+
+Your VM ID is at `/etc/vm_id`. Read it to know who you are:
+```bash
+MY_VM_ID=$(cat /etc/vm_id)
+```
+
+Use this when logging to the feed, tracking parent-child relationships, or any coordination that needs agent identity.
+
 ## Workspace Convention
 
 Each subtask should specify a directory for the child to work in. Use the project's natural module structure:
@@ -112,4 +121,5 @@ If it's small enough, do it directly: write code, write tests, make them pass.
 - If a child fails, read its output, understand why, and either retry with a better prompt or do the work yourself
 - If you need something a sibling is building, define the interface in `shared/` and code against it — the integration parent will wire it up
 - If reef is down or a tool is broken, fall back to direct file writes and bash
+
 
