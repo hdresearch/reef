@@ -35,6 +35,82 @@ routes.get("/", (c) => {
   return c.json({ modules, count: modules.length });
 });
 
+// Machine-readable manifest — everything agents need to discover reef's capabilities
+routes.get("/manifest", (c) => {
+  const modules = ctx.getModules();
+
+  const services = modules.map((m) => {
+    const entry: Record<string, unknown> = {
+      name: m.name,
+      description: m.description ?? null,
+      dependencies: m.dependencies ?? [],
+    };
+
+    // Routes
+    if (m.routeDocs && Object.keys(m.routeDocs).length > 0) {
+      entry.routes = Object.fromEntries(
+        Object.entries(m.routeDocs).map(([key, doc]) => [
+          key,
+          {
+            description: doc.summary ?? doc.detail ?? null,
+            params: doc.params ?? undefined,
+            query: doc.query ?? undefined,
+            body: doc.body ?? undefined,
+            response: doc.response ?? undefined,
+          },
+        ]),
+      );
+    }
+
+    // Capabilities
+    const capabilities: string[] = [];
+    if (m.routes) capabilities.push("routes");
+    if (m.registerTools) capabilities.push("tools");
+    if (m.registerBehaviors) capabilities.push("behaviors");
+    if (m.widget) capabilities.push("widget");
+    if (m.routeDocs) {
+      const hasPanel = Object.keys(m.routeDocs).some((k) => k.includes("/_panel"));
+      if (hasPanel) capabilities.push("panel");
+    }
+    entry.capabilities = capabilities;
+
+    return entry;
+  });
+
+  // Flatten all documented routes across services
+  const allRoutes: Array<{ service: string; method: string; path: string; description: string | null }> = [];
+  for (const m of modules) {
+    if (!m.routeDocs) continue;
+    for (const [key, doc] of Object.entries(m.routeDocs)) {
+      const [method, ...pathParts] = key.split(" ");
+      const path = `/${m.name}${pathParts.join(" ")}`;
+      allRoutes.push({
+        service: m.name,
+        method,
+        path,
+        description: doc.summary ?? doc.detail ?? null,
+      });
+    }
+  }
+
+  // Collect all event names from behaviors (convention: "service:event_name")
+  // We can't introspect these automatically, but we document the known pattern
+  const events = modules
+    .filter((m) => m.registerBehaviors)
+    .map((m) => m.name);
+
+  return c.json({
+    services,
+    routes: allRoutes,
+    servicesWithTools: modules.filter((m) => m.registerTools).map((m) => m.name),
+    servicesWithBehaviors: events,
+    servicesWithPanels: modules
+      .filter((m) => m.routeDocs && Object.keys(m.routeDocs).some((k) => k.includes("/_panel")))
+      .map((m) => m.name),
+    count: services.length,
+  });
+});
+
 // Reload all — re-scan directory, add new, update changed, remove deleted
 routes.post("/reload", async (c) => {
   const servicesDir = ctx.servicesDir;
@@ -156,6 +232,36 @@ const services: ServiceModule = {
   name: "services",
   description: "Service module manager",
   routes,
+
+  routeDocs: {
+    "GET /": {
+      summary: "List all loaded modules with capabilities",
+      response: "{ modules: [{ name, description, hasRoutes, hasTools, ... }], count }",
+    },
+    "GET /manifest": {
+      summary: "Machine-readable manifest of all services, routes, tools, and capabilities. Designed for agents to discover what reef can do.",
+      response: "{ services, routes, servicesWithTools, servicesWithBehaviors, servicesWithPanels, count }",
+    },
+    "POST /reload": {
+      summary: "Re-scan services directory — load new, update changed, remove deleted",
+      response: "{ results: [{ name, action }], errors }",
+    },
+    "POST /reload/:name": {
+      summary: "Reload a specific module by directory name",
+      params: { name: { type: "string", required: true, description: "Service directory name" } },
+      response: "{ name, action }",
+    },
+    "GET /export/:name": {
+      summary: "Download a service as a tarball (for fleet-to-fleet install)",
+      params: { name: { type: "string", required: true, description: "Service name" } },
+      response: "application/gzip tarball",
+    },
+    "DELETE /:name": {
+      summary: "Unload a module from memory (does not delete files)",
+      params: { name: { type: "string", required: true, description: "Service name to unload" } },
+      response: "{ name, action: 'removed' }",
+    },
+  },
 
   init(serviceCtx: ServiceContext) {
     ctx = serviceCtx;

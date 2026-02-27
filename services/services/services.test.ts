@@ -187,6 +187,32 @@ describe("services manager module", () => {
     expect(status).toBe(404);
   });
 
+  test("GET /services/manifest returns machine-readable manifest", async () => {
+    writeService("mgr-manifest-test", { requiresAuth: false });
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/manifest", { auth: AUTH_TOKEN });
+    expect(status).toBe(200);
+
+    // Has the right shape
+    expect(data.services).toBeDefined();
+    expect(data.routes).toBeDefined();
+    expect(data.count).toBeGreaterThanOrEqual(2); // services manager + test service
+    expect(Array.isArray(data.services)).toBe(true);
+    expect(Array.isArray(data.routes)).toBe(true);
+
+    // Services manager appears with its own routeDocs
+    const mgr = data.services.find((s: any) => s.name === "services");
+    expect(mgr).toBeDefined();
+    expect(mgr.capabilities).toContain("routes");
+    expect(mgr.routes).toBeDefined();
+    expect(mgr.routes["GET /manifest"]).toBeDefined();
+
+    // Test service appears
+    const testSvc = data.services.find((s: any) => s.name === "mgr-manifest-test");
+    expect(testSvc).toBeDefined();
+  });
+
   test("management endpoints require auth", async () => {
     const { app } = await createWithManager();
 
