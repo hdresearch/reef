@@ -3,6 +3,8 @@
 ## 0.1.5
 
 - Move updater service to `examples/services/` (not core infrastructure)
+- Split CI: tests run on every push to main, publish only triggers on `v*` tags
+- Trusted publishing via OIDC — no npm tokens in CI
 
 ## 0.1.4
 
