@@ -84,11 +84,20 @@ function buildSystemAppend(projectRoot: string, port: number): string {
   lines.push("- Example services are in examples/services/");
   lines.push("");
 
-  const skillPath = join(projectRoot, "skills/create-service/SKILL.md");
-  if (existsSync(skillPath)) {
-    lines.push("## Create-service skill reference");
-    lines.push("");
-    lines.push(readFileSync(skillPath, "utf-8"));
+  // Auto-discover all skills
+  const skillsDir = join(projectRoot, "skills");
+  if (existsSync(skillsDir)) {
+    try {
+      for (const name of readdirSync(skillsDir)) {
+        const skillPath = join(skillsDir, name, "SKILL.md");
+        if (existsSync(skillPath)) {
+          lines.push(`## Skill: ${name}`);
+          lines.push("");
+          lines.push(readFileSync(skillPath, "utf-8"));
+          lines.push("");
+        }
+      }
+    } catch {}
   }
 
   return lines.join("\n");
@@ -500,3 +509,4 @@ const agent: ServiceModule = {
 };
 
 export default agent;
+
