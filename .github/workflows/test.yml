@@ -1,14 +1,10 @@
-name: test & publish
+name: test
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
-permissions:
-  id-token: write
-  contents: read
 
 jobs:
   test:
@@ -24,24 +20,3 @@ jobs:
       - run: bun install
 
       - run: bun test
-
-  publish:
-    needs: test
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - run: bun install
-
-      - run: npm publish --access public
