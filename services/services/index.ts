@@ -11,12 +11,62 @@
  *   DELETE /services/:name         — unload a module
  */
 
-import { readdirSync, existsSync } from "node:fs";
+import { readdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
 import type { ServiceModule, ServiceContext } from "../src/core/types.js";
 
+/** Seed metadata stored alongside the installer registry */
+interface SeedMeta {
+  name: string;
+  versionLabel: string;
+  method: "germination" | "graft";
+  requiredCapabilities: string[];
+  optionalCapabilities: string[];
+  conformance: string;
+  registeredAt: string;
+  sourceUrl?: string;
+  testResults?: {
+    core: { passed: number; failed: number; skipped: number };
+    extended?: { passed: number; failed: number; skipped: number };
+    edgeCase?: { passed: number; failed: number; skipped: number };
+  };
+  lastVerified?: string;
+}
+
 let ctx: ServiceContext;
+
+/** Compute the full set of substrate capabilities from base + environment + services */
+function getSubstrateCapabilities(): Set<string> {
+  const caps = new Set([
+    "hosting.web",
+    "state.persist",
+    "event.trigger",
+  ]);
+
+  // Environment-detected
+  if (process.env.VERS_API_URL || process.env.VERS_VM_ID) {
+    caps.add("state.snapshot");
+    caps.add("state.snapshot.fast");
+    caps.add("state.branch");
+    caps.add("state.branch.fast");
+  }
+  if (process.env.VERS_PUBLIC_URL) {
+    caps.add("hosting.web.public");
+    caps.add("hosting.dns");
+  }
+
+  // Service-contributed
+  for (const m of ctx.getModules()) {
+    if (m.capabilities) {
+      for (const cap of m.capabilities) {
+        caps.add(cap);
+      }
+    }
+  }
+
+  return caps;
+}
 
 const routes = new Hono();
 
@@ -39,37 +89,7 @@ routes.get("/", (c) => {
 routes.get("/manifest", (c) => {
   const modules = ctx.getModules();
 
-  // =========================================================================
-  // Substrate capabilities (seed taxonomy §4)
-  // =========================================================================
-
-  // Base: reef always provides these
-  const capabilities = new Set([
-    "hosting.web",      // Hono HTTP server
-    "state.persist",    // services can persist data to disk
-    "event.trigger",    // ServiceEventBus
-  ]);
-
-  // Environment-detected
-  if (process.env.VERS_API_URL || process.env.VERS_VM_ID) {
-    capabilities.add("state.snapshot");
-    capabilities.add("state.snapshot.fast");
-    capabilities.add("state.branch");
-    capabilities.add("state.branch.fast");
-  }
-  if (process.env.VERS_PUBLIC_URL) {
-    capabilities.add("hosting.web.public");
-    capabilities.add("hosting.dns");
-  }
-
-  // Service-contributed: each module declares what it adds
-  for (const m of modules) {
-    if (m.capabilities) {
-      for (const cap of m.capabilities) {
-        capabilities.add(cap);
-      }
-    }
-  }
+  const capabilities = getSubstrateCapabilities();
 
   // =========================================================================
   // Per-service entries
@@ -152,6 +172,158 @@ routes.get("/manifest", (c) => {
       .map((m) => m.name),
     count: services.length,
   });
+});
+
+// Capability pre-flight check — can a seed germinate here?
+routes.post("/check", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body?.capabilities?.length) {
+    return c.json({ error: "capabilities array required" }, 400);
+  }
+
+  const required: string[] = body.capabilities;
+  const substrate = getSubstrateCapabilities();
+  const met = required.filter((cap) => substrate.has(cap));
+  const missing = required.filter((cap) => !substrate.has(cap));
+
+  return c.json({
+    canGerminate: missing.length === 0,
+    met,
+    missing,
+    substrate: [...substrate].sort(),
+  });
+});
+
+// Conformance manifest — which seeds have been germinated and their status
+routes.get("/conformance", (c) => {
+  const substrate = getSubstrateCapabilities();
+
+  // Read seed provenance from the installer registry
+  const registryPath = join(ctx.servicesDir, ".installer.json");
+  let installed: Array<{ dirName: string; seed?: string; installedAt: string }> = [];
+  try {
+    if (existsSync(registryPath)) {
+      installed = JSON.parse(readFileSync(registryPath, "utf-8")).installed ?? [];
+    }
+  } catch {}
+
+  // Group by seed content hash
+  const seedMap = new Map<string, { services: string[]; installedAt: string }>();
+  for (const entry of installed) {
+    if (!entry.seed) continue;
+    const existing = seedMap.get(entry.seed);
+    if (existing) {
+      existing.services.push(entry.dirName);
+    } else {
+      seedMap.set(entry.seed, {
+        services: [entry.dirName],
+        installedAt: entry.installedAt,
+      });
+    }
+  }
+
+  // Read seed metadata from .seeds-meta.json (registered via POST /services/seeds/register)
+  const metaPath = join(ctx.servicesDir, ".seeds-meta.json");
+  let seedMeta: Record<string, SeedMeta> = {};
+  try {
+    if (existsSync(metaPath)) {
+      seedMeta = JSON.parse(readFileSync(metaPath, "utf-8"));
+    }
+  } catch {}
+
+  const seeds = [...seedMap.entries()].map(([hash, { services, installedAt }]) => {
+    const meta = seedMeta[hash];
+    return {
+      name: meta?.name ?? "unknown",
+      content_hash: hash,
+      version_label: meta?.versionLabel ?? "unknown",
+      conformanceLevel: meta?.conformance ?? "UNTESTED",
+      services,
+      installedAt,
+      capabilities: {
+        implemented: (meta?.requiredCapabilities ?? []).filter((cap: string) => substrate.has(cap)),
+        missing: (meta?.requiredCapabilities ?? []).filter((cap: string) => !substrate.has(cap)),
+      },
+      testResults: meta?.testResults ?? null,
+      lastVerified: meta?.lastVerified ?? null,
+    };
+  });
+
+  return c.json({
+    v: "seed-spec/0.5",
+    type: "conformance.manifest",
+    timestamp: new Date().toISOString(),
+    seeds,
+    count: seeds.length,
+  });
+});
+
+// Register seed metadata (name, capabilities, etc.) for conformance tracking
+routes.post("/seeds/register", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON body" }, 400);
+
+  const { contentHash, name, versionLabel, requiredCapabilities, optionalCapabilities, method, sourceUrl } = body;
+  if (!contentHash || !name) {
+    return c.json({ error: "contentHash and name are required" }, 400);
+  }
+  if (!contentHash.startsWith("sha256:")) {
+    return c.json({ error: "contentHash must start with 'sha256:'" }, 400);
+  }
+
+  const metaPath = join(ctx.servicesDir, ".seeds-meta.json");
+  let seedMeta: Record<string, SeedMeta> = {};
+  try {
+    if (existsSync(metaPath)) {
+      seedMeta = JSON.parse(readFileSync(metaPath, "utf-8"));
+    }
+  } catch {}
+
+  if (seedMeta[contentHash]) {
+    return c.json({ error: `Seed ${contentHash} is already registered` }, 409);
+  }
+
+  seedMeta[contentHash] = {
+    name,
+    versionLabel: versionLabel ?? "unknown",
+    method: method === "graft" ? "graft" : "germination",
+    requiredCapabilities: requiredCapabilities ?? [],
+    optionalCapabilities: optionalCapabilities ?? [],
+    conformance: "UNTESTED",
+    registeredAt: new Date().toISOString(),
+    sourceUrl,
+  };
+
+  writeFileSync(metaPath, JSON.stringify(seedMeta, null, 2));
+  return c.json({ action: "registered", seed: seedMeta[contentHash] }, 201);
+});
+
+// Update seed metadata (conformance, test results)
+routes.patch("/seeds/:hash", async (c) => {
+  const hash = decodeURIComponent(c.req.param("hash"));
+
+  const metaPath = join(ctx.servicesDir, ".seeds-meta.json");
+  let seedMeta: Record<string, SeedMeta> = {};
+  try {
+    if (existsSync(metaPath)) {
+      seedMeta = JSON.parse(readFileSync(metaPath, "utf-8"));
+    }
+  } catch {}
+
+  const meta = seedMeta[hash];
+  if (!meta) {
+    return c.json({ error: `No seed metadata for "${hash}"` }, 404);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: "Invalid JSON body" }, 400);
+
+  if (body.conformance) meta.conformance = body.conformance;
+  if (body.testResults) meta.testResults = body.testResults;
+  if (body.lastVerified) meta.lastVerified = body.lastVerified;
+
+  writeFileSync(metaPath, JSON.stringify(seedMeta, null, 2));
+  return c.json({ action: "updated", seed: meta });
 });
 
 // Reload all — re-scan directory, add new, update changed, remove deleted
@@ -285,6 +457,40 @@ const services: ServiceModule = {
       summary: "Machine-readable manifest of all services, routes, tools, and substrate capabilities. Designed for agents to discover what reef can do and whether a seed can germinate here.",
       response: "{ substrate: { capabilities }, services: [{ name, description, features, provides?, routes? }], routes, servicesWithTools, servicesWithBehaviors, servicesWithPanels, count }",
     },
+    "POST /check": {
+      summary: "Check if a seed's required capabilities can be met by this substrate",
+      body: {
+        capabilities: { type: "string[]", required: true, description: "Required capability identifiers to check" },
+      },
+      response: "{ canGerminate, met, missing, substrate }",
+    },
+    "GET /conformance": {
+      summary: "Conformance manifest — which seeds have been germinated and their status (seed spec §9.3)",
+      response: "{ v, type, timestamp, seeds: [{ name, content_hash, conformanceLevel, capabilities, testResults }], count }",
+    },
+    "POST /seeds/register": {
+      summary: "Register seed metadata for conformance tracking",
+      body: {
+        contentHash: { type: "string", required: true, description: "SHA-256 content hash (sha256:...)" },
+        name: { type: "string", required: true, description: "Seed name from TOML frontmatter" },
+        versionLabel: { type: "string", description: "Human-readable version label" },
+        method: { type: "string", description: "'germination' or 'graft'" },
+        requiredCapabilities: { type: "string[]", description: "Capabilities the seed requires" },
+        optionalCapabilities: { type: "string[]", description: "Capabilities the seed optionally uses" },
+        sourceUrl: { type: "string", description: "URL where the seed was fetched from" },
+      },
+      response: "{ action: 'registered', seed }",
+    },
+    "PATCH /seeds/:hash": {
+      summary: "Update seed conformance level and test results",
+      params: { hash: { type: "string", required: true, description: "SHA-256 content hash" } },
+      body: {
+        conformance: { type: "string", description: "FULL | SUBSTANTIAL | PARTIAL | MINIMAL | NON_CONFORMING | UNTESTED" },
+        testResults: { type: "object", description: "{ core: { passed, failed, skipped }, extended?, edgeCase? }" },
+        lastVerified: { type: "string", description: "ISO timestamp" },
+      },
+      response: "{ action: 'updated', seed }",
+    },
     "POST /reload": {
       summary: "Re-scan services directory — load new, update changed, remove deleted",
       response: "{ results: [{ name, action }], errors }",
@@ -308,10 +514,12 @@ const services: ServiceModule = {
 
   // Reef-specific substrate capabilities
   capabilities: [
-    "reef.reload",          // hot-reload services without restart
-    "reef.unload",          // remove services at runtime
-    "reef.export",          // tarball services for fleet-to-fleet distribution
-    "reef.manifest",        // machine-readable capability discovery
+    "reef.reload",              // hot-reload services without restart
+    "reef.unload",              // remove services at runtime
+    "reef.export",              // tarball services for fleet-to-fleet distribution
+    "reef.manifest",            // machine-readable capability discovery
+    "reef.seeds.conformance",   // serves conformance manifests
+    "reef.seeds.check",         // capability pre-flight checks
   ],
 
   init(serviceCtx: ServiceContext) {

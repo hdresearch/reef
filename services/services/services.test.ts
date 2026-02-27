@@ -269,4 +269,159 @@ export default {
     const del = await req(app, "/services/foo", { method: "DELETE" });
     expect(del.status).toBe(401);
   });
+
+  // ===========================================================================
+  // Capability check
+  // ===========================================================================
+
+  test("POST /services/check reports met/missing capabilities", async () => {
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/check", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { capabilities: ["hosting.web", "state.persist", "agent.spawn", "state.branch"] },
+    });
+
+    expect(status).toBe(200);
+    expect(data.met).toContain("hosting.web");
+    expect(data.met).toContain("state.persist");
+    expect(data.missing).toContain("agent.spawn");
+    expect(data.missing).toContain("state.branch");
+    expect(data.canGerminate).toBe(false);
+  });
+
+  test("canGerminate is true when all capabilities met", async () => {
+    const { app } = await createWithManager();
+
+    const { data } = await json(app, "/services/check", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { capabilities: ["hosting.web", "state.persist", "event.trigger"] },
+    });
+
+    expect(data.canGerminate).toBe(true);
+    expect(data.missing).toEqual([]);
+  });
+
+  // ===========================================================================
+  // Seed registration & conformance
+  // ===========================================================================
+
+  test("POST /services/seeds/register records seed metadata", async () => {
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/seeds/register", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: {
+        contentHash: "sha256:abc123",
+        name: "coordination",
+        versionLabel: "1.0",
+        method: "germination",
+        requiredCapabilities: ["hosting.web", "agent.spawn"],
+      },
+    });
+
+    expect(status).toBe(201);
+    expect(data.action).toBe("registered");
+    expect(data.seed.name).toBe("coordination");
+    expect(data.seed.conformance).toBe("UNTESTED");
+  });
+
+  test("seed registration rejects duplicates", async () => {
+    const { app } = await createWithManager();
+
+    await json(app, "/services/seeds/register", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { contentHash: "sha256:dup123", name: "dupe-seed" },
+    });
+
+    const { status } = await json(app, "/services/seeds/register", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { contentHash: "sha256:dup123", name: "dupe-seed" },
+    });
+    expect(status).toBe(409);
+  });
+
+  test("seed registration requires sha256: prefix", async () => {
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/seeds/register", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { contentHash: "abc123", name: "bad-hash" },
+    });
+    expect(status).toBe(400);
+    expect(data.error).toContain("sha256:");
+  });
+
+  test("PATCH /services/seeds/:hash updates conformance", async () => {
+    const { app } = await createWithManager();
+
+    await json(app, "/services/seeds/register", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { contentHash: "sha256:patch123", name: "patchable" },
+    });
+
+    const { status, data } = await json(app, "/services/seeds/sha256:patch123", {
+      method: "PATCH",
+      auth: AUTH_TOKEN,
+      body: {
+        conformance: "FULL",
+        testResults: { core: { passed: 8, failed: 0, skipped: 0 } },
+        lastVerified: "2026-02-26T00:00:00Z",
+      },
+    });
+
+    expect(status).toBe(200);
+    expect(data.seed.conformance).toBe("FULL");
+    expect(data.seed.testResults.core.passed).toBe(8);
+  });
+
+  test("GET /services/conformance returns conformance manifest", async () => {
+    const { app } = await createWithManager();
+
+    // Register a seed
+    await json(app, "/services/seeds/register", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: {
+        contentHash: "sha256:conf123",
+        name: "test-seed",
+        versionLabel: "1.0",
+        requiredCapabilities: ["hosting.web", "agent.spawn"],
+      },
+    });
+
+    // Write a fake installer registry with a service tagged to this seed
+    writeFileSync(
+      join(TEST_DIR, ".installer.json"),
+      JSON.stringify({
+        installed: [
+          { dirName: "board", source: "local", type: "local", installedAt: new Date().toISOString(), seed: "sha256:conf123" },
+          { dirName: "feed", source: "local", type: "local", installedAt: new Date().toISOString(), seed: "sha256:conf123" },
+          { dirName: "unrelated", source: "local", type: "local", installedAt: new Date().toISOString() },
+        ],
+      }),
+    );
+
+    const { status, data } = await json(app, "/services/conformance", { auth: AUTH_TOKEN });
+    expect(status).toBe(200);
+    expect(data.v).toBe("seed-spec/0.5");
+    expect(data.type).toBe("conformance.manifest");
+    expect(data.count).toBe(1);
+
+    const seed = data.seeds[0];
+    expect(seed.name).toBe("test-seed");
+    expect(seed.content_hash).toBe("sha256:conf123");
+    expect(seed.services).toContain("board");
+    expect(seed.services).toContain("feed");
+    expect(seed.services).not.toContain("unrelated");
+    expect(seed.capabilities.implemented).toContain("hosting.web");
+    expect(seed.capabilities.missing).toContain("agent.spawn");
+  });
 });

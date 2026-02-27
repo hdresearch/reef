@@ -48,6 +48,8 @@ interface InstalledEntry {
   installedAt: string;
   /** Git ref if pinned */
   ref?: string;
+  /** Seed that triggered this install (content hash) */
+  seed?: string;
 }
 
 function registryPath(): string {
@@ -320,6 +322,7 @@ routes.post("/install", async (c) => {
   const from = (body.from as string)?.trim();
   const name = (body.name as string)?.trim();
   const token = (body.token as string)?.trim();
+  const seed = (body.seed as string)?.trim(); // seed content hash, if installing as part of germination
 
   // Fleet install: { from: "http://host:3000", name: "feed" }
   if (from) {
@@ -345,6 +348,7 @@ routes.post("/install", async (c) => {
         source: `${from}#${name}`,
         type: "fleet",
         installedAt: new Date().toISOString(),
+        seed,
       });
       saveRegistry(registry);
 
@@ -406,6 +410,7 @@ routes.post("/install", async (c) => {
       type: parsed.type,
       installedAt: new Date().toISOString(),
       ref: parsed.ref,
+      seed,
     });
     saveRegistry(registry);
 
@@ -523,6 +528,29 @@ routes.get("/installed", (c) => {
   return c.json({ installed: registry, count: registry.length });
 });
 
+// Seed-grouped view — which seeds have been germinated and what services they produced
+routes.get("/seeds", (c) => {
+  const registry = loadRegistry();
+  const seedMap = new Map<string, { seed: string; services: string[]; installedAt: string }>();
+
+  for (const entry of registry) {
+    if (!entry.seed) continue;
+    const existing = seedMap.get(entry.seed);
+    if (existing) {
+      existing.services.push(entry.dirName);
+    } else {
+      seedMap.set(entry.seed, {
+        seed: entry.seed,
+        services: [entry.dirName],
+        installedAt: entry.installedAt,
+      });
+    }
+  }
+
+  const seeds = [...seedMap.values()];
+  return c.json({ seeds, count: seeds.length });
+});
+
 // =============================================================================
 // Module
 // =============================================================================
@@ -545,6 +573,7 @@ const installer: ServiceModule = {
         from: { type: "string", required: false, description: "Base URL of another reef instance (e.g. http://host:3000)" },
         name: { type: "string", required: false, description: "Service name to pull (required with 'from')" },
         token: { type: "string", required: false, description: "Auth token for the remote instance (if needed)" },
+        seed: { type: "string", required: false, description: "Seed content hash (sha256:...) if installing as part of a germination" },
       },
       response: "{ name, dirName, source|from, type, action: 'installed' }",
     },
@@ -566,7 +595,11 @@ const installer: ServiceModule = {
     },
     "GET /installed": {
       summary: "List all services installed via the installer",
-      response: "{ installed: [{ dirName, source, type, installedAt, ref? }], count }",
+      response: "{ installed: [{ dirName, source, type, installedAt, ref?, seed? }], count }",
+    },
+    "GET /seeds": {
+      summary: "List seeds that have been germinated, grouped by content hash",
+      response: "{ seeds: [{ seed, services, installedAt }], count }",
     },
   },
 
