@@ -96,12 +96,14 @@ function buildSystemAppend(projectRoot: string, port: number): string {
 
 function spawnTask(run: Run, projectRoot: string, port: number): ChildProcess {
   const contextText = buildSystemAppend(projectRoot, port);
+  const extensionPath = join(projectRoot, "src", "extension.ts");
   const args = [
     "-p",
     "--no-session",
     "--provider", piProvider(),
     "--model", piModel(),
     "--append-system-prompt", contextText,
+    ...(existsSync(extensionPath) ? ["--extension", extensionPath] : []),
     run.task,
   ];
 
@@ -159,6 +161,7 @@ const MAX_RECENT_EVENTS = 200;
 function spawnSession(id: string): Session {
   const projectRoot = process.cwd();
   const contextText = buildSystemAppend(projectRoot, serverPort());
+  const extensionPath = join(projectRoot, "src", "extension.ts");
 
   const args = [
     "--mode", "rpc",
@@ -166,6 +169,7 @@ function spawnSession(id: string): Session {
     "--provider", piProvider(),
     "--model", piModel(),
     "--append-system-prompt", contextText,
+    ...(existsSync(extensionPath) ? ["--extension", extensionPath] : []),
   ];
 
   const child = spawn(piPath(), args, {
