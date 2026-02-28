@@ -38,8 +38,11 @@ function startPiRpc(opts: { model?: string }): PiRpc {
   const piPath = process.env.PI_PATH ?? "pi";
   const model = opts.model ?? process.env.PI_MODEL ?? "claude-sonnet-4-20250514";
 
+  // Start pi from the reef directory so it finds package.json → extensions + skills
+  const cwd = process.env.REEF_DIR ?? process.cwd();
   const child = spawn(piPath, ["--mode", "rpc", "--no-session"], {
     stdio: ["pipe", "pipe", "pipe"],
+    cwd,
     env: { ...process.env, PI_MODEL: model },
   });
 
