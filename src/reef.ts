@@ -1,185 +1,184 @@
 /**
- * Reef — an agent with a server, not a server with an agent.
+ * Reef — an agent with a server.
  *
- * This is the unified entry point. It starts:
- *   1. The conversation tree + agent loop (the brain)
- *   2. The service module system (the organs)
- *   3. A Hono server that exposes both (the nervous system)
+ * The agent (pi) is the core. The HTTP server feeds events into it.
+ * The conversation tree is the agent's memory.
  *
- * HTTP requests can trigger branch execution. Services provide capabilities.
- * The agent loop is the core — everything else feeds into it.
+ * When a task arrives via POST /reef/submit, it becomes a message to pi.
+ * Pi decides what to do — build it directly, spawn a swarm, decompose,
+ * whatever. We don't write orchestration code. The agent orchestrates itself.
  *
  * Routes:
- *   POST /reef/submit        — submit a task, forks a branch
- *   GET  /reef/tree           — main's conversation history
- *   GET  /reef/branches       — all branches and their status
- *   GET  /reef/branches/:name — specific branch detail
- *   GET  /reef/state          — overall loop state
- *   GET  /reef/events         — SSE stream of agent events
- *
- * Plus all existing service module routes (/{service}/...).
+ *   POST /reef/submit  — send a task to the agent
+ *   GET  /reef/tree     — the agent's conversation history
+ *   GET  /reef/state    — current status
+ *   GET  /reef/events   — SSE stream of agent events
  */
 
 import { Hono } from "hono";
+import { spawn } from "node:child_process";
 import { createServer, type ServerOptions } from "./core/server.js";
-import { AgentLoop, type AgentLoopConfig, type AgentEvent } from "./loop.js";
+import { ConversationTree, type TreeNode } from "./tree.js";
 import { bearerAuth } from "./core/auth.js";
 
 // =============================================================================
-// Types
+// Pi RPC — communicate with the agent
 // =============================================================================
 
-export interface ReefConfig {
-  /** Agent loop config — if omitted, reef runs in service-only mode. */
-  agent?: {
-    commitId: string;
-    anthropicApiKey: string;
-    model?: string;
-    systemPrompt?: string;
-    maxConcurrent?: number;
-    branchTimeoutMs?: number;
-    vers?: { apiKey?: string; baseUrl?: string };
-  };
+interface PiRpc {
+  send(cmd: object): void;
+  onEvent(handler: (event: any) => void): void;
+  kill(): Promise<void>;
+}
 
-  /** Server options (services dir, port, etc.) */
-  server?: ServerOptions;
+/**
+ * Start pi in RPC mode. Returns a handle to send commands and receive events.
+ */
+function startPiRpc(opts: { model?: string }): PiRpc {
+  const piPath = process.env.PI_PATH ?? "pi";
+  const model = opts.model ?? process.env.PI_MODEL ?? "claude-sonnet-4-20250514";
+
+  const child = spawn(piPath, ["--mode", "rpc", "--no-session"], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, PI_MODEL: model },
+  });
+
+  let eventHandler: ((event: any) => void) | undefined;
+  let lineBuf = "";
+
+  child.stdout.on("data", (data: Buffer) => {
+    lineBuf += data.toString();
+    const lines = lineBuf.split("\n");
+    lineBuf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (eventHandler) eventHandler(event);
+      } catch { /* not JSON */ }
+    }
+  });
+
+  child.stderr.on("data", (data: Buffer) => {
+    // Pi stderr — log but don't crash
+    const msg = data.toString().trim();
+    if (msg) console.error(`  [pi] ${msg}`);
+  });
+
+  return {
+    send(cmd: object) {
+      child.stdin.write(JSON.stringify(cmd) + "\n");
+    },
+    onEvent(handler) {
+      eventHandler = handler;
+    },
+    async kill() {
+      child.kill("SIGTERM");
+    },
+  };
 }
 
 // =============================================================================
 // Reef
 // =============================================================================
 
+export interface ReefConfig {
+  agent?: {
+    model?: string;
+    systemPrompt?: string;
+  };
+  server?: ServerOptions;
+}
+
 export async function createReef(config: ReefConfig = {}) {
-  // Start the service module system
   const { app: serviceApp, liveModules, events, ctx } = await createServer(config.server ?? {});
 
-  // Agent loop (optional — reef can run without it for pure service mode)
-  let loop: AgentLoop | null = null;
+  const tree = new ConversationTree();
   const sseClients = new Set<ReadableStreamDefaultController>();
 
-  if (config.agent) {
-    const workspaceDir = config.server?.servicesDir ?? process.env.SERVICES_DIR ?? "./services";
+  // Initialize tree with system prompt
+  const systemPrompt = config.agent?.systemPrompt
+    ?? process.env.REEF_SYSTEM_PROMPT
+    ?? "You are a reef agent. You have tools to manage VMs, spawn swarms, deploy services, and store state. When given a task, decide the best approach — do it yourself, delegate to a swarm, or decompose it. You build your own tools.";
+  tree.append("system", systemPrompt);
 
-    loop = new AgentLoop({
-      ...config.agent,
-      workspaceDir,
-      onEvent: (event) => {
-        // Broadcast to SSE clients
-        const data = JSON.stringify(event);
-        for (const controller of sseClients) {
-          try {
-            controller.enqueue(`data: ${data}\n\n`);
-          } catch {
-            sseClients.delete(controller);
-          }
+  // Start pi RPC (if we have an API key)
+  let rpc: PiRpc | null = null;
+  let agentBusy = false;
+  let lastAgentOutput = "";
+
+  if (process.env.ANTHROPIC_API_KEY) {
+    rpc = startPiRpc({ model: config.agent?.model });
+
+    rpc.onEvent((event) => {
+      // Broadcast to SSE clients
+      const data = JSON.stringify(event);
+      for (const controller of sseClients) {
+        try { controller.enqueue(`data: ${data}\n\n`); } catch { sseClients.delete(controller); }
+      }
+
+      // Track agent state
+      if (event.type === "agent_start") {
+        agentBusy = true;
+        lastAgentOutput = "";
+      } else if (event.type === "agent_end") {
+        agentBusy = false;
+        // Append the agent's response to the tree
+        if (lastAgentOutput.trim()) {
+          tree.append("assistant", lastAgentOutput.trim());
         }
-      },
+      } else if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+        lastAgentOutput += event.assistantMessageEvent.delta;
+      }
     });
-    loop.start();
   }
 
   // ==========================================================================
-  // Agent routes (mounted on the service app)
+  // Routes
   // ==========================================================================
 
   const reef = new Hono();
   const auth = bearerAuth();
+  reef.use("*", async (c, next) => await auth(c, next));
 
-  // All reef routes require auth
-  reef.use("*", async (c, next) => {
-    const result = await auth(c, next);
-    return result;
-  });
-
-  // POST /reef/submit — submit a task, fork a branch
+  // POST /reef/submit — send a task to the agent
   reef.post("/submit", async (c) => {
-    if (!loop) {
-      return c.json({ error: "Agent loop not configured. Set VERS_COMMIT_ID and ANTHROPIC_API_KEY." }, 503);
+    if (!rpc) {
+      return c.json({ error: "Agent not running. Set ANTHROPIC_API_KEY." }, 503);
+    }
+    if (agentBusy) {
+      return c.json({ error: "Agent is busy. Wait for current task to complete." }, 429);
     }
 
     const body = await c.req.json();
     const task = body.task;
-    const name = body.name;
-
     if (!task || typeof task !== "string") {
       return c.json({ error: "Missing 'task' string in body." }, 400);
     }
 
-    try {
-      const branchName = loop.submit(task, { name });
-      const branch = loop.tree.getBranch(branchName);
-      return c.json({
-        branch: branchName,
-        status: branch.status,
-        trigger: branch.trigger,
-        forkPoint: branch.forkPoint,
-      }, 201);
-    } catch (e: any) {
-      return c.json({ error: e.message }, 429); // likely max concurrent
-    }
+    // Append to tree and send to pi
+    tree.append("user", task);
+    rpc.send({ type: "prompt", message: task });
+
+    return c.json({ status: "submitted", task }, 202);
   });
 
-  // GET /reef/tree — main's conversation history
+  // GET /reef/tree — conversation history
   reef.get("/tree", (c) => {
-    if (!loop) return c.json({ main: [] });
-    return c.json({ main: loop.history() });
+    return c.json({ main: tree.mainHistory() });
   });
 
-  // GET /reef/branches — all branches
-  reef.get("/branches", (c) => {
-    if (!loop) return c.json({ branches: [] });
-    const branches = loop.tree.listBranches().map((b) => ({
-      name: b.name,
-      status: b.status,
-      trigger: b.trigger,
-      forkPoint: b.forkPoint,
-      vmId: b.vmId,
-      createdAt: b.createdAt,
-      startedAt: b.startedAt,
-      completedAt: b.completedAt,
-      artifacts: b.artifacts,
-    }));
-    return c.json({ branches });
-  });
-
-  // GET /reef/branches/:name — specific branch
-  reef.get("/branches/:name", (c) => {
-    if (!loop) return c.json({ error: "Agent loop not configured." }, 503);
-    try {
-      const branch = loop.tree.getBranch(c.req.param("name"));
-      return c.json({
-        name: branch.name,
-        status: branch.status,
-        trigger: branch.trigger,
-        forkPoint: branch.forkPoint,
-        vmId: branch.vmId,
-        nodes: branch.nodes,
-        artifacts: branch.artifacts,
-        createdAt: branch.createdAt,
-        startedAt: branch.startedAt,
-        completedAt: branch.completedAt,
-      });
-    } catch (e: any) {
-      return c.json({ error: e.message }, 404);
-    }
-  });
-
-  // GET /reef/state — overall loop state
+  // GET /reef/state
   reef.get("/state", (c) => {
-    if (!loop) {
-      return c.json({
-        mode: "service-only",
-        services: Array.from(liveModules.keys()),
-      });
-    }
     return c.json({
-      mode: "agent",
-      ...loop.state(),
+      mode: rpc ? "agent" : "service-only",
+      agentBusy,
+      conversationLength: tree.main.length,
       services: Array.from(liveModules.keys()),
     });
   });
 
-  // GET /reef/events — SSE stream
+  // GET /reef/events — SSE
   reef.get("/events", (c) => {
     const stream = new ReadableStream({
       start(controller) {
@@ -190,7 +189,6 @@ export async function createReef(config: ReefConfig = {}) {
         sseClients.delete(controller);
       },
     });
-
     return new Response(stream, {
       headers: {
         "Content-Type": "text/event-stream",
@@ -201,74 +199,34 @@ export async function createReef(config: ReefConfig = {}) {
     });
   });
 
-  // Mount reef routes BEFORE service dispatch (which uses catch-all /:service/*)
-  // We need to insert our routes directly into the app before the catch-all.
-  // Since createServer already registered the catch-all, we create a wrapper.
+  // Mount reef before service dispatch
   const wrapper = new Hono();
-
-  // Reef routes first
   wrapper.route("/reef", reef);
-
-  // Then everything from the service app (health, root-mounted modules, dispatch)
   wrapper.route("/", serviceApp);
 
-  return { app: wrapper, loop, liveModules, events, ctx, sseClients };
+  return { app: wrapper, rpc, tree, liveModules, events, ctx, sseClients };
 }
 
-// =============================================================================
-// Start — the new entry point
-// =============================================================================
-
 export async function startReef(config: ReefConfig = {}) {
-  // Auto-configure from environment
-  if (!config.agent && process.env.VERS_COMMIT_ID && process.env.ANTHROPIC_API_KEY) {
-    config.agent = {
-      commitId: process.env.VERS_COMMIT_ID,
-      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-      model: process.env.PI_MODEL,
-      systemPrompt: process.env.REEF_SYSTEM_PROMPT ?? "You are a reef agent. You build, test, and deploy services.",
-      maxConcurrent: parseInt(process.env.REEF_MAX_CONCURRENT ?? "5", 10),
-      vers: {
-        apiKey: process.env.VERS_API_KEY,
-        baseUrl: process.env.VERS_BASE_URL,
-      },
-    };
-  }
-
-  const { app, loop, liveModules, sseClients } = await createReef(config);
+  const { app, rpc, tree, liveModules, sseClients } = await createReef(config);
   const port = config.server?.port ?? parseInt(process.env.PORT ?? "3000", 10);
 
-  const mode = loop ? "agent" : "service-only";
+  const mode = rpc ? "agent" : "service-only";
   console.log(`  mode: ${mode}`);
-
-  if (loop) {
-    console.log(`  commit: ${config.agent!.commitId}`);
-    console.log(`  model: ${config.agent!.model ?? "claude-sonnet-4-20250514"}`);
-    console.log(`  max concurrent: ${config.agent!.maxConcurrent ?? 5}`);
-  }
 
   console.log("  services:");
   for (const mod of liveModules.values()) {
-    if (mod.routes) {
-      console.log(`    /${mod.name} — ${mod.description || mod.name}`);
-    }
+    if (mod.routes) console.log(`    /${mod.name} — ${mod.description || mod.name}`);
   }
-  console.log(`    /reef — conversation tree + branch management`);
+  console.log(`    /reef — agent conversation + task submission`);
 
-  const server = Bun.serve({
-    fetch: app.fetch,
-    port,
-    hostname: "::",
-  });
-
+  const server = Bun.serve({ fetch: app.fetch, port, hostname: "::" });
   console.log(`\n  reef running on :${port}\n`);
 
   async function shutdown() {
     console.log("\n  shutting down...");
-    if (loop) loop.stop();
-    for (const controller of sseClients) {
-      try { controller.close(); } catch {}
-    }
+    if (rpc) await rpc.kill();
+    for (const c of sseClients) { try { c.close(); } catch {} }
     for (const mod of liveModules.values()) {
       if (mod.store?.flush) mod.store.flush();
       if (mod.store?.close) await mod.store.close();
@@ -280,5 +238,5 @@ export async function startReef(config: ReefConfig = {}) {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  return { app, server, loop, liveModules };
+  return { app, server, rpc, tree, liveModules };
 }
