@@ -106,7 +106,7 @@ export async function createReef(config: ReefConfig = {}) {
     }
 
     try {
-      const branchName = await loop.submit(task, { name });
+      const branchName = loop.submit(task, { name });
       const branch = loop.tree.getBranch(branchName);
       return c.json({
         branch: branchName,

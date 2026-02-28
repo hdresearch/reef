@@ -118,7 +118,7 @@ export class AgentLoop {
    *
    * If max concurrent branches are in-flight, throws.
    */
-  async submit(task: string, opts?: { name?: string }): Promise<string> {
+  submit(task: string, opts?: { name?: string }): string {
     const active = this.tree.activeBranches();
     if (active >= this.maxConcurrent) {
       this.emit({ type: "queue_full", trigger: task });
@@ -135,25 +135,8 @@ export class AgentLoop {
     // Build context for the branch (main's history + task)
     const context = this.tree.contextForBranch(name);
 
-    // Execute on a Vers VM
-    try {
-      const handle = await executeBranch(context, task, {
-        commitId: this.config.commitId,
-        anthropicApiKey: this.config.anthropicApiKey,
-        model: this.config.model,
-        vers: this.config.vers,
-        timeoutMs: this.config.branchTimeoutMs,
-      });
-
-      this.tree.start(name, handle.vmId);
-      this.emit({ type: "branch_started", name, vmId: handle.vmId });
-
-      // Track in merge queue — when the branch completes, it'll queue for merge
-      this.mergeQueue.track(name, handle);
-    } catch (e: any) {
-      this.tree.fail(name, e.message ?? String(e));
-      this.emit({ type: "branch_failed", name, error: e.message ?? String(e) });
-    }
+    // Launch branch in background — don't block the caller
+    this.launchBranch(name, context, task);
 
     return name;
   }
@@ -182,6 +165,31 @@ export class AgentLoop {
       };
       check();
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Branch lifecycle (background)
+  // ---------------------------------------------------------------------------
+
+  private async launchBranch(name: string, context: string, task: string): Promise<void> {
+    try {
+      const handle = await executeBranch(context, task, {
+        commitId: this.config.commitId,
+        anthropicApiKey: this.config.anthropicApiKey,
+        model: this.config.model,
+        vers: this.config.vers,
+        timeoutMs: this.config.branchTimeoutMs,
+      });
+
+      this.tree.start(name, handle.vmId);
+      this.emit({ type: "branch_started", name, vmId: handle.vmId });
+
+      // Track in merge queue — when the branch completes, it'll queue for merge
+      this.mergeQueue.track(name, handle);
+    } catch (e: any) {
+      this.tree.fail(name, e.message ?? String(e));
+      this.emit({ type: "branch_failed", name, error: e.message ?? String(e) });
+    }
   }
 
   // ---------------------------------------------------------------------------
