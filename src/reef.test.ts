@@ -3,15 +3,12 @@ import { createReef } from "./reef.js";
 
 const TOKEN = "test-token-reef";
 process.env.VERS_AUTH_TOKEN = TOKEN;
-
 const headers = { "Authorization": `Bearer ${TOKEN}`, "Content-Type": "application/json" };
 
 describe("reef", () => {
   let app: any;
 
   const setup = (async () => {
-    // No ANTHROPIC_API_KEY → service-only mode (no pi process)
-    delete process.env.ANTHROPIC_API_KEY;
     const reef = await createReef({ server: { modules: [] } });
     app = reef.app;
   })();
@@ -27,11 +24,12 @@ describe("reef", () => {
     return { status: res.status, data: await res.json() };
   }
 
-  test("GET /reef/state — service-only mode", async () => {
+  test("GET /reef/state", async () => {
     const { status, data } = await json("/reef/state");
     expect(status).toBe(200);
-    expect(data.mode).toBe("service-only");
-    expect(data.agentBusy).toBe(false);
+    expect(data.mode).toBe("agent");
+    expect(data.activeTasks).toBe(0);
+    expect(data.conversationLength).toBe(1); // system prompt
   });
 
   test("GET /reef/tree — has system prompt", async () => {
@@ -40,21 +38,14 @@ describe("reef", () => {
     expect(data.main[0].role).toBe("system");
   });
 
-  test("POST /reef/submit — 503 without agent", async () => {
-    const { status } = await json("/reef/submit", {
-      method: "POST",
-      body: { task: "do something" },
-    });
-    expect(status).toBe(503);
+  test("GET /reef/tasks — empty initially", async () => {
+    const { data } = await json("/reef/tasks");
+    expect(data.tasks).toEqual([]);
   });
 
   test("POST /reef/submit — 400 without task", async () => {
-    const { status } = await json("/reef/submit", {
-      method: "POST",
-      body: {},
-    });
-    // 503 fires before validation in service-only mode
-    expect(status).toBe(503);
+    const { status } = await json("/reef/submit", { method: "POST", body: {} });
+    expect(status).toBe(400);
   });
 
   test("requires auth", async () => {
@@ -73,5 +64,10 @@ describe("reef", () => {
     const res = await app.fetch(new Request("http://localhost/reef/events", { headers }));
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/event-stream");
+  });
+
+  test("GET /reef/tasks/:id — 404 for unknown", async () => {
+    const { status } = await json("/reef/tasks/nope");
+    expect(status).toBe(404);
   });
 });
