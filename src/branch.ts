@@ -38,23 +38,53 @@ function resolveVersConfig(override?: Partial<VersConfig>): VersConfig {
   };
 }
 
+/**
+ * Vers API via curl — Bun's fetch() hangs on Vers VMs (DNS/TLS issue).
+ * curl works fine, so we shell out to it.
+ */
 async function versApi<T>(config: VersConfig, method: string, path: string, body?: unknown): Promise<T> {
   const url = `${config.baseUrl}${path}`;
-  const res = await fetch(url, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+  const args = [
+    "curl", "-s", "-X", method,
+    "-H", "Content-Type: application/json",
+    ...(config.apiKey ? ["-H", `Authorization: Bearer ${config.apiKey}`] : []),
+    ...(body !== undefined ? ["-d", JSON.stringify(body)] : []),
+    "-w", "\n%{http_code}",
+    "--max-time", "30",
+    url,
+  ];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(args[0], args.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+    child.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const lines = stdout.trimEnd().split("\n");
+      const httpCode = parseInt(lines.pop() ?? "0", 10);
+      const responseBody = lines.join("\n");
+
+      if (code !== 0) {
+        reject(new Error(`Vers API curl failed (exit ${code}): ${stderr}`));
+        return;
+      }
+      if (httpCode >= 400) {
+        reject(new Error(`Vers API ${method} ${path} (${httpCode}): ${responseBody}`));
+        return;
+      }
+      if (!responseBody.trim()) {
+        resolve(undefined as T);
+        return;
+      }
+      try {
+        resolve(JSON.parse(responseBody) as T);
+      } catch {
+        resolve(undefined as T);
+      }
+    });
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Vers API ${method} ${path} (${res.status}): ${text}`);
-  }
-  const ct = res.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) return res.json() as Promise<T>;
-  return undefined as T;
 }
 
 // =============================================================================
