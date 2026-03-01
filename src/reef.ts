@@ -214,6 +214,7 @@ export async function createReef(config: ReefConfig = {}) {
     task.completedAt = Date.now();
     tree.failTask(taskId, error);
     broadcast({ taskId, type: "task_error", error });
+    tree.pruneToLimit();
   }
 
   function launchTask(task: Task, taskId: string, userNode: import("./tree.js").TreeNode, treeContext: string) {
@@ -269,6 +270,8 @@ export async function createReef(config: ReefConfig = {}) {
             nodeId: assistantNode.id,
             parentId: assistantNode.parentId,
           });
+
+          tree.pruneToLimit();
         },
         onError(err) {
           failTask(task, taskId, err);
