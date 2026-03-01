@@ -39,5 +39,23 @@ export function createRoutes(store: CommitStore): Hono {
     return c.json({ deleted: true });
   });
 
+  routes.get("/_panel", (c) => {
+    const commits = store.list({});
+    const rows = commits
+      .slice(-20)
+      .reverse()
+      .map((commit: any) => {
+        const time = new Date(commit.timestamp).toLocaleTimeString();
+        const tag = commit.tag ? ` <span style="color:#f90">${commit.tag}</span>` : "";
+        const label = commit.label || commit.commitId?.slice(0, 8) || "—";
+        return `<div style="padding:4px 0;border-bottom:1px solid #222"><span style="color:#666">${time}</span> ${label}${tag}</div>`;
+      })
+      .join("");
+    return c.html(`<div style="font-family:monospace;font-size:13px;color:#ccc;padding:12px">
+      <h3 style="margin:0 0 8px;color:#4f9">Commits</h3>
+      ${rows || '<div style="color:#666">No commits recorded</div>'}
+    </div>`);
+  });
+
   return routes;
 }

@@ -49,5 +49,19 @@ export function createRoutes(store: UsageStore): Hono {
     return c.json({ vms, count: vms.length });
   });
 
+  routes.get("/_panel", (c) => {
+    const summary = store.summary("7d");
+    return c.html(`<div style="font-family:monospace;font-size:13px;color:#ccc;padding:12px">
+      <h3 style="margin:0 0 8px;color:#4f9">Usage (7d)</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>Sessions: <strong>${summary.totalSessions ?? 0}</strong></div>
+        <div>VMs: <strong>${summary.totalVMs ?? 0}</strong></div>
+        <div>Input tokens: <strong>${(summary.totalInputTokens ?? 0).toLocaleString()}</strong></div>
+        <div>Output tokens: <strong>${(summary.totalOutputTokens ?? 0).toLocaleString()}</strong></div>
+        <div>Cost: <strong>$${(summary.totalCost ?? 0).toFixed(2)}</strong></div>
+      </div>
+    </div>`);
+  });
+
   return routes;
 }

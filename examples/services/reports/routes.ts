@@ -38,5 +38,22 @@ export function createRoutes(store: ReportsStore): Hono {
     return c.json({ deleted: true });
   });
 
+  routes.get("/_panel", (c) => {
+    const reports = store.list({});
+    const rows = reports
+      .slice(-15)
+      .reverse()
+      .map((r: any) => {
+        const time = new Date(r.createdAt).toLocaleTimeString();
+        const tags = r.tags?.length ? ` <span style="color:#888">[${r.tags.join(", ")}]</span>` : "";
+        return `<div style="padding:4px 0;border-bottom:1px solid #222"><span style="color:#666">${time}</span> <strong>${r.title}</strong>${tags}</div>`;
+      })
+      .join("");
+    return c.html(`<div style="font-family:monospace;font-size:13px;color:#ccc;padding:12px">
+      <h3 style="margin:0 0 8px;color:#4f9">Reports — ${reports.length} total</h3>
+      ${rows || '<div style="color:#666">No reports yet</div>'}
+    </div>`);
+  });
+
   return routes;
 }

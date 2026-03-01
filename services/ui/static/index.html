@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>reef</title>
+  <link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>▸ reef</h1>
+      <nav class="tabs" id="tabs"></nav>
+      <div class="status" id="status">
+        <span class="dot"></span>
+        <span class="label">loading</span>
+      </div>
+    </header>
+
+    <div id="workspace">
+      <!-- Activity feed — renders the event tree -->
+      <div id="feed"></div>
+
+      <!-- Branch panel — streams full conversations -->
+      <div id="branch-panel" class="hidden">
+        <div class="branch-header">
+          <span class="branch-title" id="branch-title">—</span>
+          <button class="branch-close" id="branch-close">✕</button>
+        </div>
+        <div class="branch-messages" id="branch-messages"></div>
+        <div class="branch-input-area">
+          <textarea id="branch-input" placeholder="Continue conversation… (Enter to send)" rows="1"></textarea>
+          <button id="branch-send">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel overlay area for service panels -->
+    <div id="panels"></div>
+  </div>
+
+  <script>const PANEL_API = '/ui/api';</script>
+  <script src="/ui/static/app.js"></script>
+</body>
+</html>
