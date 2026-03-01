@@ -2,10 +2,10 @@
  * UI routes — serves the dashboard, handles magic link auth, proxies API calls.
  */
 
-import { Hono } from "hono";
-import { createMagicLink, consumeMagicLink, createSession, validateSession } from "./auth.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Hono } from "hono";
+import { consumeMagicLink, createMagicLink, createSession, validateSession } from "./auth.js";
 
 const AUTH_TOKEN = process.env.VERS_AUTH_TOKEN || "test-token";
 
@@ -48,18 +48,19 @@ export function createRoutes(): Hono {
       const valid = consumeMagicLink(token);
       if (valid) {
         const session = createSession();
-        return c.html(
-          `<html><head><meta http-equiv="refresh" content="0;url=/ui/"></head></html>`,
-          200,
-          { "Set-Cookie": `session=${session.id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400` },
-        );
+        return c.html(`<html><head><meta http-equiv="refresh" content="0;url=/ui/"></head></html>`, 200, {
+          "Set-Cookie": `session=${session.id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+        });
       }
-      return c.html(`
+      return c.html(
+        `
         <html><body style="background:#0a0a0a;color:#f55;font-family:monospace;padding:2em">
           <h2>Invalid or expired link</h2>
           <p>Request a new magic link from the API.</p>
         </body></html>
-      `, 401);
+      `,
+        401,
+      );
     }
 
     return c.html(`
@@ -103,10 +104,7 @@ export function createRoutes(): Hono {
     try {
       const content = readFileSync(join(getStaticDir(), file), "utf-8");
       const ext = file.split(".").pop();
-      const contentType =
-        ext === "css" ? "text/css" :
-        ext === "js" ? "application/javascript" :
-        "text/plain";
+      const contentType = ext === "css" ? "text/css" : ext === "js" ? "application/javascript" : "text/plain";
       return c.body(content, 200, { "Content-Type": contentType });
     } catch {
       return c.text("Not found", 404);

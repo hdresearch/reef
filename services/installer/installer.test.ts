@@ -4,17 +4,10 @@
  * Moved from tests/server.test.ts.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import {
-  mkdirSync,
-  rmSync,
-  writeFileSync,
-  existsSync,
-  readFileSync,
-  lstatSync,
-} from "node:fs";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createServer } from "../../src/core/server.js";
 import { parseSource } from "./index.js";
 
@@ -30,7 +23,7 @@ function req(
 ) {
   const headers: Record<string, string> = {};
   if (opts.body) headers["Content-Type"] = "application/json";
-  if (opts.auth) headers["Authorization"] = `Bearer ${opts.auth}`;
+  if (opts.auth) headers.Authorization = `Bearer ${opts.auth}`;
   return app.fetch(
     new Request(`http://localhost${path}`, {
       method: opts.method ?? "GET",
@@ -435,18 +428,23 @@ describe("fleet-to-fleet install", () => {
     const managerSrc = join(import.meta.dir, "..", "services", "index.ts");
     const managerDst = join(SOURCE_DIR, "services");
     mkdirSync(managerDst, { recursive: true });
-    const managerContent = readFileSync(managerSrc, "utf-8")
-      .replace('"../src/core/types.js"', `"${join(import.meta.dir, "..", "..", "src", "core", "types.js")}"`);
+    const managerContent = readFileSync(managerSrc, "utf-8").replace(
+      '"../src/core/types.js"',
+      `"${join(import.meta.dir, "..", "..", "src", "core", "types.js")}"`,
+    );
     writeFileSync(join(managerDst, "index.ts"), managerContent);
 
     const svcDir = join(SOURCE_DIR, "exportable");
     mkdirSync(svcDir, { recursive: true });
-    writeFileSync(join(svcDir, "index.ts"), `
+    writeFileSync(
+      join(svcDir, "index.ts"),
+      `
 import { Hono } from "hono";
 const routes = new Hono();
 routes.get("/", (c) => c.json({ pulled: true, origin: "source" }));
 export default { name: "exportable", description: "A service that can be exported", routes, requiresAuth: false };
-`);
+`,
+    );
     writeFileSync(join(svcDir, "helpers.ts"), `export const VERSION = 1;`);
   }
 
@@ -456,8 +454,10 @@ export default { name: "exportable", description: "A service that can be exporte
     const installerSrc = join(import.meta.dir, "index.ts");
     const installerDst = join(DEST_DIR, "installer");
     mkdirSync(installerDst, { recursive: true });
-    const installerContent = readFileSync(installerSrc, "utf-8")
-      .replace('"../src/core/types.js"', `"${join(import.meta.dir, "..", "..", "src", "core", "types.js")}"`);
+    const installerContent = readFileSync(installerSrc, "utf-8").replace(
+      '"../src/core/types.js"',
+      `"${join(import.meta.dir, "..", "..", "src", "core", "types.js")}"`,
+    );
     writeFileSync(join(installerDst, "index.ts"), installerContent);
 
     return createServer({ servicesDir: DEST_DIR });

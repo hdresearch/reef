@@ -5,8 +5,8 @@
  * routes and client-side pi extension behavior in one place.
  */
 
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { Hono } from "hono";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { ServiceEventBus } from "./events.js";
 
 // =============================================================================

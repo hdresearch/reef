@@ -23,15 +23,15 @@
  *   PI_PROVIDER    — provider (default: "anthropic")
  */
 
-import { Hono } from "hono";
-import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import { ulid } from "ulid";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { type ChildProcess, execSync, spawn } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ServiceModule, ServiceContext } from "../src/core/types.js";
+import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { Hono } from "hono";
+import { ulid } from "ulid";
+import type { ServiceContext, ServiceModule } from "../src/core/types.js";
 
-let ctx: ServiceContext;
+let _ctx: ServiceContext;
 let piAvailable = false;
 
 // =============================================================================
@@ -78,9 +78,7 @@ function buildSystemAppend(projectRoot: string, port: number): string {
   lines.push("- Service modules go in services/<name>/index.ts");
   lines.push("- Each module default-exports a ServiceModule (see src/core/types.ts)");
   lines.push("- After writing a service, reload it:");
-  lines.push(
-    `  curl -X POST localhost:${port}/services/reload/<name> -H "Authorization: Bearer $VERS_AUTH_TOKEN"`,
-  );
+  lines.push(`  curl -X POST localhost:${port}/services/reload/<name> -H "Authorization: Bearer $VERS_AUTH_TOKEN"`);
   lines.push("- Example services are in examples/services/");
   lines.push("");
 
@@ -132,9 +130,12 @@ function spawnTask(run: Run, projectRoot: string, port: number): ChildProcess {
   const args = [
     "-p",
     "--no-session",
-    "--provider", piProvider(),
-    "--model", piModel(),
-    "--append-system-prompt", contextText,
+    "--provider",
+    piProvider(),
+    "--model",
+    piModel(),
+    "--append-system-prompt",
+    contextText,
     ...extensionArgs,
     run.task,
   ];
@@ -196,11 +197,15 @@ function spawnSession(id: string): Session {
   const extensionArgs = discoverExtensions(projectRoot).flatMap((p) => ["--extension", p]);
 
   const args = [
-    "--mode", "rpc",
+    "--mode",
+    "rpc",
     "--no-session",
-    "--provider", piProvider(),
-    "--model", piModel(),
-    "--append-system-prompt", contextText,
+    "--provider",
+    piProvider(),
+    "--model",
+    piModel(),
+    "--append-system-prompt",
+    contextText,
     ...extensionArgs,
   ];
 
@@ -249,7 +254,9 @@ function spawnSession(id: string): Session {
   child.on("close", () => {
     session.status = "closed";
     for (const controller of session.sseClients) {
-      try { controller.close(); } catch {}
+      try {
+        controller.close();
+      } catch {}
     }
     session.sseClients.clear();
   });
@@ -259,7 +266,7 @@ function spawnSession(id: string): Session {
 
 function sendToSession(session: Session, command: Record<string, unknown>): boolean {
   if (session.status !== "active" || !session.process.stdin?.writable) return false;
-  session.process.stdin.write(JSON.stringify(command) + "\n");
+  session.process.stdin.write(`${JSON.stringify(command)}\n`);
   return true;
 }
 
@@ -267,10 +274,14 @@ function endSession(session: Session): void {
   session.status = "closed";
   session.process.kill("SIGTERM");
   setTimeout(() => {
-    try { session.process.kill("SIGKILL"); } catch {}
+    try {
+      session.process.kill("SIGKILL");
+    } catch {}
   }, 3000);
   for (const controller of session.sseClients) {
-    try { controller.close(); } catch {}
+    try {
+      controller.close();
+    } catch {}
   }
   session.sseClients.clear();
 }
@@ -328,7 +339,9 @@ routes.post("/tasks/:id/cancel", (c) => {
   const child = taskProcesses.get(run.id);
   if (child) {
     child.kill("SIGTERM");
-    setTimeout(() => { if (taskProcesses.has(run.id)) child.kill("SIGKILL"); }, 5000);
+    setTimeout(() => {
+      if (taskProcesses.has(run.id)) child.kill("SIGKILL");
+    }, 5000);
   }
   run.status = "cancelled";
   run.finishedAt = new Date().toISOString();
@@ -353,7 +366,10 @@ routes.post("/sessions", (c) => {
 
 routes.get("/sessions", (c) => {
   const items = Array.from(sessions.values()).map(({ id, status, createdAt, model }) => ({
-    id, status, createdAt, model,
+    id,
+    status,
+    createdAt,
+    model,
   }));
   return c.json({ sessions: items, count: items.length });
 });
@@ -430,7 +446,7 @@ const agent: ServiceModule = {
   routes,
 
   init(serviceCtx: ServiceContext) {
-    ctx = serviceCtx;
+    _ctx = serviceCtx;
     try {
       execSync(`${piPath()} --help`, { stdio: "ignore", timeout: 5000 });
       piAvailable = true;
@@ -499,14 +515,13 @@ const agent: ServiceModule = {
 
   // Seed capabilities this service provides to the substrate
   capabilities: [
-    "agent.spawn",              // POST /agent/tasks spawns pi processes
-    "agent.spawn.concurrent",   // multiple tasks can run simultaneously
-    "agent.communicate",        // POST /agent/sessions/:id/message
+    "agent.spawn", // POST /agent/tasks spawns pi processes
+    "agent.spawn.concurrent", // multiple tasks can run simultaneously
+    "agent.communicate", // POST /agent/sessions/:id/message
     "agent.communicate.streaming", // GET /agent/sessions/:id/events (SSE)
     "agent.communicate.bidirectional", // send messages to running sessions
-    "agent.lifecycle",          // list, cancel, abort, delete
+    "agent.lifecycle", // list, cancel, abort, delete
   ],
 };
 
 export default agent;
-

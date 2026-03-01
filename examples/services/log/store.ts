@@ -2,9 +2,9 @@
  * Log store — append-only work log. Carmack .plan style.
  */
 
-import { ulid } from "ulid";
-import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { ulid } from "ulid";
 
 export interface LogEntry {
   id: string;
@@ -25,7 +25,10 @@ export interface QueryOptions {
 }
 
 export class ValidationError extends Error {
-  constructor(message: string) { super(message); this.name = "ValidationError"; }
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
 }
 
 function parseDuration(duration: string): number | null {
@@ -53,7 +56,11 @@ export class LogStore {
     if (!content) return;
     for (const line of content.split("\n")) {
       if (!line.trim()) continue;
-      try { this.entries.push(JSON.parse(line)); } catch { /* skip */ }
+      try {
+        this.entries.push(JSON.parse(line));
+      } catch {
+        /* skip */
+      }
     }
   }
 
@@ -69,7 +76,7 @@ export class LogStore {
 
     const dir = dirname(this.filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
+    appendFileSync(this.filePath, `${JSON.stringify(entry)}\n`);
     this.entries.push(entry);
     return entry;
   }
@@ -96,10 +103,10 @@ export class LogStore {
   }
 
   formatRaw(entries: LogEntry[]): string {
-    return entries
-      .map((e) => `[${e.timestamp}]${e.agent ? ` (${e.agent})` : ""} ${e.text}`)
-      .join("\n");
+    return entries.map((e) => `[${e.timestamp}]${e.agent ? ` (${e.agent})` : ""} ${e.text}`).join("\n");
   }
 
-  get size(): number { return this.entries.length; }
+  get size(): number {
+    return this.entries.length;
+  }
 }

@@ -2,27 +2,24 @@
  * Board tools — registered on the pi extension so the LLM can manage tasks.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { FleetClient } from "../src/core/types.js";
-import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import type { FleetClient } from "../src/core/types.js";
 
-const STATUS_ENUM = StringEnum(
-  ["open", "in_progress", "in_review", "blocked", "done"] as const,
-  { description: "Task status" },
-);
+const STATUS_ENUM = StringEnum(["open", "in_progress", "in_review", "blocked", "done"] as const, {
+  description: "Task status",
+});
 
-const ARTIFACT_TYPE_ENUM = StringEnum(
-  ["branch", "report", "deploy", "diff", "file", "url"] as const,
-  { description: "Artifact type" },
-);
+const ARTIFACT_TYPE_ENUM = StringEnum(["branch", "report", "deploy", "diff", "file", "url"] as const, {
+  description: "Artifact type",
+});
 
 export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
     name: "board_create_task",
     label: "Board: Create Task",
-    description:
-      "Create a new task on the shared coordination board. Returns the created task with its ID.",
+    description: "Create a new task on the shared coordination board. Returns the created task with its ID.",
     parameters: Type.Object({
       title: Type.String({ description: "Task title" }),
       description: Type.Optional(Type.String({ description: "Detailed task description" })),
@@ -46,8 +43,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
     name: "board_list_tasks",
     label: "Board: List Tasks",
-    description:
-      "List tasks on the shared board. Optionally filter by status, assignee, or tag.",
+    description: "List tasks on the shared board. Optionally filter by status, assignee, or tag.",
     parameters: Type.Object({
       status: Type.Optional(STATUS_ENUM),
       assignee: Type.Optional(Type.String({ description: "Filter by assignee" })),
@@ -72,8 +68,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
     name: "board_update_task",
     label: "Board: Update Task",
-    description:
-      "Update a task — change status, reassign, rename, or update tags.",
+    description: "Update a task — change status, reassign, rename, or update tags.",
     parameters: Type.Object({
       id: Type.String({ description: "Task ID to update" }),
       status: Type.Optional(STATUS_ENUM),
@@ -96,8 +91,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
     name: "board_add_note",
     label: "Board: Add Note",
-    description:
-      "Add a note to a task — findings, blockers, questions, or status updates.",
+    description: "Add a note to a task — findings, blockers, questions, or status updates.",
     parameters: Type.Object({
       taskId: Type.String({ description: "Task ID to add the note to" }),
       content: Type.String({ description: "Note content" }),
@@ -109,11 +103,10 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       if (!client.getBaseUrl()) return client.noUrl();
       try {
         const { taskId, ...body } = params;
-        const note = await client.api(
-          "POST",
-          `/board/tasks/${encodeURIComponent(taskId)}/notes`,
-          { ...body, author: client.agentName },
-        );
+        const note = await client.api("POST", `/board/tasks/${encodeURIComponent(taskId)}/notes`, {
+          ...body,
+          author: client.agentName,
+        });
         return client.ok(JSON.stringify(note, null, 2), { note });
       } catch (e: any) {
         return client.err(e.message);
@@ -148,11 +141,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           reviewedBy: client.agentName,
         };
         if (params.artifacts) body.artifacts = params.artifacts;
-        const task = await client.api(
-          "POST",
-          `/board/tasks/${encodeURIComponent(params.taskId)}/review`,
-          body,
-        );
+        const task = await client.api("POST", `/board/tasks/${encodeURIComponent(params.taskId)}/review`, body);
         return client.ok(JSON.stringify(task, null, 2), { task });
       } catch (e: any) {
         return client.err(e.message);
@@ -163,8 +152,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
     name: "board_add_artifact",
     label: "Board: Add Artifact",
-    description:
-      "Add artifact link(s) to any task — branches, reports, deploys, diffs, files, or URLs.",
+    description: "Add artifact link(s) to any task — branches, reports, deploys, diffs, files, or URLs.",
     parameters: Type.Object({
       taskId: Type.String({ description: "Task ID" }),
       artifacts: Type.Array(
@@ -179,11 +167,9 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
       try {
-        const task = await client.api(
-          "POST",
-          `/board/tasks/${encodeURIComponent(params.taskId)}/artifacts`,
-          { artifacts: params.artifacts.map((a) => ({ ...a, addedBy: client.agentName })) },
-        );
+        const task = await client.api("POST", `/board/tasks/${encodeURIComponent(params.taskId)}/artifacts`, {
+          artifacts: params.artifacts.map((a) => ({ ...a, addedBy: client.agentName })),
+        });
         return client.ok(JSON.stringify(task, null, 2), { task });
       } catch (e: any) {
         return client.err(e.message);
@@ -201,10 +187,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
       try {
-        const task = await client.api(
-          "POST",
-          `/board/tasks/${encodeURIComponent(params.taskId)}/bump`,
-        );
+        const task = await client.api("POST", `/board/tasks/${encodeURIComponent(params.taskId)}/bump`);
         return client.ok(JSON.stringify(task, null, 2), { task });
       } catch (e: any) {
         return client.err(e.message);

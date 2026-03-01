@@ -1,7 +1,7 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { Hono } from "hono";
 import { createTestHarness, type TestHarness } from "../../src/core/testing.js";
 import docs from "./index.js";
-import { Hono } from "hono";
 
 // A dummy service with routeDocs for the docs service to discover
 const dummy = {

@@ -4,9 +4,9 @@
  * Uses Bun's file APIs for persistence. JSON file with debounced writes.
  */
 
-import { ulid } from "ulid";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { ulid } from "ulid";
 
 // =============================================================================
 // Types
@@ -128,7 +128,7 @@ export class BoardStore {
 
   private load(): void {
     try {
-      const file = Bun.file(this.filePath);
+      const _file = Bun.file(this.filePath);
       if (existsSync(this.filePath)) {
         // Synchronous read at startup — Bun.file().text() is async,
         // so we use the fs import path for the initial load

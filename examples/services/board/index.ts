@@ -7,17 +7,19 @@
  *   board:task_deleted  — { taskId }
  */
 
-import type { ServiceModule, ServiceContext, FleetClient } from "../src/core/types.js";
 import type { ServiceEventBus } from "../src/core/events.js";
-import { BoardStore } from "./store.js";
+import type { FleetClient, ServiceContext, ServiceModule } from "../src/core/types.js";
 import { createRoutes } from "./routes.js";
+import { BoardStore } from "./store.js";
 import { registerTools } from "./tools.js";
 
 const store = new BoardStore();
 
 // Late-bound reference — filled by init(), used by routes
 let events: ServiceEventBus | null = null;
-export function getEvents(): ServiceEventBus | null { return events; }
+export function getEvents(): ServiceEventBus | null {
+  return events;
+}
 
 const board: ServiceModule = {
   name: "board",
@@ -36,7 +38,10 @@ const board: ServiceModule = {
       body: {
         title: { type: "string", required: true, description: "Task title" },
         description: { type: "string", description: "Detailed description" },
-        status: { type: "string", description: "Initial status: open | in_progress | in_review | blocked | done. Default: open" },
+        status: {
+          type: "string",
+          description: "Initial status: open | in_progress | in_review | blocked | done. Default: open",
+        },
         assignee: { type: "string", description: "Agent or user to assign to" },
         tags: { type: "string[]", description: "Tags for categorization" },
         dependencies: { type: "string[]", description: "IDs of tasks this depends on" },
@@ -100,7 +105,11 @@ const board: ServiceModule = {
       summary: "Attach artifacts to a task",
       params: { id: { type: "string", required: true, description: "Task ID" } },
       body: {
-        artifacts: { type: "Artifact[]", required: true, description: "Array of { type, url, label, addedBy? }. Type: branch | report | deploy | diff | file | url" },
+        artifacts: {
+          type: "Artifact[]",
+          required: true,
+          description: "Array of { type, url, label, addedBy? }. Type: branch | report | deploy | diff | file | url",
+        },
       },
       response: "The updated task with new artifacts appended",
     },
@@ -137,10 +146,7 @@ const board: ServiceModule = {
   widget: {
     async getLines(client: FleetClient) {
       try {
-        const res = await client.api<{ tasks: { status: string }[]; count: number }>(
-          "GET",
-          "/board/tasks",
-        );
+        const res = await client.api<{ tasks: { status: string }[]; count: number }>("GET", "/board/tasks");
         const open = res.tasks.filter((t) => t.status === "open").length;
         const inProgress = res.tasks.filter((t) => t.status === "in_progress").length;
         const blocked = res.tasks.filter((t) => t.status === "blocked").length;

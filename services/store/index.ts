@@ -7,10 +7,10 @@
  * All values are stored as JSON in data/store.json.
  */
 
-import { Hono } from "hono";
-import type { ServiceModule, RouteDocs, FleetClient } from "../../src/core/types.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { Hono } from "hono";
+import type { FleetClient, RouteDocs, ServiceModule } from "../../src/core/types.js";
 
 interface StoreEntry {
   value: unknown;
@@ -37,8 +37,10 @@ async function save() {
 }
 
 async function ensureDataDir() {
-  const { mkdirSync } = await import("fs");
-  try { mkdirSync("data", { recursive: true }); } catch {}
+  const { mkdirSync } = await import("node:fs");
+  try {
+    mkdirSync("data", { recursive: true });
+  } catch {}
 }
 
 const app = new Hono();
@@ -118,13 +120,16 @@ const mod: ServiceModule = {
     await load();
   },
   store: {
-    flush() { Bun.write(STORE_PATH, JSON.stringify(entries, null, 2)); },
+    flush() {
+      Bun.write(STORE_PATH, JSON.stringify(entries, null, 2));
+    },
   },
   registerTools(pi: ExtensionAPI, client: FleetClient) {
     pi.registerTool({
       name: "reef_store_get",
       label: "Reef: Get Value",
-      description: "Get a value from the reef key-value store. Use this to retrieve state saved by yourself or other agents.",
+      description:
+        "Get a value from the reef key-value store. Use this to retrieve state saved by yourself or other agents.",
       parameters: Type.Object({
         key: Type.String({ description: "The key to look up" }),
       }),
@@ -143,7 +148,8 @@ const mod: ServiceModule = {
     pi.registerTool({
       name: "reef_store_put",
       label: "Reef: Set Value",
-      description: "Store a value in the reef key-value store. Use this to save state, pass data to other agents, or persist results across tasks.",
+      description:
+        "Store a value in the reef key-value store. Use this to save state, pass data to other agents, or persist results across tasks.",
       parameters: Type.Object({
         key: Type.String({ description: "The key to set" }),
         value: Type.Any({ description: "The value to store (any JSON — string, number, object, array)" }),

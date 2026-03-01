@@ -12,7 +12,7 @@
  *   - Fork: add a child to any node — multiple children = branch point
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 // =============================================================================
 // Types
@@ -202,7 +202,7 @@ export class ConversationTree {
   children(nodeId: string): TreeNode[] {
     const ids = this.childIndex.get(nodeId);
     if (!ids) return [];
-    return ids.map(id => this.nodes.get(id)!).filter(Boolean);
+    return ids.map((id) => this.nodes.get(id)!).filter(Boolean);
   }
 
   /** Get the path from root to a ref's current node. */
@@ -309,7 +309,7 @@ export class ConversationTree {
 
   /** Count active (running) tasks. */
   activeTasks(): number {
-    return [...this.tasks.values()].filter(t => t.status === "running").length;
+    return [...this.tasks.values()].filter((t) => t.status === "running").length;
   }
 
   // ---------------------------------------------------------------------------
@@ -335,4 +335,3 @@ export class ConversationTree {
     return tree;
   }
 }
-

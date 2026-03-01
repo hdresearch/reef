@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "bun --watch run src/main.ts",
     "start": "bun run src/main.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "lint": "biome check .",
+    "lint:fix": "biome check --fix --unsafe ."
   },
   "keywords": ["pi-package"],
   "pi": {
@@ -23,6 +25,7 @@
     "ulid": "^3.0.2"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.4",
     "@mariozechner/pi-ai": "^0.54.2",
     "@mariozechner/pi-coding-agent": "^0.54.2",
     "@sinclair/typebox": "^0.34.48",

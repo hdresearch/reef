@@ -63,7 +63,8 @@ export default function (pi: ExtensionAPI) {
       "Delay format: '30s', '5m', '1h', '2.5h', etc.",
     parameters: Type.Object({
       message: Type.String({
-        description: "What to remind about — include enough context to act on it. " +
+        description:
+          "What to remind about — include enough context to act on it. " +
           "E.g. 'Check pipeline abc123 status on VM 0ed565. curl -s localhost:3000/pipeline/runs/abc123'",
       }),
       delay: Type.String({
@@ -92,13 +93,16 @@ export default function (pi: ExtensionAPI) {
 
       const firesAt = new Date(reminder.firesAt).toLocaleTimeString();
       return {
-        content: [{
-          type: "text",
-          text: `✅ Reminder "${reminder.id}" scheduled.\n` +
-            `  Fires in: ${formatDuration(delayMs)}\n` +
-            `  At: ${firesAt}\n` +
-            `  Message: ${params.message.slice(0, 100)}${params.message.length > 100 ? "..." : ""}`,
-        }],
+        content: [
+          {
+            type: "text",
+            text:
+              `✅ Reminder "${reminder.id}" scheduled.\n` +
+              `  Fires in: ${formatDuration(delayMs)}\n` +
+              `  At: ${firesAt}\n` +
+              `  Message: ${params.message.slice(0, 100)}${params.message.length > 100 ? "..." : ""}`,
+          },
+        ],
       };
     },
   });

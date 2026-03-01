@@ -11,12 +11,12 @@
  *   DELETE /services/:name         — unload a module
  */
 
-import { readdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Hono } from "hono";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import type { ServiceModule, ServiceContext, FleetClient } from "../src/core/types.js";
+import { Hono } from "hono";
+import type { FleetClient, ServiceContext, ServiceModule } from "../src/core/types.js";
 
 /** Seed metadata stored alongside the installer registry */
 interface SeedMeta {
@@ -40,11 +40,7 @@ let ctx: ServiceContext;
 
 /** Compute the full set of substrate capabilities from base + environment + services */
 function getSubstrateCapabilities(): Set<string> {
-  const caps = new Set([
-    "hosting.web",
-    "state.persist",
-    "event.trigger",
-  ]);
+  const caps = new Set(["hosting.web", "state.persist", "event.trigger"]);
 
   // Environment-detected
   if (process.env.VERS_API_URL || process.env.VERS_VM_ID) {
@@ -384,8 +380,8 @@ routes.post("/deploy", async (c) => {
       // Parse pass/fail from bun test output
       const passMatch = output.match(/(\d+) pass/);
       const failMatch = output.match(/(\d+) fail/);
-      const passed = passMatch ? parseInt(passMatch[1]) : 0;
-      const failed = failMatch ? parseInt(failMatch[1]) : 0;
+      const passed = passMatch ? parseInt(passMatch[1], 10) : 0;
+      const failed = failMatch ? parseInt(failMatch[1], 10) : 0;
 
       if (failed > 0) {
         result.steps.push({
@@ -406,8 +402,8 @@ routes.post("/deploy", async (c) => {
       const output = err.stdout || err.stderr || String(err);
       const passMatch = output.match(/(\d+) pass/);
       const failMatch = output.match(/(\d+) fail/);
-      const passed = passMatch ? parseInt(passMatch[1]) : 0;
-      const failed = failMatch ? parseInt(failMatch[1]) : 0;
+      const passed = passMatch ? parseInt(passMatch[1], 10) : 0;
+      const failed = failMatch ? parseInt(failMatch[1], 10) : 0;
 
       result.steps.push({
         step: "test",
@@ -442,7 +438,7 @@ routes.post("/deploy", async (c) => {
     result.steps.push({
       step: "verify",
       status: "passed",
-      detail: `live at /${name}` + (routes.length ? ` (${routes.length} routes)` : ""),
+      detail: `live at /${name}${routes.length ? ` (${routes.length} routes)` : ""}`,
     });
     result.deployed = true;
   } else {
@@ -481,9 +477,7 @@ routes.post("/reload", async (c) => {
   }
 
   // Remove modules whose directories no longer exist
-  const currentDirs = new Set(
-    entries.filter((e) => e.isDirectory()).map((e) => e.name),
-  );
+  const currentDirs = new Set(entries.filter((e) => e.isDirectory()).map((e) => e.name));
   for (const mod of ctx.getModules()) {
     // Don't remove modules that still have a directory
     if (currentDirs.has(mod.name)) continue;
@@ -581,8 +575,10 @@ const services: ServiceModule = {
       response: "{ modules: [{ name, description, hasRoutes, hasTools, ... }], count }",
     },
     "GET /manifest": {
-      summary: "Machine-readable manifest of all services, routes, tools, and substrate capabilities. Designed for agents to discover what reef can do and whether a seed can germinate here.",
-      response: "{ substrate: { capabilities }, services: [{ name, description, features, provides?, routes? }], routes, servicesWithTools, servicesWithBehaviors, servicesWithPanels, count }",
+      summary:
+        "Machine-readable manifest of all services, routes, tools, and substrate capabilities. Designed for agents to discover what reef can do and whether a seed can germinate here.",
+      response:
+        "{ substrate: { capabilities }, services: [{ name, description, features, provides?, routes? }], routes, servicesWithTools, servicesWithBehaviors, servicesWithPanels, count }",
     },
     "POST /check": {
       summary: "Check if a seed's required capabilities can be met by this substrate",
@@ -593,7 +589,8 @@ const services: ServiceModule = {
     },
     "GET /conformance": {
       summary: "Conformance manifest — which seeds have been germinated and their status (seed spec §9.3)",
-      response: "{ v, type, timestamp, seeds: [{ name, content_hash, conformanceLevel, capabilities, testResults }], count }",
+      response:
+        "{ v, type, timestamp, seeds: [{ name, content_hash, conformanceLevel, capabilities, testResults }], count }",
     },
     "POST /seeds/register": {
       summary: "Register seed metadata for conformance tracking",
@@ -612,7 +609,10 @@ const services: ServiceModule = {
       summary: "Update seed conformance level and test results",
       params: { hash: { type: "string", required: true, description: "SHA-256 content hash" } },
       body: {
-        conformance: { type: "string", description: "FULL | SUBSTANTIAL | PARTIAL | MINIMAL | NON_CONFORMING | UNTESTED" },
+        conformance: {
+          type: "string",
+          description: "FULL | SUBSTANTIAL | PARTIAL | MINIMAL | NON_CONFORMING | UNTESTED",
+        },
         testResults: { type: "object", description: "{ core: { passed, failed, skipped }, extended?, edgeCase? }" },
         lastVerified: { type: "string", description: "ISO timestamp" },
       },
@@ -648,13 +648,13 @@ const services: ServiceModule = {
 
   // Reef-specific substrate capabilities
   capabilities: [
-    "reef.deploy",              // validate + test + load in one operation
-    "reef.reload",              // hot-reload services without restart
-    "reef.unload",              // remove services at runtime
-    "reef.export",              // tarball services for fleet-to-fleet distribution
-    "reef.manifest",            // machine-readable capability discovery
-    "reef.seeds.conformance",   // serves conformance manifests
-    "reef.seeds.check",         // capability pre-flight checks
+    "reef.deploy", // validate + test + load in one operation
+    "reef.reload", // hot-reload services without restart
+    "reef.unload", // remove services at runtime
+    "reef.export", // tarball services for fleet-to-fleet distribution
+    "reef.manifest", // machine-readable capability discovery
+    "reef.seeds.conformance", // serves conformance manifests
+    "reef.seeds.check", // capability pre-flight checks
   ],
 
   registerTools(pi: ExtensionAPI, client: FleetClient) {
@@ -662,10 +662,10 @@ const services: ServiceModule = {
       name: "reef_manifest",
       label: "Reef: Manifest",
       description:
-        "Get the full manifest of this reef instance — all loaded services, their routes, tools, "
-        + "behaviors, panels, and the substrate's capabilities. Use this to discover what's available "
-        + "before building a new service, to check if a capability already exists, or to understand "
-        + "what tools and events you can use.",
+        "Get the full manifest of this reef instance — all loaded services, their routes, tools, " +
+        "behaviors, panels, and the substrate's capabilities. Use this to discover what's available " +
+        "before building a new service, to check if a capability already exists, or to understand " +
+        "what tools and events you can use.",
       parameters: Type.Object({}),
       async execute(_id, _params) {
         if (!client.getBaseUrl()) return client.noUrl();
@@ -682,10 +682,10 @@ const services: ServiceModule = {
       name: "reef_deploy",
       label: "Reef: Deploy Service",
       description:
-        "Deploy a service module — validates the module exports, runs its tests (if any), "
-        + "loads it into the server, and verifies it's live. Returns structured step-by-step "
-        + "results. Use after writing or editing service files to activate them. If tests fail, "
-        + "the service is not loaded and you get the test output to debug.",
+        "Deploy a service module — validates the module exports, runs its tests (if any), " +
+        "loads it into the server, and verifies it's live. Returns structured step-by-step " +
+        "results. Use after writing or editing service files to activate them. If tests fail, " +
+        "the service is not loaded and you get the test output to debug.",
       parameters: Type.Object({
         name: Type.String({ description: "Service directory name (the folder name under services/)" }),
       }),
@@ -694,11 +694,12 @@ const services: ServiceModule = {
         try {
           const result = await client.api("POST", "/services/deploy", { name: params.name });
           const r = result as any;
-          const summary = r.deployed
-            ? `✓ ${r.name} deployed successfully`
-            : `✗ ${r.name} deployment failed`;
+          const summary = r.deployed ? `✓ ${r.name} deployed successfully` : `✗ ${r.name} deployment failed`;
           const steps = (r.steps || [])
-            .map((s: any) => `  ${s.status === "passed" ? "✓" : s.status === "skipped" ? "–" : "✗"} ${s.step}: ${s.detail || ""}`)
+            .map(
+              (s: any) =>
+                `  ${s.status === "passed" ? "✓" : s.status === "skipped" ? "–" : "✗"} ${s.step}: ${s.detail || ""}`,
+            )
             .join("\n");
           return client.ok(`${summary}\n${steps}`, { result });
         } catch (e: any) {
@@ -711,9 +712,9 @@ const services: ServiceModule = {
       name: "reef_task_list",
       label: "Reef: List Tasks",
       description:
-        "List all tasks. Each task is a ref in the event tree. "
-        + "Shows status (running/done/error), the trigger prompt, and timing. "
-        + "Use to check what work has been done or monitor active tasks.",
+        "List all tasks. Each task is a ref in the event tree. " +
+        "Shows status (running/done/error), the trigger prompt, and timing. " +
+        "Use to check what work has been done or monitor active tasks.",
       parameters: Type.Object({
         status: Type.Optional(Type.String({ description: "Filter by status: running, done, error" })),
       }),
@@ -725,9 +726,7 @@ const services: ServiceModule = {
           const tasks = (result as any).tasks || [];
           if (tasks.length === 0) return client.ok("No tasks found.");
           const lines = tasks.map((t: any) => {
-            const age = t.completedAt
-              ? `${((t.completedAt - t.createdAt) / 1000).toFixed(1)}s`
-              : "running";
+            const age = t.completedAt ? `${((t.completedAt - t.createdAt) / 1000).toFixed(1)}s` : "running";
             return `[${t.status}] ${t.name} (${age})\n  → ${t.trigger.slice(0, 100)}`;
           });
           return client.ok(lines.join("\n\n"), { tasks });
@@ -741,9 +740,9 @@ const services: ServiceModule = {
       name: "reef_task_read",
       label: "Reef: Read Task",
       description:
-        "Read the full conversation of a task — walk the tree from root to the task's "
-        + "leaf node, showing all messages, tool calls, and results. Use to inspect "
-        + "completed work or debug failures.",
+        "Read the full conversation of a task — walk the tree from root to the task's " +
+        "leaf node, showing all messages, tool calls, and results. Use to inspect " +
+        "completed work or debug failures.",
       parameters: Type.Object({
         name: Type.String({ description: "Task name (the task ID)" }),
       }),
@@ -753,7 +752,7 @@ const services: ServiceModule = {
           const result = await client.api("GET", `/reef/tasks/${encodeURIComponent(params.name)}`);
           const t = result as any;
           const lines = [`Task: ${t.name}`, `Status: ${t.status}`, `Trigger: ${t.trigger}`, ``];
-          for (const node of (t.nodes || [])) {
+          for (const node of t.nodes || []) {
             if (node.role === "system") continue;
             if (node.role === "tool_call") {
               lines.push(`[tool] ${node.toolName}(${JSON.stringify(node.toolParams || {}).slice(0, 200)})`);

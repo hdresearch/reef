@@ -12,7 +12,7 @@
  * so init() hooks can safely reference stores from upstream modules.
  */
 
-import { readdirSync, existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ServiceModule } from "./types.js";
 
@@ -26,9 +26,7 @@ import type { ServiceModule } from "./types.js";
  * @param servicesDir - Path to the services directory (e.g. "./services")
  * @returns Topologically sorted array of ServiceModules
  */
-export async function discoverServiceModules(
-  servicesDir: string,
-): Promise<ServiceModule[]> {
+export async function discoverServiceModules(servicesDir: string): Promise<ServiceModule[]> {
   const resolved = resolve(servicesDir);
 
   if (!existsSync(resolved)) {
@@ -80,9 +78,7 @@ export async function discoverServiceModules(
  * Used by the extension loader to skip server-only modules.
  */
 export function filterClientModules(modules: ServiceModule[]): ServiceModule[] {
-  return modules.filter(
-    (m) => m.registerTools || m.registerBehaviors || m.widget,
-  );
+  return modules.filter((m) => m.registerTools || m.registerBehaviors || m.widget);
 }
 
 // =============================================================================
@@ -93,9 +89,7 @@ export function filterClientModules(modules: ServiceModule[]): ServiceModule[] {
  * Load a single service module from a directory.
  * Uses cache-busting so re-imports pick up changes.
  */
-export async function loadServiceModule(
-  dirPath: string,
-): Promise<ServiceModule> {
+export async function loadServiceModule(dirPath: string): Promise<ServiceModule> {
   const indexPath = join(dirPath, "index.ts");
 
   if (!existsSync(indexPath)) {
@@ -126,9 +120,7 @@ function topoSort(modules: ServiceModule[]): ServiceModule[] {
   function visit(name: string, stack: Set<string>) {
     if (visited.has(name)) return;
     if (stack.has(name)) {
-      throw new Error(
-        `Circular dependency detected: ${[...stack, name].join(" → ")}`,
-      );
+      throw new Error(`Circular dependency detected: ${[...stack, name].join(" → ")}`);
     }
 
     const mod = byName.get(name);

@@ -53,19 +53,21 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
       // Live token update to feed
       if (client.getBaseUrl()) {
         const tokensThisTurn = (u.input || 0) + (u.output || 0);
-        client.api("POST", "/feed/events", {
-          type: "token_update",
-          agent: client.agentName,
-          summary: `${tokensThisTurn} tokens`,
-          detail: JSON.stringify({
+        client
+          .api("POST", "/feed/events", {
+            type: "token_update",
             agent: client.agentName,
-            tokensThisTurn,
-            totalTokens: tokens.total,
-            inputTokens: u.input || 0,
-            outputTokens: u.output || 0,
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
+            summary: `${tokensThisTurn} tokens`,
+            detail: JSON.stringify({
+              agent: client.agentName,
+              tokensThisTurn,
+              totalTokens: tokens.total,
+              inputTokens: u.input || 0,
+              outputTokens: u.output || 0,
+              timestamp: Date.now(),
+            }),
+          })
+          .catch(() => {});
       }
     }
   });
@@ -96,10 +98,14 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
           });
         }
       } else if (name === "vers_vm_delete") {
-        const vmId = (event.input as any)?.vmId || text?.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/)?.[1];
+        const vmId =
+          (event.input as any)?.vmId ||
+          text?.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/)?.[1];
         if (vmId) {
           await client.api("POST", "/usage/vms", {
-            vmId, role: "worker", agent: client.agentName,
+            vmId,
+            role: "worker",
+            agent: client.agentName,
             createdAt: new Date().toISOString(),
             destroyedAt: new Date().toISOString(),
           });
@@ -109,7 +115,9 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
         if (inputVmId) {
           const commitMatch = text?.match(/"commitId"\s*:\s*"([^"]+)"/);
           await client.api("POST", "/usage/vms", {
-            vmId: inputVmId, role: "golden", agent: client.agentName,
+            vmId: inputVmId,
+            role: "golden",
+            agent: client.agentName,
             commitId: commitMatch?.[1],
             createdAt: new Date().toISOString(),
           });

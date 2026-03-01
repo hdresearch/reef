@@ -5,8 +5,8 @@
  * This is the client half. The server half is src/main.ts.
  */
 
-import { createExtension } from "./core/extension.js";
 import { discoverServiceModules, filterClientModules } from "./core/discover.js";
+import { createExtension } from "./core/extension.js";
 import { DEFAULT_SERVICES_DIR } from "./core/server.js";
 
 const servicesDir = process.env.SERVICES_DIR ?? DEFAULT_SERVICES_DIR;

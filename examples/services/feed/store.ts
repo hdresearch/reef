@@ -2,9 +2,9 @@
  * Feed store — append-only event stream with in-memory index and pub/sub.
  */
 
-import { ulid } from "ulid";
-import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { ulid } from "ulid";
 
 // =============================================================================
 // Types
@@ -116,7 +116,7 @@ export class FeedStore {
 
     const dir = dirname(this.filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(this.filePath, JSON.stringify(event) + "\n");
+    appendFileSync(this.filePath, `${JSON.stringify(event)}\n`);
 
     this.events.push(event);
     if (this.events.length > this.maxInMemory) {
@@ -124,7 +124,11 @@ export class FeedStore {
     }
 
     for (const sub of this.subscribers) {
-      try { sub(event); } catch { /* ignore */ }
+      try {
+        sub(event);
+      } catch {
+        /* ignore */
+      }
     }
 
     return event;
@@ -158,7 +162,9 @@ export class FeedStore {
 
   subscribe(fn: Subscriber): () => void {
     this.subscribers.add(fn);
-    return () => { this.subscribers.delete(fn); };
+    return () => {
+      this.subscribers.delete(fn);
+    };
   }
 
   eventsSince(sinceId: string, agent?: string): FeedEvent[] {

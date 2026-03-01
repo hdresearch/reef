@@ -1,6 +1,6 @@
 import type { ServiceModule } from "../src/core/types.js";
-import { JournalStore } from "./store.js";
 import { createRoutes } from "./routes.js";
+import { JournalStore } from "./store.js";
 import { registerTools } from "./tools.js";
 
 const store = new JournalStore();

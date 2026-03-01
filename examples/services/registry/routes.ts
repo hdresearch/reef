@@ -4,7 +4,7 @@
 
 import { Hono } from "hono";
 import type { RegistryStore, VMFilters, VMRole, VMStatus } from "./store.js";
-import { NotFoundError, ValidationError, ConflictError } from "./store.js";
+import { ConflictError, NotFoundError, ValidationError } from "./store.js";
 
 export function createRoutes(store: RegistryStore): Hono {
   const routes = new Hono();

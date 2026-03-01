@@ -16,11 +16,7 @@ export function createFleetClient(): FleetClient {
     return process.env.VERS_INFRA_URL || null;
   }
 
-  async function api<T = unknown>(
-    method: string,
-    path: string,
-    body?: unknown,
-  ): Promise<T> {
+  async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
     const base = getBaseUrl();
     if (!base) throw new Error("VERS_INFRA_URL not set");
 
@@ -30,7 +26,7 @@ export function createFleetClient(): FleetClient {
 
     const token = process.env.VERS_AUTH_TOKEN;
     if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
+      headers.Authorization = `Bearer ${token}`;
     }
 
     const res = await fetch(`${base}${path}`, {
@@ -49,9 +45,7 @@ export function createFleetClient(): FleetClient {
 
     if (!res.ok) {
       const msg =
-        typeof data === "object" &&
-        data !== null &&
-        "error" in (data as Record<string, unknown>)
+        typeof data === "object" && data !== null && "error" in (data as Record<string, unknown>)
           ? (data as { error: string }).error
           : text;
       throw new Error(`${method} ${path} (${res.status}): ${msg}`);

@@ -2,7 +2,7 @@
  * Registry store — VM service discovery with heartbeat-based liveness.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 // =============================================================================
@@ -59,15 +59,24 @@ export interface VMFilters {
 // =============================================================================
 
 export class NotFoundError extends Error {
-  constructor(message: string) { super(message); this.name = "NotFoundError"; }
+  constructor(message: string) {
+    super(message);
+    this.name = "NotFoundError";
+  }
 }
 
 export class ValidationError extends Error {
-  constructor(message: string) { super(message); this.name = "ValidationError"; }
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
 }
 
 export class ConflictError extends Error {
-  constructor(message: string) { super(message); this.name = "ConflictError"; }
+  constructor(message: string) {
+    super(message);
+    this.name = "ConflictError";
+  }
 }
 
 // =============================================================================
@@ -217,8 +226,6 @@ export class RegistryStore {
   }
 
   discover(role: VMRole): VM[] {
-    return Array.from(this.vms.values()).filter(
-      (v) => v.role === role && v.status === "running" && !this.isStale(v),
-    );
+    return Array.from(this.vms.values()).filter((v) => v.role === role && v.status === "running" && !this.isStale(v));
   }
 }

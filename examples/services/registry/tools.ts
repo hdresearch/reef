@@ -2,15 +2,14 @@
  * Registry tools — VM registration, discovery, heartbeat.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { FleetClient } from "../src/core/types.js";
-import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import type { FleetClient } from "../src/core/types.js";
 
-const ROLE_ENUM = StringEnum(
-  ["infra", "lieutenant", "worker", "golden", "custom"] as const,
-  { description: "VM role in the swarm" },
-);
+const ROLE_ENUM = StringEnum(["infra", "lieutenant", "worker", "golden", "custom"] as const, {
+  description: "VM role in the swarm",
+});
 
 export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
@@ -19,9 +18,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     description: "List VMs in the coordination registry. Optionally filter by role or status.",
     parameters: Type.Object({
       role: Type.Optional(ROLE_ENUM),
-      status: Type.Optional(
-        StringEnum(["running", "paused", "stopped"] as const, { description: "Filter by status" }),
-      ),
+      status: Type.Optional(StringEnum(["running", "paused", "stopped"] as const, { description: "Filter by status" })),
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
@@ -82,10 +79,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
       try {
-        const result = await client.api(
-          "GET",
-          `/registry/discover/${encodeURIComponent(params.role)}`,
-        );
+        const result = await client.api("GET", `/registry/discover/${encodeURIComponent(params.role)}`);
         return client.ok(JSON.stringify(result, null, 2), { result });
       } catch (e: any) {
         return client.err(e.message);
@@ -103,10 +97,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
       try {
-        const result = await client.api(
-          "POST",
-          `/registry/vms/${encodeURIComponent(params.id)}/heartbeat`,
-        );
+        const result = await client.api("POST", `/registry/vms/${encodeURIComponent(params.id)}/heartbeat`);
         return client.ok(JSON.stringify(result, null, 2), { result });
       } catch (e: any) {
         return client.err(e.message);

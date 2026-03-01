@@ -2,10 +2,10 @@
  * Commits store — VM snapshot ledger. Tracks golden images, rollback points.
  */
 
-import { ulid } from "ulid";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { ulid } from "ulid";
 
 export interface CommitRecord {
   id: string;
@@ -27,7 +27,10 @@ export interface CommitInput {
 }
 
 export class ValidationError extends Error {
-  constructor(message: string) { super(message); this.name = "ValidationError"; }
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
 }
 
 export class CommitStore {
@@ -61,16 +64,26 @@ export class CommitStore {
     const now = new Date().toISOString();
     const tags = input.tags || [];
 
-    this.db.run(
-      "INSERT OR REPLACE INTO commits VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [id, input.commitId.trim(), input.vmId.trim(), input.label?.trim() || null,
-       input.agent?.trim() || null, JSON.stringify(tags), now, now],
-    );
+    this.db.run("INSERT OR REPLACE INTO commits VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
+      id,
+      input.commitId.trim(),
+      input.vmId.trim(),
+      input.label?.trim() || null,
+      input.agent?.trim() || null,
+      JSON.stringify(tags),
+      now,
+      now,
+    ]);
 
     return {
-      id, commitId: input.commitId.trim(), vmId: input.vmId.trim(),
-      label: input.label?.trim(), agent: input.agent?.trim(),
-      tags, createdAt: now, recordedAt: now,
+      id,
+      commitId: input.commitId.trim(),
+      vmId: input.vmId.trim(),
+      label: input.label?.trim(),
+      agent: input.agent?.trim(),
+      tags,
+      createdAt: now,
+      recordedAt: now,
     };
   }
 
@@ -84,16 +97,34 @@ export class CommitStore {
     const conditions: string[] = [];
     const params: any[] = [];
 
-    if (filters?.agent) { conditions.push("agent = ?"); params.push(filters.agent); }
-    if (filters?.label) { conditions.push("label = ?"); params.push(filters.label); }
-    if (filters?.vmId) { conditions.push("vm_id = ?"); params.push(filters.vmId); }
-    if (filters?.tag) { conditions.push("tags LIKE ?"); params.push(`%"${filters.tag}"%`); }
-    if (filters?.since) { conditions.push("created_at >= ?"); params.push(filters.since); }
+    if (filters?.agent) {
+      conditions.push("agent = ?");
+      params.push(filters.agent);
+    }
+    if (filters?.label) {
+      conditions.push("label = ?");
+      params.push(filters.label);
+    }
+    if (filters?.vmId) {
+      conditions.push("vm_id = ?");
+      params.push(filters.vmId);
+    }
+    if (filters?.tag) {
+      conditions.push("tags LIKE ?");
+      params.push(`%"${filters.tag}"%`);
+    }
+    if (filters?.since) {
+      conditions.push("created_at >= ?");
+      params.push(filters.since);
+    }
 
     if (conditions.length) sql += ` WHERE ${conditions.join(" AND ")}`;
     sql += " ORDER BY created_at DESC";
 
-    return this.db.query(sql).all(...params).map(rowToCommit);
+    return this.db
+      .query(sql)
+      .all(...params)
+      .map(rowToCommit);
   }
 
   delete(commitId: string): boolean {
@@ -101,14 +132,20 @@ export class CommitStore {
     return result.changes > 0;
   }
 
-  close(): void { this.db.close(); }
+  close(): void {
+    this.db.close();
+  }
 }
 
 function rowToCommit(row: any): CommitRecord {
   return {
-    id: row.id, commitId: row.commit_id, vmId: row.vm_id,
-    label: row.label || undefined, agent: row.agent || undefined,
+    id: row.id,
+    commitId: row.commit_id,
+    vmId: row.vm_id,
+    label: row.label || undefined,
+    agent: row.agent || undefined,
     tags: JSON.parse(row.tags || "[]"),
-    createdAt: row.created_at, recordedAt: row.recorded_at,
+    createdAt: row.created_at,
+    recordedAt: row.recorded_at,
   };
 }

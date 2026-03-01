@@ -4,7 +4,7 @@
 
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import type { FeedStore, PublishInput, FeedEvent } from "./store.js";
+import type { FeedEvent, FeedStore, PublishInput } from "./store.js";
 import { VALID_EVENT_TYPES } from "./store.js";
 
 export function createRoutes(store: FeedStore): Hono {
@@ -24,10 +24,7 @@ export function createRoutes(store: FeedStore): Hono {
       return c.json({ error: "Missing or invalid 'agent' field" }, 400);
     }
     if (!input.type || !VALID_EVENT_TYPES.has(input.type as string)) {
-      return c.json(
-        { error: `Invalid 'type'. Must be one of: ${[...VALID_EVENT_TYPES].join(", ")}` },
-        400,
-      );
+      return c.json({ error: `Invalid 'type'. Must be one of: ${[...VALID_EVENT_TYPES].join(", ")}` }, 400);
     }
     if (!input.summary || typeof input.summary !== "string") {
       return c.json({ error: "Missing or invalid 'summary' field" }, 400);

@@ -19,12 +19,12 @@
  *   GET  /reef/events    — SSE stream
  */
 
-import { Hono } from "hono";
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
-import { createServer, type ServerOptions } from "./core/server.js";
-import { ConversationTree, type TaskArtifacts } from "./tree.js";
+import { Hono } from "hono";
 import { bearerAuth } from "./core/auth.js";
+import { createServer, type ServerOptions } from "./core/server.js";
+import { ConversationTree } from "./tree.js";
 
 // =============================================================================
 // Task — one pi process per task
@@ -46,16 +46,17 @@ let taskCounter = 0;
 function spawnTask(
   prompt: string,
   treeContext: string,
-  opts: { model?: string; onEvent: (event: any) => void; onDone: (output: string) => void; onError: (err: string) => void },
+  opts: {
+    model?: string;
+    onEvent: (event: any) => void;
+    onDone: (output: string) => void;
+    onError: (err: string) => void;
+  },
 ): ChildProcess {
   const piPath = process.env.PI_PATH ?? "pi";
   const cwd = process.env.REEF_DIR ?? process.cwd();
 
-  const child = spawn(piPath, [
-    "--mode", "rpc",
-    "--no-session",
-    "--append-system-prompt", treeContext,
-  ], {
+  const child = spawn(piPath, ["--mode", "rpc", "--no-session", "--append-system-prompt", treeContext], {
     stdio: ["pipe", "pipe", "pipe"],
     cwd,
     env: {
@@ -71,8 +72,10 @@ function spawnTask(
   // Poll for pi readiness, then send the prompt
   const readyCheck = setInterval(() => {
     try {
-      child.stdin.write(JSON.stringify({ id: "ready-check", type: "get_state" }) + "\n");
-    } catch { clearInterval(readyCheck); }
+      child.stdin.write(`${JSON.stringify({ id: "ready-check", type: "get_state" })}\n`);
+    } catch {
+      clearInterval(readyCheck);
+    }
   }, 1000);
 
   function handleEvent(event: any) {
@@ -80,7 +83,7 @@ function spawnTask(
     if (!prompted && event.type === "response" && event.command === "get_state") {
       prompted = true;
       clearInterval(readyCheck);
-      child.stdin.write(JSON.stringify({ type: "prompt", message: prompt }) + "\n");
+      child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
     }
 
     opts.onEvent(event);
@@ -101,7 +104,11 @@ function spawnTask(
     lineBuf = lines.pop() ?? "";
     for (const line of lines) {
       if (!line.trim()) continue;
-      try { handleEvent(JSON.parse(line)); } catch { /* not JSON */ }
+      try {
+        handleEvent(JSON.parse(line));
+      } catch {
+        /* not JSON */
+      }
     }
   });
 
@@ -139,9 +146,10 @@ export async function createReef(config: ReefConfig = {}) {
 
   // Only add system prompt if tree is empty (fresh start)
   if (tree.size() === 0) {
-    const systemPrompt = config.agent?.systemPrompt
-      ?? process.env.REEF_SYSTEM_PROMPT
-      ?? "You are a reef agent. You have tools to manage VMs, spawn swarms, deploy services, and store state. When given a task, decide the best approach — do it yourself, delegate to a swarm, or decompose it. You build your own tools.";
+    const systemPrompt =
+      config.agent?.systemPrompt ??
+      process.env.REEF_SYSTEM_PROMPT ??
+      "You are a reef agent. You have tools to manage VMs, spawn swarms, deploy services, and store state. When given a task, decide the best approach — do it yourself, delegate to a swarm, or decompose it. You build your own tools.";
     const sysNode = tree.add(null, "system", systemPrompt);
     tree.setRef("main", sysNode.id);
   }
@@ -149,7 +157,11 @@ export async function createReef(config: ReefConfig = {}) {
   function broadcast(event: any) {
     const data = JSON.stringify(event);
     for (const c of sseClients) {
-      try { c.enqueue(`data: ${data}\n\n`); } catch { sseClients.delete(c); }
+      try {
+        c.enqueue(`data: ${data}\n\n`);
+      } catch {
+        sseClients.delete(c);
+      }
     }
   }
 
@@ -157,14 +169,14 @@ export async function createReef(config: ReefConfig = {}) {
   const eventParents = new Map<string, string>(); // runId/groupKey → nodeId
 
   // Wire event bus → SSE + tree: every event is a node with a parent
-  events.on('reef:event', (data: any) => {
+  events.on("reef:event", (data: any) => {
     const { type, source, ...meta } = data;
     const content = meta.prompt || meta.jobName || meta.name || meta.error || type;
 
     let parentId: string | null = null;
 
     // Cron done/error are children of their cron_start
-    if ((type === 'cron_done' || type === 'cron_error') && meta.runId) {
+    if ((type === "cron_done" || type === "cron_error") && meta.runId) {
       parentId = eventParents.get(meta.runId) ?? null;
     }
 
@@ -179,7 +191,7 @@ export async function createReef(config: ReefConfig = {}) {
     }
 
     // Track: cron_start becomes parent for its run
-    if (type === 'cron_start' && meta.runId) {
+    if (type === "cron_start" && meta.runId) {
       eventParents.set(meta.runId, node.id);
     }
 
@@ -246,9 +258,10 @@ export async function createReef(config: ReefConfig = {}) {
         if (task.events.length > 500) task.events.shift();
 
         // Tool calls are children of the user node (siblings of each other)
-        if (event.type === 'tool_execution_start') {
+        if (event.type === "tool_execution_start") {
           const toolNode = tree.add(userNode.id, "tool_call", event.toolName, {
-            toolName: event.toolName, toolParams: event.args,
+            toolName: event.toolName,
+            toolParams: event.args,
           });
           // Track this tool call so its result can be a child of it
           lastToolNode = toolNode;
@@ -257,12 +270,13 @@ export async function createReef(config: ReefConfig = {}) {
         }
 
         // Tool results are children of their tool_call
-        if (event.type === 'tool_execution_end') {
+        if (event.type === "tool_execution_end") {
           const parentToolId = lastToolNode?.id ?? userNode.id;
-          const resultText = event.result?.content
-            ?.filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
-            .join('') || '';
+          const resultText =
+            event.result?.content
+              ?.filter((c: any) => c.type === "text")
+              .map((c: any) => c.text)
+              .join("") || "";
           const resultNode = tree.add(parentToolId, "tool_result", resultText.slice(0, 1000), {
             toolCallId: event.toolCallId,
             result: event.result,
@@ -283,7 +297,13 @@ export async function createReef(config: ReefConfig = {}) {
         tree.setRef(taskId, assistantNode.id);
         tree.completeTask(taskId, { summary: output.trim().slice(0, 500), filesChanged: [] });
 
-        broadcast({ taskId, type: "task_done", summary: output.trim().slice(0, 200), nodeId: assistantNode.id, parentId: assistantNode.parentId });
+        broadcast({
+          taskId,
+          type: "task_done",
+          summary: output.trim().slice(0, 200),
+          nodeId: assistantNode.id,
+          parentId: assistantNode.parentId,
+        });
       },
       onError(err) {
         task.status = "error";
@@ -301,9 +321,9 @@ export async function createReef(config: ReefConfig = {}) {
   reef.get("/tasks", (c) => {
     const status = c.req.query("status");
     let list = tree.listTasks();
-    if (status) list = list.filter(t => t.info.status === status);
+    if (status) list = list.filter((t) => t.info.status === status);
     return c.json({
-      tasks: list.map(t => ({
+      tasks: list.map((t) => ({
         name: t.name,
         ...t.info,
         leafId: t.leafId,
@@ -350,23 +370,29 @@ export async function createReef(config: ReefConfig = {}) {
   // SSE heartbeat — keeps connections alive past Bun's idleTimeout
   setInterval(() => {
     for (const c of sseClients) {
-      try { c.enqueue(`: ping\n\n`); } catch { sseClients.delete(c); }
+      try {
+        c.enqueue(`: ping\n\n`);
+      } catch {
+        sseClients.delete(c);
+      }
     }
   }, 30_000);
 
-  reef.get("/events", (c) => {
+  reef.get("/events", (_c) => {
     const stream = new ReadableStream({
       start(controller) {
         sseClients.add(controller);
         controller.enqueue(`: connected\n\n`);
       },
-      cancel(controller) { sseClients.delete(controller); },
+      cancel(controller) {
+        sseClients.delete(controller);
+      },
     });
     return new Response(stream, {
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
+        Connection: "keep-alive",
         "Transfer-Encoding": "chunked",
       },
     });
@@ -395,7 +421,11 @@ export async function startReef(config: ReefConfig = {}) {
 
   async function shutdown() {
     console.log("\n  shutting down...");
-    for (const c of sseClients) { try { c.close(); } catch {} }
+    for (const c of sseClients) {
+      try {
+        c.close();
+      } catch {}
+    }
     for (const mod of liveModules.values()) {
       if (mod.store?.flush) mod.store.flush();
       if (mod.store?.close) await mod.store.close();

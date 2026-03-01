@@ -6,11 +6,11 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { ServiceModule, WidgetContribution } from "./types.js";
 import { createFleetClient } from "./client.js";
+import type { ServiceModule, WidgetContribution } from "./types.js";
 
 export function createExtension(modules: ServiceModule[]) {
-  return function (pi: ExtensionAPI) {
+  return (pi: ExtensionAPI) => {
     const client = createFleetClient();
 
     // Let each module register its tools and behaviors
@@ -20,16 +20,13 @@ export function createExtension(modules: ServiceModule[]) {
     }
 
     // Composite widget from all contributing modules
-    const widgetContributions: Array<{ name: string; widget: WidgetContribution }> =
-      modules
-        .filter((m) => m.widget)
-        .map((m) => ({ name: m.name, widget: m.widget! }));
+    const widgetContributions: Array<{ name: string; widget: WidgetContribution }> = modules
+      .filter((m) => m.widget)
+      .map((m) => ({ name: m.name, widget: m.widget! }));
 
     let widgetTimer: ReturnType<typeof setInterval> | null = null;
 
-    async function updateWidget(ctx: {
-      ui: { setWidget: (id: string, lines: string[]) => void };
-    }) {
+    async function updateWidget(ctx: { ui: { setWidget: (id: string, lines: string[]) => void } }) {
       if (!client.getBaseUrl()) return;
 
       const allLines: string[] = [];
