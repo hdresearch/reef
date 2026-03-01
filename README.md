@@ -1,8 +1,8 @@
 # reef
 
-Self-improving fleet infrastructure. The minimum kernel agents need to build their own tools.
+An agent with a server. The minimum kernel agents need to build their own tools.
 
-Reef is a plugin-based server where every capability is a service module — a folder with an `index.ts`. Modules are discovered at startup, dispatched dynamically, and can be added, updated, or removed at runtime without restarting. Even the module manager and installer are service modules. Nothing is required. Everything is replaceable.
+Reef is a plugin-based system where every capability is a service module — a folder with an `index.ts`. Everything that happens is an event in a causal tree: user prompts, tool calls, tool results, assistant responses, cron jobs, service deploys. The tree is the agent's memory.
 
 ## Quickstart
 
@@ -10,75 +10,98 @@ Reef is a plugin-based server where every capability is a service module — a f
 bun install
 
 export VERS_AUTH_TOKEN=your-secret-token
+export ANTHROPIC_API_KEY=your-key
 
 bun run start
 ```
 
-Out of the box, reef starts with four service modules:
+Reef starts in agent mode with infrastructure services:
 
 ```
+  mode: agent
   services:
-    /agent — Run tasks using pi as the coding agent
     /docs — Auto-generated API documentation
     /installer — Install, update, and remove service modules
     /services — Service module manager
+    /store — Key-value store with TTL
+    /cron — Scheduled jobs (cron expressions + intervals)
+    /agent — Agent task management
+    /reef — Event tree, task submission, SSE stream
 
   reef running on :3000
 ```
 
-These give you an agent loop, runtime management, installation, and API docs. They're not special — they're regular service modules that happen to ship in `services/`. You can remove them and replace them with whatever you want.
+Submit a task:
+
+```bash
+curl -X POST localhost:3000/reef/submit \
+  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"task": "List the services and tell me what each does."}'
+```
+
+Each task spawns a fresh [pi](https://github.com/badlogic/pi-mono) process with all reef tools available. Concurrent tasks run as concurrent processes.
 
 ### Agent setup
 
-The agent service spawns [pi](https://github.com/badlogic/pi-mono) to execute tasks. Install pi and the Vers extension so agents get fleet tools:
+Install pi so reef can spawn agent processes:
 
 ```bash
 npm install -g @mariozechner/pi-coding-agent
-pi install hdresearch/pi-vers
 ```
 
-The agent service provides two modes:
-- **Fire-and-forget tasks** — `POST /agent/tasks` for automation
-- **Interactive chat** — `GET /agent/ui?token=YOUR_TOKEN` for a web-based chat interface
+## Event tree
 
-The chat UI connects to pi via RPC mode with full streaming — you see text, tool calls, and results in real-time.
+Every event is a node with a `parentId`. The tree structure emerges naturally:
 
-### Adding the example services
+```
+[system] You are a reef agent
+├─ [user] What is 2+2?
+│  ├─ [tool] bash(echo $((2+2)))
+│  │  └─ [result] 4
+│  └─ [assistant] 2+2 = 4
+│     └─ [user] Multiply by 10          ← conversation continuation
+│        └─ [assistant] 40
+├─ [cron] heartbeat (exec)
+│  └─ [done] alive 03:02:00
+└─ [event] service deployed: ping
+```
 
-Reef ships with a set of fleet coordination services in `examples/services/`. To use them, copy the ones you want:
+- **Refs** point to leaf nodes like git branches (`main` → system root, `task-1` → latest response)
+- **`contextFor(nodeId)`** walks ancestors to build conversation history for each task
+- **Persists** to `data/tree.json`, loads on restart
+
+### Tree API
 
 ```bash
-# Copy everything
-cp -r examples/services/* services/
+# Full tree
+curl localhost:3000/reef/tree -H "Authorization: Bearer $TOKEN"
 
-# Or pick what you need
-cp -r examples/services/board services/
-cp -r examples/services/feed services/
-cp -r examples/services/log services/
+# Single node + children
+curl localhost:3000/reef/tree/:id -H "Authorization: Bearer $TOKEN"
+
+# Ancestor path
+curl localhost:3000/reef/tree/:id/path -H "Authorization: Bearer $TOKEN"
+
+# All tasks (filterable by status)
+curl localhost:3000/reef/tasks?status=done -H "Authorization: Bearer $TOKEN"
+
+# SSE event stream (includes nodeId + parentId on every event)
+curl localhost:3000/reef/events -H "Authorization: Bearer $TOKEN"
 ```
 
-Then reload:
+### Conversation continuation
+
+Reply to any node by passing `parentId`:
 
 ```bash
-curl -X POST localhost:3000/services/reload \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN"
+curl -X POST localhost:3000/reef/submit \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"task": "Now multiply by 10", "taskId": "math", "parentId": "<assistant-node-id>"}'
 ```
 
-No restart needed.
-
-| Example service | Description |
-|-----------------|-------------|
-| **board** | Shared task tracking with status workflow |
-| **feed** | Activity event stream across the fleet |
-| **log** | Append-only structured work log |
-| **journal** | Personal narrative log per agent |
-| **registry** | VM service discovery and heartbeats |
-| **usage** | Cost and token tracking |
-| **commits** | VM snapshot ledger |
-| **reports** | Markdown report storage |
-| **ui** | Web dashboard |
-
-These are one fleet's solution to one fleet's problem. Use them as-is, modify them, or throw them away and build your own.
+The server walks ancestors from that node to build the full conversation context.
 
 ## How it works
 
@@ -90,18 +113,14 @@ services/
     index.ts    → /your-service/*
 ```
 
-Each module exports a `ServiceModule` with routes, an optional store, and optional metadata:
+Each module exports a `ServiceModule`:
 
 ```ts
 import { Hono } from "hono";
-import type { ServiceModule } from "../src/core/types.js";
+import type { ServiceModule } from "../../src/core/types.js";
 
 const routes = new Hono();
 routes.get("/", (c) => c.json({ hello: "world" }));
-routes.post("/", async (c) => {
-  const body = await c.req.json();
-  return c.json({ created: body }, 201);
-});
 
 const myService: ServiceModule = {
   name: "my-service",
@@ -114,144 +133,132 @@ export default myService;
 
 Drop that in `services/my-service/index.ts`, reload, and it's live at `/my-service`.
 
+### Events
+
+Any service can emit events that become nodes in the tree:
+
+```ts
+ctx.events.fire("reef:event", {
+  type: "my_event",
+  source: "my-service",
+  content: "something happened",
+});
+```
+
 ## Runtime management
 
-The services manager module provides an API for managing modules without restarting.
-
 ```bash
-# Re-scan — picks up new, changed, and deleted modules
+# Reload all (picks up new, changed, deleted modules)
 curl -X POST localhost:3000/services/reload \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN"
+  -H "Authorization: Bearer $TOKEN"
 
-# Reload a specific module
+# Reload one
 curl -X POST localhost:3000/services/reload/my-service \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN"
+  -H "Authorization: Bearer $TOKEN"
 
-# Unload a module
+# Unload
 curl -X DELETE localhost:3000/services/my-service \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN"
+  -H "Authorization: Bearer $TOKEN"
 
-# Export a module as a tarball
+# Deploy (validate + test + load in one step)
+curl -X POST localhost:3000/services/deploy \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-service"}'
+
+# Export as tarball
 curl localhost:3000/services/export/my-service \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" > my-service.tar.gz
+  -H "Authorization: Bearer $TOKEN" > my-service.tar.gz
+
+# Manifest (all services + capabilities)
+curl localhost:3000/services/manifest \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ## Installing services
 
-The installer module handles git repos, local paths, and other reef instances.
+The installer handles git repos, local paths, and fleet-to-fleet transfer.
 
 ```bash
-# From GitHub (shorthand, HTTPS, or SSH)
+# From GitHub
 curl -X POST localhost:3000/installer/install \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"source": "user/repo"}'
 
-# From a local path (creates a symlink)
+# From local path (symlink)
 curl -X POST localhost:3000/installer/install \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"source": "/path/to/my-service"}'
 
 # From another reef instance
 curl -X POST localhost:3000/installer/install \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"from": "http://other-reef:3000", "name": "their-service", "token": "their-token"}'
 ```
 
-Git source formats:
+Git source formats: `user/repo`, `user/repo@v1.0`, `https://github.com/user/repo`, `git@github.com:user/repo`, `gitlab.com/team/repo`
 
-| Format | Example |
-|--------|---------|
-| GitHub shorthand | `user/repo` |
-| With ref | `user/repo@v1.0` |
-| HTTPS | `https://github.com/user/repo` |
-| SSH | `git@github.com:user/repo` |
-| Bare host | `gitlab.com/team/repo` |
+## Example services
+
+Fleet coordination services live in `examples/services/`. Copy what you need:
 
 ```bash
-# Update (git pull or re-pull from remote)
-curl -X POST localhost:3000/installer/update \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "repo-name"}'
-
-# Remove (unload + delete)
-curl -X POST localhost:3000/installer/remove \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "repo-name"}'
-
-# List externally installed packages
-curl localhost:3000/installer/installed \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN"
+cp -r examples/services/ui services/
+cp -r examples/services/board services/
+curl -X POST localhost:3000/services/reload -H "Authorization: Bearer $TOKEN"
 ```
 
-## Auto-generated docs
+| Service | Description |
+|---------|-------------|
+| **ui** | Web dashboard — split-pane feed + branch conversations |
+| **board** | Shared task tracking with status workflow |
+| **feed** | Activity event stream |
+| **log** | Append-only structured work log |
+| **journal** | Personal narrative log per agent |
+| **registry** | VM service discovery and heartbeats |
+| **usage** | Cost and token tracking |
+| **commits** | VM snapshot ledger |
+| **reports** | Markdown report storage |
+| **scaffold** | Generate service module skeletons |
+| **updater** | Auto-update from npm |
 
-The docs module documents every loaded service automatically. Modules can add rich descriptions via `routeDocs`.
+## Agent tools
+
+Reef is also a [pi](https://github.com/badlogic/pi-mono) package. When a task runs, the agent automatically gets tools from all loaded services:
+
+- **reef_manifest** — discover available services and capabilities
+- **reef_deploy** — validate, test, and load a service in one step
+- **reef_task_list** / **reef_task_read** — inspect completed tasks
+- **reef_store_get** / **reef_store_put** / **reef_store_list** — key-value storage
+- **vers_vm_create** / **vers_vm_branch** / **vers_vm_commit** — VM management
+- Plus any tools registered by your own service modules
+
+## Development
 
 ```bash
-# All services
-curl localhost:3000/docs
-
-# Specific service
-curl localhost:3000/docs/board
-
-# HTML UI (no auth required)
-open http://localhost:3000/docs/ui
+bun run dev       # watch mode
+bun test          # 265 tests
+bun run lint      # biome check
+bun run lint:fix  # auto-fix
 ```
+
+Pre-commit hook runs biome on staged `.ts` files. Activates automatically on `bun install` via the `prepare` script.
 
 ## Error handling
 
 One bad module can't take down the server.
 
 | Failure | What happens |
-|---------|--------------|
+|---------|-------------|
 | Import fails | Module skipped, others load normally |
-| `init()` throws | Module removed from registry, others keep running |
-| Route handler throws | Returns `500 { error: "internal service error" }` |
-| Runtime `loadModule()` fails | Rolled back — no half-initialized state |
-
-## pi extension
-
-Reef is also a [pi](https://github.com/badlogic/pi-mono) package. Install it and agents get LLM tools for every service that defines them:
-
-```bash
-pi install /path/to/reef
-```
-
-Modules can contribute:
-- **Tools** — LLM-callable functions (`registerTools`)
-- **Behaviors** — automatic event handlers (`registerBehaviors`)
-- **Widget lines** — status bar contributions (`widget`)
-
-Modules without client-side code are automatically excluded from the extension.
-
-## Creating a service
-
-Reef ships with a `create-service` skill at `skills/create-service/SKILL.md` that covers the full pattern — stores, routes, tools, behaviors, route documentation, and testing. If you have reef installed as a pi package, the skill is available to agents automatically.
-
-The short version:
-
-```
-services/your-service/
-  index.ts      — Module definition (required, default-exports ServiceModule)
-  store.ts      — Data layer (JSON file, JSONL, or SQLite)
-  routes.ts     — HTTP routes (Hono)
-  tools.ts      — LLM tools (pi extension)
-  behaviors.ts  — Event handlers and timers (pi extension)
-```
-
-## Tests
-
-```bash
-bun test
-```
-
-60 tests covering discovery, dispatch, auth, error handling, service context, runtime management, installation (local, git, fleet-to-fleet), and source parsing.
+| `init()` throws | Module rolled back, others keep running |
+| Route handler throws | Returns `500 { error }`, server continues |
+| Runtime load fails | Rolled back — no half-initialized state |
 
 ## Requirements
 
 - [Bun](https://bun.sh)
+- [pi](https://github.com/badlogic/pi-mono) (for agent tasks)
