@@ -206,7 +206,6 @@ Git source formats: `user/repo`, `user/repo@v1.0`, `https://github.com/user/repo
 Fleet coordination services live in `examples/services/`. Copy what you need:
 
 ```bash
-cp -r examples/services/ui services/
 cp -r examples/services/board services/
 curl -X POST localhost:3000/services/reload -H "Authorization: Bearer $TOKEN"
 ```
