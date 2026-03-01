@@ -10,9 +10,15 @@
  *   - Ref: a named pointer to a node (e.g. "main" → system root, "task-1" → latest response)
  *   - Path: ancestors from a node back to root = the conversation context
  *   - Fork: add a child to any node — multiple children = branch point
+ *
+ * Tiered storage:
+ *   - Hot: recent nodes in memory (active tasks + last N completed)
+ *   - Cold: archived task subtrees on disk, loaded on demand
+ *   - Archive dir: {dataDir}/archive/ — one JSON file per task
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 // =============================================================================
 // Types
@@ -68,7 +74,7 @@ function nextId(): string {
 }
 
 export class ConversationTree {
-  /** All nodes by ID. */
+  /** Hot nodes — in memory. */
   nodes: Map<string, TreeNode> = new Map();
 
   /** Parent → child IDs, maintained on insert. */
@@ -85,12 +91,24 @@ export class ConversationTree {
 
   private persistPath: string | null = null;
 
+  /** Directory for cold storage archives. */
+  private archiveDir: string | null = null;
+
+  /** Set of task names whose subtrees are archived (cold). */
+  private archivedTasks: Set<string> = new Set();
+
+  /** How many completed tasks to keep hot before archiving. */
+  hotLimit = 1500;
+
   // ---------------------------------------------------------------------------
   // Persistence
   // ---------------------------------------------------------------------------
 
   persist(path: string): void {
     this.persistPath = path;
+    const dir = path.replace(/\/[^/]+$/, "");
+    this.archiveDir = join(dir, "archive");
+
     if (existsSync(path)) {
       try {
         const data = JSON.parse(readFileSync(path, "utf-8"));
@@ -98,6 +116,7 @@ export class ConversationTree {
         this.refs = new Map(Object.entries(data.refs ?? {}));
         this.tasks = new Map(Object.entries(data.tasks ?? {}));
         this.root = data.root ?? null;
+        this.archivedTasks = new Set(data.archivedTasks ?? []);
         this.rebuildChildIndex();
         console.log(`  [tree] loaded ${this.nodes.size} nodes from ${path}`);
       } catch (err) {
@@ -126,6 +145,125 @@ export class ConversationTree {
     } catch (err) {
       console.error(`  [tree] save failed:`, err);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cold storage — archive & restore
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Archive a completed task's subtree to disk.
+   * Removes all descendant nodes from hot storage.
+   * The task's root user node stays hot (so the parent link is intact).
+   */
+  archiveTask(taskName: string): boolean {
+    if (!this.archiveDir) return false;
+    const info = this.tasks.get(taskName);
+    if (!info || info.status === "running") return false;
+
+    const leafId = this.refs.get(taskName);
+    if (!leafId) return false;
+
+    // Walk ancestors to find the task's user node (first user node in path)
+    const path = this.ancestors(leafId);
+    const taskRoot = path.find((n) => n.role === "user");
+    if (!taskRoot) return false;
+
+    // Collect all descendants of the task root
+    const subtreeNodes: TreeNode[] = [];
+    const queue = [taskRoot.id];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      const node = this.nodes.get(id);
+      if (!node) continue;
+      subtreeNodes.push(node);
+      const kids = this.childIndex.get(id);
+      if (kids) queue.push(...kids);
+    }
+
+    if (subtreeNodes.length === 0) return false;
+
+    // Write archive
+    if (!existsSync(this.archiveDir)) mkdirSync(this.archiveDir, { recursive: true });
+    const archivePath = join(this.archiveDir, `${taskName}.json`);
+    writeFileSync(archivePath, JSON.stringify({ nodes: subtreeNodes, taskName }));
+
+    // Remove descendants from hot (keep the task root user node as a stub)
+    for (const node of subtreeNodes) {
+      if (node.id === taskRoot.id) continue; // keep the root
+      this.nodes.delete(node.id);
+      if (node.parentId) {
+        const kids = this.childIndex.get(node.parentId);
+        if (kids) {
+          const idx = kids.indexOf(node.id);
+          if (idx >= 0) kids.splice(idx, 1);
+        }
+      }
+    }
+    // Clear children of taskRoot in index (they're archived)
+    this.childIndex.delete(taskRoot.id);
+
+    this.archivedTasks.add(taskName);
+    this.save();
+    return true;
+  }
+
+  /**
+   * Restore an archived task's subtree back to hot storage.
+   * Returns true if restored, false if not archived or file missing.
+   */
+  restoreTask(taskName: string): boolean {
+    if (!this.archiveDir) return false;
+    if (!this.archivedTasks.has(taskName)) return false;
+
+    const archivePath = join(this.archiveDir, `${taskName}.json`);
+    if (!existsSync(archivePath)) return false;
+
+    try {
+      const data = JSON.parse(readFileSync(archivePath, "utf-8"));
+      const nodes: TreeNode[] = data.nodes ?? [];
+
+      for (const node of nodes) {
+        this.nodes.set(node.id, node);
+        if (node.parentId) {
+          const kids = this.childIndex.get(node.parentId);
+          if (kids) {
+            if (!kids.includes(node.id)) kids.push(node.id);
+          } else {
+            this.childIndex.set(node.parentId, [node.id]);
+          }
+        }
+      }
+
+      this.archivedTasks.delete(taskName);
+      this.save();
+      return true;
+    } catch (err) {
+      console.error(`  [tree] failed to restore archive ${taskName}:`, err);
+      return false;
+    }
+  }
+
+  /** Check if a task is archived. */
+  isArchived(taskName: string): boolean {
+    return this.archivedTasks.has(taskName);
+  }
+
+  /**
+   * Auto-archive old completed tasks to stay under hotLimit.
+   * Archives oldest completed tasks first.
+   */
+  pruneToLimit(): number {
+    const completed = this.listTasks()
+      .filter((t) => t.info.status !== "running" && !this.archivedTasks.has(t.name))
+      .sort((a, b) => (a.info.completedAt ?? 0) - (b.info.completedAt ?? 0));
+
+    const excess = completed.length - this.hotLimit;
+    let archived = 0;
+    for (let i = 0; i < excess; i++) {
+      if (this.archiveTask(completed[i].name)) archived++;
+    }
+    return archived;
   }
 
   // ---------------------------------------------------------------------------
@@ -179,10 +317,59 @@ export class ConversationTree {
   }
 
   // ---------------------------------------------------------------------------
+  // Auto-restore helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Find the task name that owns a given node ID.
+   * Checks if any task's startTask user node matches, or if the node
+   * is the ref target for an archived task.
+   * Scans tasks map — cheap since task count is bounded.
+   */
+  private taskNameForNode(nodeId: string): string | undefined {
+    for (const [name, _info] of this.tasks) {
+      // Check if this task's ref points to or through this node
+      const leafId = this.refs.get(name);
+      if (leafId === nodeId) return name;
+    }
+    // Walk startTask user nodes — they're the stubs we keep hot
+    // The user node is the first node created by startTask, pointed to by ref initially
+    // After completion, ref points to the assistant leaf. But the user node is still
+    // a child of main. Check if nodeId is a descendant path target.
+    return undefined;
+  }
+
+  /**
+   * Try to auto-restore the archive containing a missing node.
+   * Scans archived tasks' files to find which one contains the node.
+   * Returns true if restored.
+   */
+  private autoRestore(nodeId: string): boolean {
+    if (!this.archiveDir || this.archivedTasks.size === 0) return false;
+
+    for (const taskName of this.archivedTasks) {
+      const archivePath = join(this.archiveDir, `${taskName}.json`);
+      if (!existsSync(archivePath)) continue;
+      try {
+        const data = JSON.parse(readFileSync(archivePath, "utf-8"));
+        const nodes: TreeNode[] = data.nodes ?? [];
+        if (nodes.some((n) => n.id === nodeId)) {
+          this.restoreTask(taskName);
+          return true;
+        }
+      } catch {}
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
   // Tree traversal
   // ---------------------------------------------------------------------------
 
-  /** Walk from a node up to root. Returns nodes in root → node order. */
+  /**
+   * Walk from a node up to root. Returns nodes in root → node order.
+   * Auto-restores archived task subtrees encountered during the walk.
+   */
   ancestors(nodeId: string): TreeNode[] {
     const path: TreeNode[] = [];
     let current: string | null = nodeId;
@@ -190,16 +377,34 @@ export class ConversationTree {
     while (current) {
       if (seen.has(current)) break; // cycle protection
       seen.add(current);
-      const node = this.nodes.get(current);
-      if (!node) break;
+      let node = this.nodes.get(current);
+      if (!node) {
+        // Node missing — might be in a cold archive. Check if any archived
+        // task's ref chain passes through here.
+        if (this.autoRestore(current)) {
+          node = this.nodes.get(current);
+        }
+        if (!node) break;
+      }
       path.unshift(node);
       current = node.parentId;
     }
     return path;
   }
 
-  /** Get direct children of a node. */
+  /**
+   * Get direct children of a node.
+   * Auto-restores if the node is a stub for an archived task.
+   */
   children(nodeId: string): TreeNode[] {
+    const node = this.nodes.get(nodeId);
+    if (node) {
+      // Check if this is a stub user node for an archived task
+      const taskName = this.taskNameForNode(nodeId);
+      if (taskName && this.archivedTasks.has(taskName)) {
+        this.restoreTask(taskName);
+      }
+    }
     const ids = this.childIndex.get(nodeId);
     if (!ids) return [];
     return ids.map((id) => this.nodes.get(id)!).filter(Boolean);
@@ -302,7 +507,7 @@ export class ConversationTree {
   // Query helpers
   // ---------------------------------------------------------------------------
 
-  /** Total node count. */
+  /** Total node count (hot only). */
   size(): number {
     return this.nodes.size;
   }
@@ -310,6 +515,11 @@ export class ConversationTree {
   /** Count active (running) tasks. */
   activeTasks(): number {
     return [...this.tasks.values()].filter((t) => t.status === "running").length;
+  }
+
+  /** List archived task names. */
+  archivedTaskNames(): string[] {
+    return [...this.archivedTasks];
   }
 
   // ---------------------------------------------------------------------------
@@ -322,6 +532,7 @@ export class ConversationTree {
       refs: Object.fromEntries(this.refs),
       tasks: Object.fromEntries(this.tasks),
       root: this.root,
+      archivedTasks: [...this.archivedTasks],
     };
   }
 
@@ -331,6 +542,7 @@ export class ConversationTree {
     tree.refs = new Map(Object.entries(data.refs ?? {}));
     tree.tasks = new Map(Object.entries(data.tasks ?? {}));
     tree.root = data.root ?? null;
+    tree.archivedTasks = new Set(data.archivedTasks ?? []);
     tree.rebuildChildIndex();
     return tree;
   }
