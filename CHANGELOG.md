@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.3.0
+
+### Agent-first architecture
+
+Reef is now an agent with a server, not a server with an agent.
+
+- **Event tree** (`src/tree.ts`) — every event is a node with a `parentId`. User prompts, tool calls, tool results, assistant responses, cron fires, service deploys — all in a single causal tree. Refs point to leaf nodes like git branches.
+- **Per-task pi processes** (`src/reef.ts`) — each `POST /reef/submit` spawns a fresh `pi --mode rpc` process. Concurrent tasks run as concurrent processes. No long-lived agent.
+- **Conversation continuation** — `POST /reef/submit` accepts `parentId` to reply to any node. The server walks ancestors for context.
+- **Tree API** — `GET /reef/tree`, `GET /reef/tree/:id`, `GET /reef/tree/:id/path`, `GET /reef/tasks`
+- **SSE events include tree coordinates** — every broadcast has `nodeId` and `parentId` so clients can build the tree live
+
+### New services
+
+- **KV store** (`services/store/`) — `GET/PUT/DELETE /store/:key`, TTL support, `reef_store_get`/`reef_store_put`/`reef_store_list` tools
+- **Cron** (`services/cron/`) — pure TypeScript scheduling with cron expressions + simple intervals. Job types: agent (posts to `/reef/submit`), HTTP, exec
+
+### Feed UI
+
+- **Threaded feed** (`services/ui/`) — split-pane layout with activity feed + branch conversations
+- `feedAdd(nodeId, parentId, tag, text)` — single primitive, renders actual tree
+- Reddit-style CSS tree lines for visual nesting
+- Branch panel streams full conversations with tool call details
+- Conversation continuation from branch panel
+
+### Agent tools
+
+- `reef_task_list` / `reef_task_read` — inspect completed tasks
+- `reef_store_get` / `reef_store_put` / `reef_store_list` — key-value storage
+
+### Removed
+
+- **Agent service** (`services/agent/`) — replaced entirely by `src/reef.ts`. The old `/agent/tasks` and `/agent/sessions` endpoints are gone. Use `POST /reef/submit` instead.
+- **Branch/merge/loop** (`src/branch.ts`, `src/merge.ts`, `src/loop.ts`) — 1,361 lines of orchestration code. The agent orchestrates itself with tools.
+
+### Developer experience
+
+- **Biome linter** — `bun run lint`, `bun run lint:fix`, pre-commit hook
+- **REEF_DATA_DIR** env var — configurable data directory (default: `data/`)
+- **277 tests** across 19 files (up from 265)
+
 ## 0.2.0
 
 - **Scaffold service** (`examples/services/scaffold/`) — generate structurally correct service module skeletons

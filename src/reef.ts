@@ -138,8 +138,9 @@ export async function createReef(config: ReefConfig = {}) {
   const { app: serviceApp, liveModules, events, ctx } = await createServer(config.server ?? {});
 
   const tree = new ConversationTree();
-  if (!existsSync("data")) mkdirSync("data", { recursive: true });
-  tree.persist("data/tree.json");
+  const dataDir = process.env.REEF_DATA_DIR ?? "data";
+  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+  tree.persist(`${dataDir}/tree.json`);
 
   const piProcesses = new Map<string, Task>();
   const sseClients = new Set<ReadableStreamDefaultController>();

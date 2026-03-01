@@ -2,7 +2,7 @@
  * Cron service — schedule recurring jobs.
  *
  * Job types:
- *   - agent: posts a task to /agent/tasks with a prompt
+ *   - agent: posts a task to /reef/submit with a prompt
  *   - http: makes an HTTP request to a reef endpoint
  *   - exec: runs a shell command via Bun.spawn
  *
@@ -253,7 +253,7 @@ async function executeJob(job: CronJob): Promise<RunRecord> {
         const cfg = job.config as AgentConfig;
         const port = getPort();
         const token = getAuthToken();
-        const res = await fetch(`http://localhost:${port}/agent/tasks`, {
+        const res = await fetch(`http://localhost:${port}/reef/submit`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
