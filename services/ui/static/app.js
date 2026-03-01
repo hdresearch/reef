@@ -35,7 +35,14 @@ function autoScroll(el) {
 
 const feedEl = $('feed-entries');
 const feedScroll = $('feed-scroll');
-const feedNodes = new Map(); // nodeId → DOM element
+const feedNodes = new Map(); // nodeId → DOM element (the tree item, has .feed-children inside)
+
+
+function shortId(id) {
+  if (!id) return '';
+  const parts = id.split('-');
+  return parts.length > 2 ? parts.slice(0, 2).join('-') : id;
+}
 
 /**
  * Core feed primitive: add a tree node to the feed.
@@ -84,44 +91,30 @@ function feedAdd(nodeId, parentNodeId, tag, text, opts = {}) {
   return item;
 }
 
+/** Update an existing feed node's tag + text. */
+function feedUpdate(nodeId, tag, text, status) {
+  const item = feedNodes.get(nodeId);
+  if (!item) return;
+  const row = item.querySelector(':scope > .feed-row');
+  if (!row) return;
+  if (tag) {
+    const tagEl = row.querySelector('.feed-tag');
+    if (tagEl) { tagEl.className = `feed-tag ${tag}`; tagEl.textContent = tag; }
+  }
+  if (text) {
+    const textEl = row.querySelector('.feed-text');
+    if (textEl) textEl.textContent = text.length > 100 ? text.slice(0, 100) + '…' : text;
+  }
+  if (status) {
+    let statusEl = row.querySelector('.feed-status');
+    if (!statusEl) { statusEl = document.createElement('span'); statusEl.className = 'feed-status'; row.appendChild(statusEl); }
+    statusEl.textContent = status;
+  }
+}
+
 // Convenience: standalone event (no nesting)
 function feedEvent(tag, text, opts = {}) {
   return feedAdd(opts.nodeId || null, opts.parentId || null, tag, text, opts);
-}
-
-/** Map a tree node to a feed tag. */
-function nodeTag(n) {
-  if (n.role === 'user') return 'task';
-  if (n.role === 'assistant') return 'done';
-  if (n.role === 'tool_call') return 'tool';
-  if (n.role === 'tool_result') return 'result';
-  if (n.role === 'event') {
-    const et = n.eventType || 'event';
-    if (et === 'cron_start') return 'cron';
-    if (et === 'cron_done') return 'done';
-    if (et === 'cron_error') return 'error';
-    if (et.startsWith('service_')) return 'system';
-    return 'system';
-  }
-  return null;
-}
-
-/** Map a tree node to feed display text. */
-function nodeText(n) {
-  const trunc = (s, len) => s.length > len ? s.slice(0, len) + '…' : s;
-  if (n.role === 'user') return trunc(n.content, 80);
-  if (n.role === 'assistant') return trunc(n.content, 80);
-  if (n.role === 'tool_call') {
-    const args = n.toolParams ? JSON.stringify(n.toolParams).slice(0, 40) : '';
-    return `${n.toolName || n.content}(${args})`;
-  }
-  if (n.role === 'tool_result') return trunc(n.content, 60);
-  if (n.role === 'event') {
-    const et = n.eventType || '';
-    if (et === 'cron_start') return `${n.content} (${n.meta?.jobType || 'exec'})`;
-    return n.content;
-  }
-  return trunc(n.content, 80);
 }
 
 // =============================================================================
@@ -375,6 +368,9 @@ async function readSSE(reader) {
   setTimeout(connectSSE, 3000);
 }
 
+// Track the "current assistant" nodeId per task — for text streaming
+const taskAssistantNode = new Map(); // taskId → nodeId placeholder
+
 function handleEvent(e) {
   const taskId = e.taskId || '';
   const nodeId = e.nodeId || null;
@@ -384,7 +380,7 @@ function handleEvent(e) {
     case 'agent_start':
       break;
 
-    case 'task_started': {
+    case 'branch_started': {
       // Continuation — add follow-up user node to feed + update branch
       if (e.continuing) {
         // Add the continuation user node to the feed tree (nests under previous assistant)
@@ -421,7 +417,7 @@ function handleEvent(e) {
       break;
     }
 
-    case 'task_done': {
+    case 'branch_done': {
       // Assistant response nests under its parent (user node) in the feed
       feedAdd(nodeId, parentId, 'done', (e.summary || 'done').slice(0, 80), { taskId });
       // Update the task entry status
@@ -437,7 +433,7 @@ function handleEvent(e) {
       break;
     }
 
-    case 'task_error': {
+    case 'branch_error': {
       feedAdd(null, parentId, 'error', (e.error || 'failed').slice(0, 80), { taskId });
       const taskItem = feedEl.querySelector(`[data-task-id="${taskId}"] .feed-status`);
       if (taskItem) taskItem.textContent = '✗';
@@ -553,18 +549,6 @@ async function loadHistory() {
       }
     }
 
-    // Precompute node → task mapping: walk ancestors from each task leaf
-    const nodeToTask = new Map();
-    for (const [name] of Object.entries(taskData)) {
-      let cur = refs[name];
-      const seen = new Set();
-      while (cur && nodes[cur] && !seen.has(cur)) {
-        seen.add(cur);
-        nodeToTask.set(cur, name);
-        cur = nodes[cur].parentId;
-      }
-    }
-
     // Walk the tree depth-first, rendering each node in the feed
     const rendered = new Set();
 
@@ -573,6 +557,7 @@ async function loadHistory() {
       rendered.add(nid);
       const n = nodes[nid];
       if (!n || n.role === 'system') {
+        // Still render children of system
         for (const cid of (childrenOf[nid] || [])) renderNode(cid);
         return;
       }
@@ -581,7 +566,20 @@ async function loadHistory() {
       const text = nodeText(n);
       if (tag) {
         const opts = { timestamp: n.timestamp, nodeId: nid };
-        const taskName = nodeToTask.get(nid);
+
+        // Find which task this node belongs to (for clickability)
+        const taskName = Object.entries(taskData).find(([name]) => {
+          const leaf = refs[name];
+          if (!leaf) return false;
+          let c = leaf;
+          const s = new Set();
+          while (c && nodes[c] && !s.has(c)) {
+            s.add(c);
+            if (c === nid) return true;
+            c = nodes[c].parentId;
+          }
+          return false;
+        })?.[0];
 
         if (taskName) {
           opts.taskId = taskName;
@@ -595,7 +593,43 @@ async function loadHistory() {
         feedAdd(nid, n.parentId, tag, text, opts);
       }
 
+      // Always recurse into children even if this node was skipped —
+      // tool calls from continuations still need to render under the task
       for (const cid of (childrenOf[nid] || [])) renderNode(cid);
+    }
+
+    function nodeTag(n) {
+      if (n.role === 'user') return 'task';
+      if (n.role === 'assistant') return 'done';  // completion summary
+      if (n.role === 'tool_call') return 'tool';
+      if (n.role === 'tool_result') return 'result';
+      if (n.role === 'event') {
+        const et = n.eventType || 'event';
+        if (et === 'cron_start') return 'cron';
+        if (et === 'cron_done') return 'done';
+        if (et === 'cron_error') return 'error';
+        if (et.startsWith('service_')) return 'system';
+        return 'system';
+      }
+      return null;
+    }
+
+
+
+    function nodeText(n) {
+      if (n.role === 'user') return n.content.length > 80 ? n.content.slice(0, 80) + '…' : n.content;
+      if (n.role === 'assistant') return n.content.length > 80 ? n.content.slice(0, 80) + '…' : n.content;
+      if (n.role === 'tool_call') {
+        const args = n.toolParams ? JSON.stringify(n.toolParams).slice(0, 40) : '';
+        return `${n.toolName || n.content}(${args})`;
+      }
+      if (n.role === 'tool_result') return n.content.slice(0, 60);
+      if (n.role === 'event') {
+        const et = n.eventType || '';
+        if (et === 'cron_start') return `${n.content} (${n.meta?.jobType || 'exec'})`;
+        return n.content;
+      }
+      return n.content;
     }
 
     // Start from root
@@ -742,3 +776,48 @@ loadHistory().then(() => {
   setInterval(discoverPanels, 30000);
   setInterval(updateStatus, 10000);
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
