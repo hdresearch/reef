@@ -706,6 +706,74 @@ const services: ServiceModule = {
         }
       },
     });
+
+    pi.registerTool({
+      name: "reef_task_list",
+      label: "Reef: List Tasks",
+      description:
+        "List all conversation tasks. Each task is a branch in the conversation tree. "
+        + "Shows status (running/done/error), the trigger prompt, and timing. "
+        + "Use to check what work has been done or monitor active tasks.",
+      parameters: Type.Object({
+        status: Type.Optional(Type.String({ description: "Filter by status: running, done, error" })),
+      }),
+      async execute(_id, params) {
+        if (!client.getBaseUrl()) return client.noUrl();
+        try {
+          const query = params.status ? `?status=${params.status}` : "";
+          const result = await client.api("GET", `/reef/tasks${query}`);
+          const tasks = (result as any).tasks || [];
+          if (tasks.length === 0) return client.ok("No tasks found.");
+          const lines = tasks.map((t: any) => {
+            const age = t.completedAt
+              ? `${((t.completedAt - t.createdAt) / 1000).toFixed(1)}s`
+              : "running";
+            return `[${t.status}] ${t.name} (${age})\n  → ${t.trigger.slice(0, 100)}`;
+          });
+          return client.ok(lines.join("\n\n"), { tasks });
+        } catch (e: any) {
+          return client.err(e.message);
+        }
+      },
+    });
+
+    pi.registerTool({
+      name: "reef_task_read",
+      label: "Reef: Read Task",
+      description:
+        "Read the full conversation of a task — walk the tree from root to the task's "
+        + "leaf node, showing all messages, tool calls, and results. Use to inspect "
+        + "completed work or debug failures.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Task name (the task ID)" }),
+      }),
+      async execute(_id, params) {
+        if (!client.getBaseUrl()) return client.noUrl();
+        try {
+          const result = await client.api("GET", `/reef/tasks/${encodeURIComponent(params.name)}`);
+          const t = result as any;
+          const lines = [`Task: ${t.name}`, `Status: ${t.status}`, `Trigger: ${t.trigger}`, ``];
+          for (const node of (t.nodes || [])) {
+            if (node.role === "system") continue;
+            if (node.role === "tool_call") {
+              lines.push(`[tool] ${node.toolName}(${JSON.stringify(node.toolParams || {}).slice(0, 200)})`);
+            } else if (node.role === "tool_result") {
+              lines.push(`[result] ${node.content.slice(0, 200)}`);
+            } else if (node.role === "assistant") {
+              lines.push(`[assistant] ${node.content}`);
+            } else if (node.role === "user") {
+              lines.push(`[user] ${node.content}`);
+            } else {
+              lines.push(`[${node.role}] ${node.content}`);
+            }
+          }
+          if (t.artifacts?.error) lines.push(`\nError: ${t.artifacts.error}`);
+          return client.ok(lines.join("\n"), { task: t });
+        } catch (e: any) {
+          return client.err(e.message);
+        }
+      },
+    });
   },
 
   init(serviceCtx: ServiceContext) {

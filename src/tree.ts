@@ -1,30 +1,34 @@
 /**
  * Conversation Tree
  *
- * A git-like data structure for agent conversations. The trunk ("main") is
- * the agent's ongoing understanding of the world. Incoming events fork
- * branches from main, execute concurrently, and merge back sequentially.
+ * Every message is a node with a parent. The tree structure emerges naturally:
+ * any node can have multiple children (forks). Named refs point to leaf nodes,
+ * like git branches pointing to commits.
  *
  * Key concepts:
- *   - Node: a single message (user, assistant, tool_call, tool_result, system)
- *   - Branch: a named sequence of nodes that forks from main at a specific point
- *   - Main: the trunk — linear history of merged results
- *   - Fork: create a branch from main's current head
- *   - Merge: append a branch's summary to main (sequential, never concurrent)
- *
- * The tree is pure data. It doesn't execute anything — that's branch.ts and merge.ts.
+ *   - Node: a single message with a parentId
+ *   - Ref: a named pointer to a node (e.g. "main" → latest system event)
+ *   - Path: ancestors from a node back to root = the conversation context
+ *   - Fork: add a child to any node — if it already has children, that's a branch point
  */
+
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 
 // =============================================================================
 // Types
 // =============================================================================
 
-/** A single node in the conversation tree. */
 export interface TreeNode {
   id: string;
-  role: "system" | "user" | "assistant" | "tool_call" | "tool_result" | "merge";
+  parentId: string | null;
+  role: "system" | "user" | "assistant" | "tool_call" | "tool_result" | "event";
   content: string;
   timestamp: number;
+
+  /** For event nodes */
+  source?: string;
+  eventType?: string;
+  meta?: Record<string, unknown>;
 
   /** For tool_call nodes */
   toolName?: string;
@@ -33,46 +37,25 @@ export interface TreeNode {
   /** For tool_result nodes */
   toolCallId?: string;
   result?: unknown;
-
-  /** For merge nodes — what branch produced this */
-  mergedFrom?: string;
-  mergeArtifacts?: MergeArtifacts;
 }
 
-/** Structured output of a completed branch, attached to merge nodes. */
-export interface MergeArtifacts {
+/** Structured output attached to completed task refs. */
+export interface TaskArtifacts {
   summary: string;
   filesChanged: string[];
   testsRun?: { passed: number; failed: number };
   servicesDeployed?: string[];
-  storeKeysWritten?: string[];
   error?: string;
 }
 
-/** A branch in the conversation tree. */
-export interface Branch {
-  name: string;
-  status: "pending" | "running" | "done" | "error" | "merged";
-
-  /** The index into main's nodes where this branch forked. */
-  forkPoint: number;
-
-  /** The event/task that triggered this branch. */
+/** Task metadata stored alongside refs. */
+export interface TaskInfo {
+  status: "running" | "done" | "error";
   trigger: string;
-
-  /** Nodes produced by this branch (its own work, not main's prefix). */
-  nodes: TreeNode[];
-
-  /** VM ID this branch is executing on (set when running). */
-  vmId?: string;
-
-  /** Structured results (set when done). */
-  artifacts?: MergeArtifacts;
-
-  /** Timing. */
   createdAt: number;
   startedAt?: number;
   completedAt?: number;
+  artifacts?: TaskArtifacts;
 }
 
 // =============================================================================
@@ -85,215 +68,248 @@ function nextId(): string {
 }
 
 export class ConversationTree {
-  /** The trunk — linear history of the agent's understanding. */
-  main: TreeNode[] = [];
+  /** All nodes by ID. */
+  nodes: Map<string, TreeNode> = new Map();
 
-  /** All branches, keyed by name. */
-  branches: Map<string, Branch> = new Map();
+  /** Named refs — point to a node ID. "main" is the world timeline. */
+  refs: Map<string, string> = new Map();
 
-  /** Ordered queue of branch names waiting to merge. */
-  private mergeQueue: string[] = [];
+  /** Task metadata — keyed by ref name. */
+  tasks: Map<string, TaskInfo> = new Map();
 
-  // ---------------------------------------------------------------------------
-  // Main branch operations
-  // ---------------------------------------------------------------------------
+  /** Root node ID. */
+  root: string | null = null;
 
-  /** Append a node to main. */
-  append(role: TreeNode["role"], content: string, extra?: Partial<TreeNode>): TreeNode {
-    const node: TreeNode = { id: nextId(), role, content, timestamp: Date.now(), ...extra };
-    this.main.push(node);
-    return node;
-  }
-
-  /** Get main's current head index. */
-  head(): number {
-    return this.main.length - 1;
-  }
-
-  /** Get main's conversation as a serializable array. */
-  mainHistory(): TreeNode[] {
-    return [...this.main];
-  }
+  private persistPath: string | null = null;
 
   // ---------------------------------------------------------------------------
-  // Branch operations
+  // Persistence
   // ---------------------------------------------------------------------------
 
-  /** Fork a new branch from main's current head. */
-  fork(name: string, trigger: string): Branch {
-    if (this.branches.has(name)) {
-      throw new Error(`Branch "${name}" already exists`);
+  persist(path: string): void {
+    this.persistPath = path;
+    if (existsSync(path)) {
+      try {
+        const data = JSON.parse(readFileSync(path, "utf-8"));
+        this.nodes = new Map(Object.entries(data.nodes ?? {}));
+        this.refs = new Map(Object.entries(data.refs ?? {}));
+        this.tasks = new Map(Object.entries(data.tasks ?? {}));
+        this.root = data.root ?? null;
+        console.log(`  [tree] loaded ${this.nodes.size} nodes from ${path}`);
+      } catch (err) {
+        console.error(`  [tree] failed to load ${path}:`, err);
+      }
     }
-    const branch: Branch = {
-      name,
-      status: "pending",
-      forkPoint: this.head(),
-      trigger,
-      nodes: [],
-      createdAt: Date.now(),
+  }
+
+  private save(): void {
+    if (!this.persistPath) return;
+    try {
+      const dir = this.persistPath.replace(/\/[^/]+$/, "");
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(this.persistPath, JSON.stringify(this.toJSON()));
+    } catch (err) {
+      console.error(`  [tree] save failed:`, err);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Core operations
+  // ---------------------------------------------------------------------------
+
+  /** Add a node as a child of parentId. Returns the new node. */
+  add(parentId: string | null, role: TreeNode["role"], content: string, extra?: Partial<TreeNode>): TreeNode {
+    const node: TreeNode = {
+      id: nextId(),
+      parentId,
+      role,
+      content,
+      timestamp: Date.now(),
+      ...extra,
     };
-    this.branches.set(name, branch);
-    return branch;
-  }
-
-  /** Mark a branch as running (VM assigned). */
-  start(name: string, vmId: string): void {
-    const branch = this.getBranch(name);
-    branch.status = "running";
-    branch.vmId = vmId;
-    branch.startedAt = Date.now();
-  }
-
-  /** Mark a branch as completed with artifacts. */
-  complete(name: string, artifacts: MergeArtifacts): void {
-    const branch = this.getBranch(name);
-    branch.status = "done";
-    branch.artifacts = artifacts;
-    branch.completedAt = Date.now();
-    this.mergeQueue.push(name);
-  }
-
-  /** Mark a branch as failed. */
-  fail(name: string, error: string): void {
-    const branch = this.getBranch(name);
-    branch.status = "error";
-    branch.artifacts = { summary: `Failed: ${error}`, filesChanged: [], error };
-    branch.completedAt = Date.now();
-    this.mergeQueue.push(name);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Merge operations
-  // ---------------------------------------------------------------------------
-
-  /** Get the next branch ready to merge (FIFO). Returns null if queue is empty. */
-  nextMerge(): Branch | null {
-    while (this.mergeQueue.length > 0) {
-      const name = this.mergeQueue[0];
-      const branch = this.branches.get(name);
-      if (branch && (branch.status === "done" || branch.status === "error")) {
-        return branch;
-      }
-      // Skip invalid entries
-      this.mergeQueue.shift();
-    }
-    return null;
-  }
-
-  /**
-   * Merge a branch into main. Appends a merge node with the branch's artifacts.
-   * Call this only from the merge queue processor (one at a time).
-   */
-  merge(name: string): TreeNode {
-    const branch = this.getBranch(name);
-    if (branch.status !== "done" && branch.status !== "error") {
-      throw new Error(`Branch "${name}" is ${branch.status}, cannot merge`);
-    }
-
-    // Remove from queue
-    const idx = this.mergeQueue.indexOf(name);
-    if (idx !== -1) this.mergeQueue.splice(idx, 1);
-
-    // Append merge node to main
-    const artifacts = branch.artifacts ?? { summary: "No artifacts", filesChanged: [] };
-    const node = this.append("merge", artifacts.summary, {
-      mergedFrom: name,
-      mergeArtifacts: artifacts,
-    });
-
-    branch.status = "merged";
+    this.nodes.set(node.id, node);
+    if (!parentId && !this.root) this.root = node.id;
+    this.save();
     return node;
   }
 
+  /** Add a node as child of a ref's current node, then advance the ref. */
+  addToRef(refName: string, role: TreeNode["role"], content: string, extra?: Partial<TreeNode>): TreeNode {
+    const parentId = this.refs.get(refName) ?? null;
+    const node = this.add(parentId, role, content, extra);
+    this.refs.set(refName, node.id);
+    this.save();
+    return node;
+  }
+
+  /** Get a node by ID. */
+  get(id: string): TreeNode | undefined {
+    return this.nodes.get(id);
+  }
+
+  /** Move a ref to point to a node. */
+  setRef(name: string, nodeId: string): void {
+    this.refs.set(name, nodeId);
+    this.save();
+  }
+
+  /** Get the node ID a ref points to. */
+  getRef(name: string): string | undefined {
+    return this.refs.get(name);
+  }
+
   // ---------------------------------------------------------------------------
-  // Context — what a branch sees when it starts
+  // Tree traversal
   // ---------------------------------------------------------------------------
 
-  /**
-   * Build the context for a branch: main's history up to the fork point,
-   * formatted as a string the agent can understand.
-   */
-  contextForBranch(name: string): string {
-    const branch = this.getBranch(name);
-    const history = this.main.slice(0, branch.forkPoint + 1);
+  /** Walk from a node up to root. Returns nodes in root → node order. */
+  ancestors(nodeId: string): TreeNode[] {
+    const path: TreeNode[] = [];
+    let current: string | null = nodeId;
+    const seen = new Set<string>();
+    while (current) {
+      if (seen.has(current)) break; // cycle protection
+      seen.add(current);
+      const node = this.nodes.get(current);
+      if (!node) break;
+      path.unshift(node);
+      current = node.parentId;
+    }
+    return path;
+  }
 
+  /** Get direct children of a node. */
+  children(nodeId: string): TreeNode[] {
+    return [...this.nodes.values()].filter(n => n.parentId === nodeId);
+  }
+
+  /** Get the path from root to a ref's current node. */
+  pathTo(refName: string): TreeNode[] {
+    const nodeId = this.refs.get(refName);
+    if (!nodeId) return [];
+    return this.ancestors(nodeId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Context — what a pi process sees
+  // ---------------------------------------------------------------------------
+
+  /** Build conversation context for replying to a specific node. */
+  contextFor(nodeId: string): string {
+    const path = this.ancestors(nodeId);
     const lines: string[] = [];
-    lines.push("# Agent State (main branch)");
-    lines.push("");
 
-    for (const node of history) {
-      if (node.role === "system") {
-        lines.push(`[system] ${node.content}`);
-      } else if (node.role === "merge") {
-        lines.push(`[merged: ${node.mergedFrom}] ${node.content}`);
-        if (node.mergeArtifacts?.filesChanged.length) {
-          lines.push(`  files: ${node.mergeArtifacts.filesChanged.join(", ")}`);
-        }
-      } else if (node.role === "user") {
-        lines.push(`[user] ${node.content}`);
-      } else if (node.role === "assistant") {
-        lines.push(`[assistant] ${node.content}`);
-      }
+    for (const node of path) {
+      if (node.role === "system") lines.push(`[system] ${node.content}`);
+      else if (node.role === "event") lines.push(`[${node.eventType || "event"}] ${node.content}`);
+      else if (node.role === "user") lines.push(`[user] ${node.content}`);
+      else if (node.role === "assistant") lines.push(`[assistant] ${node.content}`);
+      else if (node.role === "tool_call") lines.push(`[tool] ${node.toolName || node.content}`);
+      else if (node.role === "tool_result") lines.push(`[result] ${node.content}`);
     }
 
-    lines.push("");
-    lines.push(`# Current Task`);
-    lines.push(branch.trigger);
-
-    return lines.join("\n");
+    return lines.join("\n\n");
   }
 
   // ---------------------------------------------------------------------------
-  // Query
+  // Task management
   // ---------------------------------------------------------------------------
 
-  /** Get a branch by name, or throw. */
-  getBranch(name: string): Branch {
-    const branch = this.branches.get(name);
-    if (!branch) throw new Error(`Branch "${name}" not found`);
-    return branch;
+  /** Start a task — creates a ref and task info. */
+  startTask(name: string, trigger: string, parentId: string | null): TreeNode {
+    const userNode = this.add(parentId, "user", trigger);
+    this.refs.set(name, userNode.id);
+    this.tasks.set(name, {
+      status: "running",
+      trigger,
+      createdAt: Date.now(),
+      startedAt: Date.now(),
+    });
+    this.save();
+    return userNode;
   }
 
-  /** List all branches. */
-  listBranches(): Branch[] {
-    return [...this.branches.values()];
+  /** Complete a task. */
+  completeTask(name: string, artifacts: TaskArtifacts): void {
+    const info = this.tasks.get(name);
+    if (info) {
+      info.status = "done";
+      info.completedAt = Date.now();
+      info.artifacts = artifacts;
+    }
+    this.save();
   }
 
-  /** Get branches by status. */
-  branchesByStatus(status: Branch["status"]): Branch[] {
-    return this.listBranches().filter((b) => b.status === status);
+  /** Fail a task. */
+  failTask(name: string, error: string): void {
+    const info = this.tasks.get(name);
+    if (info) {
+      info.status = "error";
+      info.completedAt = Date.now();
+      info.artifacts = { summary: `Failed: ${error}`, filesChanged: [], error };
+    }
+    this.save();
   }
 
-  /** How many branches are currently in-flight. */
-  activeBranches(): number {
-    return this.branchesByStatus("pending").length + this.branchesByStatus("running").length;
+  /** Reopen a completed task for continuation. */
+  reopenTask(name: string): void {
+    const info = this.tasks.get(name);
+    if (info) {
+      info.status = "running";
+      info.completedAt = undefined;
+      info.artifacts = undefined;
+    }
+    this.save();
   }
 
-  /** How many merges are waiting. */
-  pendingMerges(): number {
-    return this.mergeQueue.length;
+  /** Get task info. */
+  getTask(name: string): TaskInfo | undefined {
+    return this.tasks.get(name);
+  }
+
+  /** List all tasks. */
+  listTasks(): Array<{ name: string; info: TaskInfo; leafId: string | undefined }> {
+    return [...this.tasks.entries()].map(([name, info]) => ({
+      name,
+      info,
+      leafId: this.refs.get(name),
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Query helpers
+  // ---------------------------------------------------------------------------
+
+  /** Total node count. */
+  size(): number {
+    return this.nodes.size;
+  }
+
+  /** Count active (running) tasks. */
+  activeTasks(): number {
+    return [...this.tasks.values()].filter(t => t.status === "running").length;
   }
 
   // ---------------------------------------------------------------------------
   // Serialization
   // ---------------------------------------------------------------------------
 
-  /** Serialize the entire tree to JSON. */
   toJSON(): object {
     return {
-      main: this.main,
-      branches: Object.fromEntries(this.branches),
-      mergeQueue: [...this.mergeQueue],
+      nodes: Object.fromEntries(this.nodes),
+      refs: Object.fromEntries(this.refs),
+      tasks: Object.fromEntries(this.tasks),
+      root: this.root,
     };
   }
 
-  /** Restore a tree from serialized JSON. */
   static fromJSON(data: any): ConversationTree {
     const tree = new ConversationTree();
-    tree.main = data.main ?? [];
-    tree.branches = new Map(Object.entries(data.branches ?? {}));
-    // @ts-ignore — private field restore
-    tree.mergeQueue = data.mergeQueue ?? [];
+    tree.nodes = new Map(Object.entries(data.nodes ?? {}));
+    tree.refs = new Map(Object.entries(data.refs ?? {}));
+    tree.tasks = new Map(Object.entries(data.tasks ?? {}));
+    tree.root = data.root ?? null;
     return tree;
   }
 }
+

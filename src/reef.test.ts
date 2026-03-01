@@ -29,13 +29,15 @@ describe("reef", () => {
     expect(status).toBe(200);
     expect(data.mode).toBe("agent");
     expect(data.activeTasks).toBe(0);
-    expect(data.conversationLength).toBe(1); // system prompt
+    expect(data.totalNodes).toBe(1); // system prompt
   });
 
   test("GET /reef/tree — has system prompt", async () => {
     const { data } = await json("/reef/tree");
-    expect(data.main.length).toBe(1);
-    expect(data.main[0].role).toBe("system");
+    expect(data.root).toBeTruthy();
+    const nodes = data.nodes || {};
+    const root = nodes[data.root];
+    expect(root.role).toBe("system");
   });
 
   test("GET /reef/tasks — empty initially", async () => {
@@ -66,7 +68,7 @@ describe("reef", () => {
     expect(res.headers.get("content-type")).toBe("text/event-stream");
   });
 
-  test("GET /reef/tasks/:id — 404 for unknown", async () => {
+  test("GET /reef/tasks/:name — 404 for unknown", async () => {
     const { status } = await json("/reef/tasks/nope");
     expect(status).toBe(404);
   });

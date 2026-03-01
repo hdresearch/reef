@@ -21,8 +21,9 @@
 
 import { Hono } from "hono";
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync } from "node:fs";
 import { createServer, type ServerOptions } from "./core/server.js";
-import { ConversationTree } from "./tree.js";
+import { ConversationTree, type TaskArtifacts } from "./tree.js";
 import { bearerAuth } from "./core/auth.js";
 
 // =============================================================================
@@ -136,13 +137,20 @@ export async function createReef(config: ReefConfig = {}) {
   const { app: serviceApp, liveModules, events, ctx } = await createServer(config.server ?? {});
 
   const tree = new ConversationTree();
-  const tasks = new Map<string, Task>();
+  if (!existsSync("data")) mkdirSync("data", { recursive: true });
+  tree.persist("data/tree.json");
+
+  const piProcesses = new Map<string, Task>();
   const sseClients = new Set<ReadableStreamDefaultController>();
 
-  const systemPrompt = config.agent?.systemPrompt
-    ?? process.env.REEF_SYSTEM_PROMPT
-    ?? "You are a reef agent. You have tools to manage VMs, spawn swarms, deploy services, and store state. When given a task, decide the best approach — do it yourself, delegate to a swarm, or decompose it. You build your own tools.";
-  tree.append("system", systemPrompt);
+  // Only add system prompt if tree is empty (fresh start)
+  if (tree.size() === 0) {
+    const systemPrompt = config.agent?.systemPrompt
+      ?? process.env.REEF_SYSTEM_PROMPT
+      ?? "You are a reef agent. You have tools to manage VMs, spawn swarms, deploy services, and store state. When given a task, decide the best approach — do it yourself, delegate to a swarm, or decompose it. You build your own tools.";
+    const sysNode = tree.add(null, "system", systemPrompt);
+    tree.setRef("main", sysNode.id);
+  }
 
   function broadcast(event: any) {
     const data = JSON.stringify(event);
@@ -150,6 +158,39 @@ export async function createReef(config: ReefConfig = {}) {
       try { c.enqueue(`data: ${data}\n\n`); } catch { sseClients.delete(c); }
     }
   }
+
+  // Track event parents — e.g. cron_done is child of cron_start
+  const eventParents = new Map<string, string>(); // runId/groupKey → nodeId
+
+  // Wire event bus → SSE + tree: every event is a node with a parent
+  events.on('reef:event', (data: any) => {
+    const { type, source, ...meta } = data;
+    const content = meta.prompt || meta.jobName || meta.name || meta.error || type;
+
+    let parentId: string | null = null;
+
+    // Cron done/error are children of their cron_start
+    if ((type === 'cron_done' || type === 'cron_error') && meta.runId) {
+      parentId = eventParents.get(meta.runId) ?? null;
+    }
+
+    // If no specific parent, add as child of main's current node (sibling, not chain)
+    let node: import("./tree.js").TreeNode;
+    if (parentId) {
+      node = tree.add(parentId, "event", content, { eventType: type, source, meta });
+    } else {
+      // Events are siblings under main — don't advance the ref
+      const mainId = tree.getRef("main") ?? null;
+      node = tree.add(mainId, "event", content, { eventType: type, source, meta });
+    }
+
+    // Track: cron_start becomes parent for its run
+    if (type === 'cron_start' && meta.runId) {
+      eventParents.set(meta.runId, node.id);
+    }
+
+    broadcast({ ...data, nodeId: node.id, parentId: node.parentId });
+  });
 
   // ==========================================================================
   // Routes
@@ -166,24 +207,42 @@ export async function createReef(config: ReefConfig = {}) {
       return c.json({ error: "Missing 'task' string in body." }, 400);
     }
 
-    const id = `task-${++taskCounter}-${Date.now()}`;
+    const taskId = body.taskId || `task-${++taskCounter}-${Date.now()}`;
+    const parentId = body.parentId ?? tree.getRef("main") ?? null;
+    const continuing = !!body.parentId;
+
+    // Create user node in the tree — either forking from main or continuing a conversation
+    const userNode = continuing
+      ? tree.add(parentId, "user", prompt) // reply to specific node
+      : tree.startTask(taskId, prompt, parentId); // new task
+
+    // If continuing, reopen the task and advance its ref
+    if (continuing) {
+      // Find which task owns this parentId
+      const existingTask = body.taskId ? tree.getTask(body.taskId) : undefined;
+      if (existingTask) {
+        tree.reopenTask(taskId);
+        tree.setRef(taskId, userNode.id);
+      }
+    }
+
     const task: Task = {
-      id,
+      id: taskId,
       prompt,
       status: "running",
       output: "",
       events: [],
       startedAt: Date.now(),
     };
-    tasks.set(id, task);
+    piProcesses.set(taskId, task);
 
-    // Append user message to tree
-    tree.append("user", prompt);
+    broadcast({ type: "branch_started", taskId, prompt, nodeId: userNode.id, parentId: userNode.parentId, continuing });
 
-    // Build context from tree history
-    const treeContext = tree.mainHistory()
-      .map((n) => `[${n.role}] ${n.content}`)
-      .join("\n\n");
+    // Build context: all ancestors of the user node
+    const treeContext = tree.contextFor(userNode.id);
+
+    // Track the last tool call for nesting results
+    let lastToolNode: import("./tree.js").TreeNode | null = null;
 
     // Spawn fresh pi process
     spawnTask(prompt, treeContext, {
@@ -191,54 +250,115 @@ export async function createReef(config: ReefConfig = {}) {
       onEvent(event) {
         task.events.push(event);
         if (task.events.length > 500) task.events.shift();
-        broadcast({ taskId: id, ...event });
+
+        // Tool calls are children of the user node (siblings of each other)
+        if (event.type === 'tool_execution_start') {
+          const toolNode = tree.add(userNode.id, "tool_call", event.toolName, {
+            toolName: event.toolName, toolParams: event.args,
+          });
+          // Track this tool call so its result can be a child of it
+          lastToolNode = toolNode;
+          broadcast({ taskId, ...event, nodeId: toolNode.id, parentId: toolNode.parentId });
+          return;
+        }
+
+        // Tool results are children of their tool_call
+        if (event.type === 'tool_execution_end') {
+          const parentToolId = lastToolNode?.id ?? userNode.id;
+          const resultText = event.result?.content
+            ?.filter((c: any) => c.type === 'text')
+            .map((c: any) => c.text)
+            .join('') || '';
+          const resultNode = tree.add(parentToolId, "tool_result", resultText.slice(0, 1000), {
+            toolCallId: event.toolCallId,
+            result: event.result,
+          });
+          broadcast({ taskId, ...event, nodeId: resultNode.id, parentId: resultNode.parentId });
+          return;
+        }
+
+        broadcast({ taskId, ...event });
       },
       onDone(output) {
         task.status = "done";
         task.output = output;
         task.completedAt = Date.now();
-        tree.append("assistant", output.trim());
-        broadcast({ taskId: id, type: "task_done" });
+
+        // Assistant response is a child of the user node (sibling of tool calls)
+        const assistantNode = tree.add(userNode.id, "assistant", output.trim());
+        tree.setRef(taskId, assistantNode.id);
+        tree.completeTask(taskId, { summary: output.trim().slice(0, 500), filesChanged: [] });
+
+        broadcast({ taskId, type: "branch_done", summary: output.trim().slice(0, 200), nodeId: assistantNode.id, parentId: assistantNode.parentId });
       },
       onError(err) {
         task.status = "error";
         task.error = err;
         task.completedAt = Date.now();
-        tree.append("assistant", `Error: ${err}`);
-        broadcast({ taskId: id, type: "task_error", error: err });
+
+        tree.failTask(taskId, err);
+        broadcast({ taskId, type: "branch_error", error: err });
       },
     });
 
-    return c.json({ id, status: "running", prompt }, 202);
+    return c.json({ id: taskId, status: "running", prompt, nodeId: userNode.id }, 202);
   });
 
   reef.get("/tasks", (c) => {
-    const list = [...tasks.values()].map((t) => ({
-      id: t.id, prompt: t.prompt, status: t.status,
-      startedAt: t.startedAt, completedAt: t.completedAt,
-      outputLength: t.output.length, error: t.error,
-    }));
-    return c.json({ tasks: list });
+    const status = c.req.query("status");
+    let list = tree.listTasks();
+    if (status) list = list.filter(t => t.info.status === status);
+    return c.json({
+      tasks: list.map(t => ({
+        name: t.name,
+        ...t.info,
+        leafId: t.leafId,
+      })),
+    });
   });
 
-  reef.get("/tasks/:id", (c) => {
-    const task = tasks.get(c.req.param("id"));
-    if (!task) return c.json({ error: "not found" }, 404);
-    return c.json(task);
+  reef.get("/tasks/:name", (c) => {
+    const name = c.req.param("name");
+    const info = tree.getTask(name);
+    if (!info) return c.json({ error: "not found" }, 404);
+    const leafId = tree.getRef(name);
+    const path = leafId ? tree.ancestors(leafId) : [];
+    return c.json({ name, ...info, leafId, nodes: path });
   });
 
-  reef.get("/tree", (c) => c.json({ main: tree.mainHistory() }));
+  reef.get("/tree", (c) => c.json(tree.toJSON()));
+
+  /** Get a node and its children. */
+  reef.get("/tree/:id", (c) => {
+    const node = tree.get(c.req.param("id"));
+    if (!node) return c.json({ error: "not found" }, 404);
+    const children = tree.children(node.id);
+    return c.json({ node, children });
+  });
+
+  /** Get ancestors of a node (the conversation path). */
+  reef.get("/tree/:id/path", (c) => {
+    const node = tree.get(c.req.param("id"));
+    if (!node) return c.json({ error: "not found" }, 404);
+    return c.json({ path: tree.ancestors(node.id) });
+  });
 
   reef.get("/state", (c) => {
-    const active = [...tasks.values()].filter((t) => t.status === "running").length;
     return c.json({
       mode: "agent",
-      activeTasks: active,
-      totalTasks: tasks.size,
-      conversationLength: tree.main.length,
+      activeTasks: tree.activeTasks(),
+      totalTasks: tree.tasks.size,
+      totalNodes: tree.size(),
       services: Array.from(liveModules.keys()),
     });
   });
+
+  // SSE heartbeat — keeps connections alive past Bun's idleTimeout
+  setInterval(() => {
+    for (const c of sseClients) {
+      try { c.enqueue(`: ping\n\n`); } catch { sseClients.delete(c); }
+    }
+  }, 30_000);
 
   reef.get("/events", (c) => {
     const stream = new ReadableStream({
@@ -262,11 +382,11 @@ export async function createReef(config: ReefConfig = {}) {
   wrapper.route("/reef", reef);
   wrapper.route("/", serviceApp);
 
-  return { app: wrapper, tree, tasks, liveModules, events, ctx, sseClients };
+  return { app: wrapper, tree, piProcesses, liveModules, events, ctx, sseClients };
 }
 
 export async function startReef(config: ReefConfig = {}) {
-  const { app, tree, tasks, liveModules, sseClients } = await createReef(config);
+  const { app, tree, piProcesses, liveModules, sseClients } = await createReef(config);
   const port = config.server?.port ?? parseInt(process.env.PORT ?? "3000", 10);
 
   console.log("  mode: agent");
@@ -276,7 +396,7 @@ export async function startReef(config: ReefConfig = {}) {
   }
   console.log(`    /reef — agent conversation + task submission`);
 
-  const server = Bun.serve({ fetch: app.fetch, port, hostname: "::" });
+  const server = Bun.serve({ fetch: app.fetch, port, hostname: "::", idleTimeout: 120 });
   console.log(`\n  reef running on :${port}\n`);
 
   async function shutdown() {
@@ -293,5 +413,48 @@ export async function startReef(config: ReefConfig = {}) {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  return { app, server, tree, tasks, liveModules };
+  return { app, server, tree, piProcesses, liveModules };
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
