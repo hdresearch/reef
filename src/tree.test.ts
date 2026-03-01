@@ -364,6 +364,19 @@ describe("ConversationTree", () => {
       expect(kidsAfter[0].id).toBe(a.id);
     });
 
+    test("get returns undefined for cold nodes", () => {
+      const tree = makeTree();
+      const root = tree.add(null, "system", "Init.");
+      const u = tree.startTask("get-cold", "Work.", root.id);
+      const a = tree.add(u.id, "assistant", "Done.");
+      tree.setRef("get-cold", a.id);
+      tree.completeTask("get-cold", { summary: "Done.", filesChanged: [] });
+
+      tree.archiveTask("get-cold");
+      expect(tree.get(a.id)).toBeUndefined(); // hot-only, no auto-restore
+      expect(tree.get(u.id)).toBeTruthy(); // stub stays hot
+    });
+
     test("contextFor auto-restores for conversation continuation", () => {
       const tree = makeTree();
       const root = tree.add(null, "system", "You are reef.");
