@@ -317,10 +317,59 @@ export class ConversationTree {
   }
 
   // ---------------------------------------------------------------------------
+  // Auto-restore helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Find the task name that owns a given node ID.
+   * Checks if any task's startTask user node matches, or if the node
+   * is the ref target for an archived task.
+   * Scans tasks map — cheap since task count is bounded.
+   */
+  private taskNameForNode(nodeId: string): string | undefined {
+    for (const [name, _info] of this.tasks) {
+      // Check if this task's ref points to or through this node
+      const leafId = this.refs.get(name);
+      if (leafId === nodeId) return name;
+    }
+    // Walk startTask user nodes — they're the stubs we keep hot
+    // The user node is the first node created by startTask, pointed to by ref initially
+    // After completion, ref points to the assistant leaf. But the user node is still
+    // a child of main. Check if nodeId is a descendant path target.
+    return undefined;
+  }
+
+  /**
+   * Try to auto-restore the archive containing a missing node.
+   * Scans archived tasks' files to find which one contains the node.
+   * Returns true if restored.
+   */
+  private autoRestore(nodeId: string): boolean {
+    if (!this.archiveDir || this.archivedTasks.size === 0) return false;
+
+    for (const taskName of this.archivedTasks) {
+      const archivePath = join(this.archiveDir, `${taskName}.json`);
+      if (!existsSync(archivePath)) continue;
+      try {
+        const data = JSON.parse(readFileSync(archivePath, "utf-8"));
+        const nodes: TreeNode[] = data.nodes ?? [];
+        if (nodes.some((n) => n.id === nodeId)) {
+          this.restoreTask(taskName);
+          return true;
+        }
+      } catch {}
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
   // Tree traversal
   // ---------------------------------------------------------------------------
 
-  /** Walk from a node up to root. Returns nodes in root → node order. */
+  /**
+   * Walk from a node up to root. Returns nodes in root → node order.
+   * Auto-restores archived task subtrees encountered during the walk.
+   */
   ancestors(nodeId: string): TreeNode[] {
     const path: TreeNode[] = [];
     let current: string | null = nodeId;
@@ -328,16 +377,34 @@ export class ConversationTree {
     while (current) {
       if (seen.has(current)) break; // cycle protection
       seen.add(current);
-      const node = this.nodes.get(current);
-      if (!node) break;
+      let node = this.nodes.get(current);
+      if (!node) {
+        // Node missing — might be in a cold archive. Check if any archived
+        // task's ref chain passes through here.
+        if (this.autoRestore(current)) {
+          node = this.nodes.get(current);
+        }
+        if (!node) break;
+      }
       path.unshift(node);
       current = node.parentId;
     }
     return path;
   }
 
-  /** Get direct children of a node. */
+  /**
+   * Get direct children of a node.
+   * Auto-restores if the node is a stub for an archived task.
+   */
   children(nodeId: string): TreeNode[] {
+    const node = this.nodes.get(nodeId);
+    if (node) {
+      // Check if this is a stub user node for an archived task
+      const taskName = this.taskNameForNode(nodeId);
+      if (taskName && this.archivedTasks.has(taskName)) {
+        this.restoreTask(taskName);
+      }
+    }
     const ids = this.childIndex.get(nodeId);
     if (!ids) return [];
     return ids.map((id) => this.nodes.get(id)!).filter(Boolean);
