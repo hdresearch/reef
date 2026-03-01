@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { ConversationTree } from "./tree.js";
+
+const ARCHIVE_TEST_DIR = "data/test-archive";
 
 describe("ConversationTree", () => {
   describe("core", () => {
@@ -179,6 +182,163 @@ describe("ConversationTree", () => {
       const tree = ConversationTree.fromJSON({});
       expect(tree.size()).toBe(0);
       expect(tree.root).toBeNull();
+    });
+
+    test("round-trip preserves archivedTasks", () => {
+      const tree = new ConversationTree();
+      tree.add(null, "system", "Init.");
+      // Manually mark a task as archived for serialization test
+      (tree as any).archivedTasks.add("old-task");
+      const restored = ConversationTree.fromJSON(tree.toJSON());
+      expect(restored.isArchived("old-task")).toBe(true);
+    });
+  });
+
+  describe("archive", () => {
+    afterAll(() => {
+      if (existsSync(ARCHIVE_TEST_DIR)) rmSync(ARCHIVE_TEST_DIR, { recursive: true });
+    });
+
+    function makeTree(): ConversationTree {
+      if (existsSync(ARCHIVE_TEST_DIR)) rmSync(ARCHIVE_TEST_DIR, { recursive: true });
+      mkdirSync(ARCHIVE_TEST_DIR, { recursive: true });
+      const tree = new ConversationTree();
+      tree.persist(`${ARCHIVE_TEST_DIR}/tree.json`);
+      return tree;
+    }
+
+    test("archiveTask moves subtree to disk", () => {
+      const tree = makeTree();
+      const root = tree.add(null, "system", "Init.");
+      const u = tree.startTask("t1", "Do something.", root.id);
+      const tool = tree.add(u.id, "tool_call", "bash", { toolName: "bash" });
+      const result = tree.add(tool.id, "tool_result", "ok");
+      const asst = tree.add(u.id, "assistant", "Done.");
+      tree.setRef("t1", asst.id);
+      tree.completeTask("t1", { summary: "Done.", filesChanged: [] });
+
+      const sizeBefore = tree.size();
+      expect(tree.archiveTask("t1")).toBe(true);
+
+      // Subtree nodes removed (tool, result, assistant) but user node kept
+      expect(tree.size()).toBe(sizeBefore - 3); // tool, result, assistant gone
+      expect(tree.get(u.id)).toBeTruthy(); // user node stays
+      expect(tree.get(tool.id)).toBeUndefined();
+      expect(tree.get(result.id)).toBeUndefined();
+      expect(tree.get(asst.id)).toBeUndefined();
+      expect(tree.isArchived("t1")).toBe(true);
+    });
+
+    test("restoreTask brings subtree back", () => {
+      const tree = makeTree();
+      const root = tree.add(null, "system", "Init.");
+      const u = tree.startTask("t2", "Work.", root.id);
+      const asst = tree.add(u.id, "assistant", "Result.");
+      tree.setRef("t2", asst.id);
+      tree.completeTask("t2", { summary: "Result.", filesChanged: [] });
+
+      tree.archiveTask("t2");
+      expect(tree.get(asst.id)).toBeUndefined();
+
+      expect(tree.restoreTask("t2")).toBe(true);
+      expect(tree.get(asst.id)).toBeTruthy();
+      expect(tree.get(asst.id)!.content).toBe("Result.");
+      expect(tree.isArchived("t2")).toBe(false);
+    });
+
+    test("restored subtree has correct parent-child links", () => {
+      const tree = makeTree();
+      const root = tree.add(null, "system", "Init.");
+      const u = tree.startTask("t3", "Build.", root.id);
+      const a = tree.add(u.id, "assistant", "Built.");
+      tree.setRef("t3", a.id);
+      tree.completeTask("t3", { summary: "Built.", filesChanged: [] });
+
+      tree.archiveTask("t3");
+      tree.restoreTask("t3");
+
+      // Children of user node should be back
+      const kids = tree.children(u.id);
+      expect(kids.length).toBe(1);
+      expect(kids[0].id).toBe(a.id);
+
+      // Ancestors from assistant should walk back to root
+      const path = tree.ancestors(a.id);
+      expect(path.map((n) => n.role)).toEqual(["system", "user", "assistant"]);
+    });
+
+    test("archiveTask refuses running tasks", () => {
+      const tree = makeTree();
+      const root = tree.add(null, "system", "Init.");
+      tree.startTask("running", "Still going.", root.id);
+      expect(tree.archiveTask("running")).toBe(false);
+    });
+
+    test("archiveTask returns false without persist", () => {
+      const tree = new ConversationTree(); // no persist()
+      const root = tree.add(null, "system", "Init.");
+      tree.startTask("t", "Work.", root.id);
+      tree.completeTask("t", { summary: "Done.", filesChanged: [] });
+      expect(tree.archiveTask("t")).toBe(false);
+    });
+
+    test("restoreTask returns false for non-archived", () => {
+      const tree = makeTree();
+      expect(tree.restoreTask("nonexistent")).toBe(false);
+    });
+
+    test("pruneToLimit archives oldest completed tasks", () => {
+      const tree = makeTree();
+      tree.hotLimit = 2;
+      const root = tree.add(null, "system", "Init.");
+
+      // Create 4 completed tasks
+      for (let i = 0; i < 4; i++) {
+        const u = tree.startTask(`task-${i}`, `Task ${i}.`, root.id);
+        const a = tree.add(u.id, "assistant", `Done ${i}.`);
+        tree.setRef(`task-${i}`, a.id);
+        tree.completeTask(`task-${i}`, { summary: `Done ${i}.`, filesChanged: [] });
+      }
+
+      const archived = tree.pruneToLimit();
+      expect(archived).toBe(2); // 4 completed - 2 hotLimit = 2 archived
+      expect(tree.isArchived("task-0")).toBe(true);
+      expect(tree.isArchived("task-1")).toBe(true);
+      expect(tree.isArchived("task-2")).toBe(false);
+      expect(tree.isArchived("task-3")).toBe(false);
+    });
+
+    test("pruneToLimit skips running tasks", () => {
+      const tree = makeTree();
+      tree.hotLimit = 0;
+      const root = tree.add(null, "system", "Init.");
+
+      tree.startTask("running", "In progress.", root.id);
+      const u = tree.startTask("done", "Finished.", root.id);
+      tree.add(u.id, "assistant", "Result.");
+      tree.completeTask("done", { summary: "Result.", filesChanged: [] });
+
+      const archived = tree.pruneToLimit();
+      expect(archived).toBe(1);
+      expect(tree.isArchived("done")).toBe(true);
+      expect(tree.isArchived("running")).toBe(false);
+    });
+
+    test("contextFor still works after archive+restore", () => {
+      const tree = makeTree();
+      const root = tree.add(null, "system", "You are reef.");
+      const u = tree.startTask("ctx-test", "Hello.", root.id);
+      const a = tree.add(u.id, "assistant", "Hi there.");
+      tree.setRef("ctx-test", a.id);
+      tree.completeTask("ctx-test", { summary: "Hi.", filesChanged: [] });
+
+      tree.archiveTask("ctx-test");
+      tree.restoreTask("ctx-test");
+
+      const ctx = tree.contextFor(a.id);
+      expect(ctx).toContain("[system] You are reef.");
+      expect(ctx).toContain("[user] Hello.");
+      expect(ctx).toContain("[assistant] Hi there.");
     });
   });
 });
