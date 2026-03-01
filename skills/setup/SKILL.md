@@ -5,7 +5,7 @@ description: Set up a reef server with example services. Use when bootstrapping 
 
 # Setup Reef
 
-Reef ships with four core infrastructure services in `services/` (agent, docs, installer, services). Fleet coordination services live in `examples/services/` and need to be copied into `services/` to activate them.
+Reef ships with core infrastructure services in `services/` (docs, installer, services, store, cron, ui). Fleet coordination services live in `examples/services/` and need to be copied into `services/` to activate them.
 
 ## Available Example Services
 
@@ -19,7 +19,6 @@ Reef ships with four core infrastructure services in `services/` (agent, docs, i
 | **commits** | VM snapshot ledger for tracking golden images |
 | **reports** | Markdown reports with title, author, tags |
 | **usage** | Cost & token tracking with per-agent summaries (depends on feed) |
-| **ui** | Web dashboard with magic link auth, dynamic panels, chat |
 | **updater** | Auto-update reef from npm |
 
 ## Dependencies
@@ -27,7 +26,7 @@ Reef ships with four core infrastructure services in `services/` (agent, docs, i
 Some services depend on others. Install dependencies first:
 
 - **usage** depends on **feed**
-- **ui** works best with **board** and **feed** (for panels)
+- **ui** is a core service; works best with **board** and **feed** (for panels)
 
 ## Install All Example Services
 
@@ -42,7 +41,6 @@ cp -r examples/services/registry services/registry
 cp -r examples/services/commits services/commits
 cp -r examples/services/reports services/reports
 cp -r examples/services/usage services/usage
-cp -r examples/services/ui services/ui
 cp -r examples/services/updater services/updater
 ```
 
@@ -64,8 +62,7 @@ cp -r examples/services/board services/board
 # Work log
 cp -r examples/services/log services/log
 
-# Web dashboard (optional — discovers panels from board and feed)
-cp -r examples/services/ui services/ui
+# Web dashboard is built-in at services/ui — no copy needed
 ```
 
 Reload:
