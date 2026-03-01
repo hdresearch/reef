@@ -186,6 +186,18 @@ routes.post("/check", async (c) => {
   }
 });
 
+routes.get("/_panel", (c) => {
+  const statusColor = updateAvailable ? "#f90" : "#4f9";
+  const statusText = updateAvailable ? `Update available: ${latestVersion}` : "Up to date";
+  return c.html(`<div style="font-family:monospace;font-size:13px;color:#ccc;padding:12px">
+    <h3 style="margin:0 0 8px;color:#4f9">Updater</h3>
+    <div>Version: <strong>${currentVersion}</strong></div>
+    <div>Status: <span style="color:${statusColor}">${statusText}</span></div>
+    <div style="color:#666">Last checked: ${lastChecked || "never"}</div>
+    ${history.length ? `<div style="margin-top:8px;color:#888">History: ${history.length} updates</div>` : ""}
+  </div>`);
+});
+
 routes.post("/apply", async (c) => {
   if (applying) {
     return c.json({ error: "Already applying an update" }, 409);

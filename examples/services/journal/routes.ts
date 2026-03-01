@@ -41,5 +41,21 @@ export function createRoutes(store: JournalStore): Hono {
     return c.text(store.formatRaw(entries));
   });
 
+  routes.get("/_panel", (c) => {
+    const entries = store.query({ last: "15" });
+    const rows = entries
+      .map((e: any) => {
+        const time = new Date(e.timestamp).toLocaleTimeString();
+        const mood = e.mood ? ` <span style="color:#f90">${e.mood}</span>` : "";
+        const preview = e.content.length > 120 ? `${e.content.slice(0, 120)}…` : e.content;
+        return `<div style="padding:4px 0;border-bottom:1px solid #222"><span style="color:#666">${time}</span>${mood} ${preview}</div>`;
+      })
+      .join("");
+    return c.html(`<div style="font-family:monospace;font-size:13px;color:#ccc;padding:12px">
+      <h3 style="margin:0 0 8px;color:#4f9">Journal</h3>
+      ${rows || '<div style="color:#666">No entries yet</div>'}
+    </div>`);
+  });
+
   return routes;
 }

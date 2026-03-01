@@ -72,5 +72,24 @@ export function createRoutes(store: RegistryStore): Hono {
     return c.json({ vms, count: vms.length });
   });
 
+  routes.get("/_panel", (c) => {
+    const vms = store.list({});
+    const rows = vms
+      .map((vm: any) => {
+        const statusColor = vm.status === "running" ? "#4f9" : vm.status === "error" ? "#f55" : "#888";
+        const lastSeen = vm.lastSeen ? new Date(vm.lastSeen).toLocaleTimeString() : "—";
+        return `<div style="padding:4px 0;border-bottom:1px solid #222">
+          <span style="color:${statusColor}">●</span> <strong>${vm.id.slice(0, 8)}</strong>
+          <span style="color:#888">${vm.role || "—"}</span>
+          <span style="color:#666;float:right">${lastSeen}</span>
+        </div>`;
+      })
+      .join("");
+    return c.html(`<div style="font-family:monospace;font-size:13px;color:#ccc;padding:12px">
+      <h3 style="margin:0 0 8px;color:#4f9">Registry — ${vms.length} VMs</h3>
+      ${rows || '<div style="color:#666">No VMs registered</div>'}
+    </div>`);
+  });
+
   return routes;
 }
