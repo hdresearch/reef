@@ -251,70 +251,79 @@ export async function createReef(config: ReefConfig = {}) {
     // Track the last tool call for nesting results
     let lastToolNode: import("./tree.js").TreeNode | null = null;
 
-    // Spawn fresh pi process
-    spawnTask(prompt, treeContext, {
-      model: config.agent?.model,
-      onEvent(event) {
-        task.events.push(event);
-        if (task.events.length > 500) task.events.shift();
+    // Spawn fresh pi process — may fail if pi binary not found
+    try {
+      spawnTask(prompt, treeContext, {
+        model: config.agent?.model,
+        onEvent(event) {
+          task.events.push(event);
+          if (task.events.length > 500) task.events.shift();
 
-        // Tool calls are children of the user node (siblings of each other)
-        if (event.type === "tool_execution_start") {
-          const toolNode = tree.add(userNode.id, "tool_call", event.toolName, {
-            toolName: event.toolName,
-            toolParams: event.args,
+          // Tool calls are children of the user node (siblings of each other)
+          if (event.type === "tool_execution_start") {
+            const toolNode = tree.add(userNode.id, "tool_call", event.toolName, {
+              toolName: event.toolName,
+              toolParams: event.args,
+            });
+            // Track this tool call so its result can be a child of it
+            lastToolNode = toolNode;
+            broadcast({ taskId, ...event, nodeId: toolNode.id, parentId: toolNode.parentId });
+            return;
+          }
+
+          // Tool results are children of their tool_call
+          if (event.type === "tool_execution_end") {
+            const parentToolId = lastToolNode?.id ?? userNode.id;
+            const resultText =
+              event.result?.content
+                ?.filter((c: any) => c.type === "text")
+                .map((c: any) => c.text)
+                .join("") || "";
+            const resultNode = tree.add(parentToolId, "tool_result", resultText.slice(0, 1000), {
+              toolCallId: event.toolCallId,
+              result: event.result,
+            });
+            broadcast({ taskId, ...event, nodeId: resultNode.id, parentId: resultNode.parentId });
+            return;
+          }
+
+          broadcast({ taskId, ...event });
+        },
+        onDone(output) {
+          task.status = "done";
+          task.output = output;
+          task.completedAt = Date.now();
+
+          // Assistant response is a child of the user node (sibling of tool calls)
+          const assistantNode = tree.add(userNode.id, "assistant", output.trim());
+          tree.setRef(taskId, assistantNode.id);
+          tree.completeTask(taskId, { summary: output.trim().slice(0, 500), filesChanged: [] });
+
+          broadcast({
+            taskId,
+            type: "task_done",
+            summary: output.trim().slice(0, 200),
+            nodeId: assistantNode.id,
+            parentId: assistantNode.parentId,
           });
-          // Track this tool call so its result can be a child of it
-          lastToolNode = toolNode;
-          broadcast({ taskId, ...event, nodeId: toolNode.id, parentId: toolNode.parentId });
-          return;
-        }
+        },
+        onError(err) {
+          task.status = "error";
+          task.error = err;
+          task.completedAt = Date.now();
 
-        // Tool results are children of their tool_call
-        if (event.type === "tool_execution_end") {
-          const parentToolId = lastToolNode?.id ?? userNode.id;
-          const resultText =
-            event.result?.content
-              ?.filter((c: any) => c.type === "text")
-              .map((c: any) => c.text)
-              .join("") || "";
-          const resultNode = tree.add(parentToolId, "tool_result", resultText.slice(0, 1000), {
-            toolCallId: event.toolCallId,
-            result: event.result,
-          });
-          broadcast({ taskId, ...event, nodeId: resultNode.id, parentId: resultNode.parentId });
-          return;
-        }
-
-        broadcast({ taskId, ...event });
-      },
-      onDone(output) {
-        task.status = "done";
-        task.output = output;
-        task.completedAt = Date.now();
-
-        // Assistant response is a child of the user node (sibling of tool calls)
-        const assistantNode = tree.add(userNode.id, "assistant", output.trim());
-        tree.setRef(taskId, assistantNode.id);
-        tree.completeTask(taskId, { summary: output.trim().slice(0, 500), filesChanged: [] });
-
-        broadcast({
-          taskId,
-          type: "task_done",
-          summary: output.trim().slice(0, 200),
-          nodeId: assistantNode.id,
-          parentId: assistantNode.parentId,
-        });
-      },
-      onError(err) {
-        task.status = "error";
-        task.error = err;
-        task.completedAt = Date.now();
-
-        tree.failTask(taskId, err);
-        broadcast({ taskId, type: "task_error", error: err });
-      },
-    });
+          tree.failTask(taskId, err);
+          broadcast({ taskId, type: "task_error", error: err });
+        },
+      });
+    } catch (err: any) {
+      // pi binary not found or spawn failed
+      task.status = "error";
+      task.error = err.message;
+      task.completedAt = Date.now();
+      tree.failTask(taskId, err.message);
+      broadcast({ taskId, type: "task_error", error: err.message });
+    }
 
     return c.json({ id: taskId, status: "running", prompt, nodeId: userNode.id }, 202);
   });
