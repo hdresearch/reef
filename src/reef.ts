@@ -66,6 +66,34 @@ function spawnTask(
 
   let lineBuf = "";
   let output = "";
+  let prompted = false;
+
+  // Poll for pi readiness, then send the prompt
+  const readyCheck = setInterval(() => {
+    try {
+      child.stdin.write(JSON.stringify({ id: "ready-check", type: "get_state" }) + "\n");
+    } catch { clearInterval(readyCheck); }
+  }, 1000);
+
+  function handleEvent(event: any) {
+    // Wait for ready response before sending prompt
+    if (!prompted && event.type === "response" && event.command === "get_state") {
+      prompted = true;
+      clearInterval(readyCheck);
+      child.stdin.write(JSON.stringify({ type: "prompt", message: prompt }) + "\n");
+    }
+
+    opts.onEvent(event);
+
+    if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+      output += event.assistantMessageEvent.delta;
+    }
+
+    if (event.type === "agent_end") {
+      child.kill("SIGTERM");
+      opts.onDone(output);
+    }
+  }
 
   child.stdout.on("data", (data: Buffer) => {
     lineBuf += data.toString();
@@ -73,21 +101,7 @@ function spawnTask(
     lineBuf = lines.pop() ?? "";
     for (const line of lines) {
       if (!line.trim()) continue;
-      try {
-        const event = JSON.parse(line);
-        opts.onEvent(event);
-
-        // Accumulate assistant text
-        if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-          output += event.assistantMessageEvent.delta;
-        }
-
-        // Task complete
-        if (event.type === "agent_end") {
-          child.kill("SIGTERM");
-          opts.onDone(output);
-        }
-      } catch { /* not JSON */ }
+      try { handleEvent(JSON.parse(line)); } catch { /* not JSON */ }
     }
   });
 
@@ -97,29 +111,9 @@ function spawnTask(
   });
 
   child.on("close", (code) => {
-    if (code && code !== 0) {
-      opts.onError(`pi exited with code ${code}`);
-    }
+    clearInterval(readyCheck);
+    if (code && code !== 0) opts.onError(`pi exited with code ${code}`);
   });
-
-  // Send the prompt once pi is ready
-  // Wait for the RPC ready signal, then send
-  const readyCheck = setInterval(() => {
-    try {
-      child.stdin.write(JSON.stringify({ id: "ready-check", type: "get_state" }) + "\n");
-    } catch { /* stdin closed */ clearInterval(readyCheck); }
-  }, 1000);
-
-  const originalOnEvent = opts.onEvent;
-  let prompted = false;
-  opts.onEvent = (event) => {
-    if (!prompted && event.type === "response" && event.command === "get_state") {
-      prompted = true;
-      clearInterval(readyCheck);
-      child.stdin.write(JSON.stringify({ type: "prompt", message: prompt }) + "\n");
-    }
-    originalOnEvent(event);
-  };
 
   return child;
 }
@@ -236,7 +230,7 @@ export async function createReef(config: ReefConfig = {}) {
     };
     piProcesses.set(taskId, task);
 
-    broadcast({ type: "branch_started", taskId, prompt, nodeId: userNode.id, parentId: userNode.parentId, continuing });
+    broadcast({ type: "task_started", taskId, prompt, nodeId: userNode.id, parentId: userNode.parentId, continuing });
 
     // Build context: all ancestors of the user node
     const treeContext = tree.contextFor(userNode.id);
@@ -289,7 +283,7 @@ export async function createReef(config: ReefConfig = {}) {
         tree.setRef(taskId, assistantNode.id);
         tree.completeTask(taskId, { summary: output.trim().slice(0, 500), filesChanged: [] });
 
-        broadcast({ taskId, type: "branch_done", summary: output.trim().slice(0, 200), nodeId: assistantNode.id, parentId: assistantNode.parentId });
+        broadcast({ taskId, type: "task_done", summary: output.trim().slice(0, 200), nodeId: assistantNode.id, parentId: assistantNode.parentId });
       },
       onError(err) {
         task.status = "error";
@@ -297,7 +291,7 @@ export async function createReef(config: ReefConfig = {}) {
         task.completedAt = Date.now();
 
         tree.failTask(taskId, err);
-        broadcast({ taskId, type: "branch_error", error: err });
+        broadcast({ taskId, type: "task_error", error: err });
       },
     });
 
@@ -415,46 +409,3 @@ export async function startReef(config: ReefConfig = {}) {
 
   return { app, server, tree, piProcesses, liveModules };
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
