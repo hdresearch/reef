@@ -59,9 +59,20 @@ You don't need to restart the server to work with modules. The server provides r
 - `POST /installer/remove` — unload and delete
 - `GET /installer/installed` — list externally installed packages
 
+**Deploy** (`POST /services/deploy`) — validate + test + load in one atomic step:
+
+```bash
+curl -X POST http://localhost:3000/services/deploy \
+  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "your-service"}'
+```
+
+Deploy runs `bun test` on the service, and only loads it if tests pass. If validation or tests fail, nothing changes.
+
 Workflow during development:
 1. Write your module in `services/your-service/`
-2. `POST /services/reload/your-service` to hot-load it (or reload to pick up changes)
+2. `POST /services/deploy` to validate, test, and load (or `POST /services/reload/your-service` to skip tests)
 3. Test via curl
 4. Iterate without restarting
 
@@ -460,9 +471,11 @@ interface ParamDoc {
 
 ## Common Patterns
 
-### Emitting server-side events
+### Emitting events
 
-Let other modules react to your changes:
+Services can emit events two ways:
+
+**Module-to-module events** (internal, not in the tree):
 
 ```ts
 // In index.ts
@@ -473,9 +486,22 @@ const mod: ServiceModule = {
   routes: createRoutes(store, () => events),
 };
 
-// In routes.ts — emit after mutations
+// In routes.ts — other modules can listen via ctx.events.on()
 events?.emit("your-service:item_created", { item });
 ```
+
+**Tree events** (appear in the feed/UI, stored as nodes in the event tree):
+
+```ts
+// Use fire('reef:event', ...) — these become nodes in the conversation tree
+ctx.events.fire("reef:event", {
+  type: "item_created",
+  source: "your-service",
+  content: `Created item: ${item.name}`,  // shown in the feed
+});
+```
+
+Tree events are broadcast to all SSE clients with `nodeId` and `parentId`, so the UI can render them in the threaded feed. Use `fire('reef:event', ...)` for events that users/agents should see; use `emit()` for internal coordination between modules.
 
 ### Server-only module (no agent tools)
 
@@ -662,6 +688,13 @@ Run with:
 bun test examples/services/your-service/your-service.test.ts
 ```
 
+**Lint** before committing — biome runs automatically on pre-commit, but you can check manually:
+
+```bash
+bun run lint                    # check
+bun run lint:fix                # auto-fix
+```
+
 **`createTestHarness()` options**:
 - `services` — array of service modules to load (module objects or dynamic imports)
 - `authToken` — override the test auth token (default: `"test-token"`)
@@ -696,3 +729,4 @@ Before considering the service done:
 - [ ] Shows up in `GET /docs/your-service`
 - [ ] UI panel added (`GET /_panel`) if the service has data worth showing
 - [ ] Tests written alongside the service (`your-service.test.ts`)
+- [ ] Passes `bun run lint` (biome — use `node:` imports, `const` over `let`, template literals)
