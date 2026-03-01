@@ -117,6 +117,11 @@ function spawnTask(
     if (msg) console.error(`  [pi] ${msg}`);
   });
 
+  child.on("error", (err) => {
+    clearInterval(readyCheck);
+    opts.onError(`Failed to spawn pi: ${err.message}`);
+  });
+
   child.on("close", (code) => {
     clearInterval(readyCheck);
     if (code && code !== 0) opts.onError(`pi exited with code ${code}`);
