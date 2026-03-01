@@ -4,6 +4,7 @@
   "description": "Self-improving fleet infrastructure — the minimum kernel agents need to build their own tools",
   "type": "module",
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
     "dev": "bun --watch run src/main.ts",
     "start": "bun run src/main.ts",
     "test": "bun test",

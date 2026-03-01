@@ -1,0 +1,9 @@
+#!/bin/sh
+
+# Lint staged .ts files with biome
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep '\.ts$')
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+npx @biomejs/biome check --no-errors-on-unmatched $STAGED
