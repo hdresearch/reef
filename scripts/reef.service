@@ -1,0 +1,15 @@
+[Unit]
+Description=Reef Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/reef
+EnvironmentFile=/root/reef/.env
+Environment=PATH=/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/root/.bun/bin/bun run src/main.ts
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
