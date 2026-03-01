@@ -2,17 +2,16 @@
  * Scaffold service tests.
  */
 
-import { describe, test, expect, afterAll } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+// We need the services manager loaded too, since scaffold calls ctx.loadModule
+import services from "../../../services/services/index.js";
 import { createTestHarness, type TestHarness } from "../../../src/core/testing.js";
 import scaffold from "./index.js";
 
-// We need the services manager loaded too, since scaffold calls ctx.loadModule
-import services from "../../../services/services/index.js";
-
 let t: TestHarness;
-const AUTH = "test-token";
+const _AUTH = "test-token";
 
 const setup = (async () => {
   t = await createTestHarness({ services: [services, scaffold] });
@@ -135,9 +134,7 @@ describe("scaffold service", () => {
       body: {
         name: "with-tools",
         tools: true,
-        routes: [
-          { method: "POST", path: "/record", description: "Record a metric" },
-        ],
+        routes: [{ method: "POST", path: "/record", description: "Record a metric" }],
       },
     });
 
@@ -279,9 +276,7 @@ describe("scaffold service", () => {
         name: "scaff-created",
         description: "Test created service",
         store: true,
-        routes: [
-          { method: "GET", path: "/items", description: "List items" },
-        ],
+        routes: [{ method: "GET", path: "/items", description: "List items" }],
         load: false, // Don't try to hot-load in test
       },
     });

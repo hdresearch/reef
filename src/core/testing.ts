@@ -61,9 +61,7 @@ export interface TestHarness {
   cleanup(): void;
 }
 
-export async function createTestHarness(
-  options: TestHarnessOptions,
-): Promise<TestHarness> {
+export async function createTestHarness(options: TestHarnessOptions): Promise<TestHarness> {
   const authToken = options.authToken ?? "test-token";
   const dataDir =
     options.dataDir ??
@@ -109,9 +107,9 @@ export async function createTestHarness(
     const headers: Record<string, string> = { ...(opts.headers || {}) };
     if (opts.body) headers["Content-Type"] = "application/json";
     if (opts.auth === true) {
-      headers["Authorization"] = `Bearer ${authToken}`;
+      headers.Authorization = `Bearer ${authToken}`;
     } else if (typeof opts.auth === "string") {
-      headers["Authorization"] = `Bearer ${opts.auth}`;
+      headers.Authorization = `Bearer ${opts.auth}`;
     }
 
     return app.fetch(

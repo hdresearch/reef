@@ -6,14 +6,11 @@
  */
 
 import { Hono } from "hono";
-import type { BoardStore, TaskFilters, TaskStatus, AddArtifactInput } from "./store.js";
-import { NotFoundError, ValidationError } from "./store.js";
 import type { ServiceEventBus } from "../src/core/events.js";
+import type { AddArtifactInput, BoardStore, TaskFilters, TaskStatus } from "./store.js";
+import { NotFoundError, ValidationError } from "./store.js";
 
-export function createRoutes(
-  store: BoardStore,
-  getEvents: () => ServiceEventBus | null = () => null,
-): Hono {
+export function createRoutes(store: BoardStore, getEvents: () => ServiceEventBus | null = () => null): Hono {
   const routes = new Hono();
 
   // Create a task

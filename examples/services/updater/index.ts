@@ -14,11 +14,11 @@
  *   UPDATE_AUTO_APPLY    — automatically apply updates when found (default: false)
  */
 
-import { Hono } from "hono";
 import { execSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ServiceModule, ServiceContext } from "../src/core/types.js";
+import { Hono } from "hono";
+import type { ServiceContext, ServiceModule } from "../src/core/types.js";
 
 interface UpdateRecord {
   from: string;
@@ -37,15 +37,12 @@ let updateAvailable = false;
 let checking = false;
 let applying = false;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let history: UpdateRecord[] = [];
+const history: UpdateRecord[] = [];
 
 function loadCurrentVersion(): string {
   try {
     // Walk up from services/updater to find package.json
-    const paths = [
-      join(import.meta.dir, "..", "..", "package.json"),
-      join(process.cwd(), "package.json"),
-    ];
+    const paths = [join(import.meta.dir, "..", "..", "package.json"), join(process.cwd(), "package.json")];
     for (const p of paths) {
       try {
         const pkg = JSON.parse(readFileSync(p, "utf-8"));
@@ -232,7 +229,8 @@ const updater: ServiceModule = {
   routeDocs: {
     "GET /status": {
       description: "Current version, latest available, update history",
-      response: "{ package, current, latest, updateAvailable, lastChecked, checking, applying, pollInterval, autoApply, history }",
+      response:
+        "{ package, current, latest, updateAvailable, lastChecked, checking, applying, pollInterval, autoApply, history }",
     },
     "POST /check": {
       description: "Check npm for a newer version",
@@ -244,34 +242,33 @@ const updater: ServiceModule = {
     },
   },
 
-  init(ctx: ServiceContext) {
+  init(_ctx: ServiceContext) {
     currentVersion = loadCurrentVersion();
 
     const pollMinutes = parseInt(process.env.UPDATE_POLL_INTERVAL || "0", 10);
     const autoApply = process.env.UPDATE_AUTO_APPLY === "true";
 
     if (pollMinutes > 0) {
-      console.log(
-        `  [updater] polling every ${pollMinutes}m${autoApply ? " (auto-apply)" : ""}`,
-      );
+      console.log(`  [updater] polling every ${pollMinutes}m${autoApply ? " (auto-apply)" : ""}`);
 
-      pollTimer = setInterval(async () => {
-        try {
-          const result = await checkForUpdate();
-          if (result.updateAvailable) {
-            console.log(
-              `  [updater] new version available: ${result.current} → ${result.latest}`,
-            );
-            if (autoApply) {
-              console.log(`  [updater] auto-applying update...`);
-              await applyUpdate();
+      pollTimer = setInterval(
+        async () => {
+          try {
+            const result = await checkForUpdate();
+            if (result.updateAvailable) {
+              console.log(`  [updater] new version available: ${result.current} → ${result.latest}`);
+              if (autoApply) {
+                console.log(`  [updater] auto-applying update...`);
+                await applyUpdate();
+              }
             }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`  [updater] check failed: ${msg}`);
           }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(`  [updater] check failed: ${msg}`);
-        }
-      }, pollMinutes * 60 * 1000);
+        },
+        pollMinutes * 60 * 1000,
+      );
     }
   },
 

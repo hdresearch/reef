@@ -1,21 +1,25 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { createTestHarness, type TestHarness } from "../../src/core/testing.js";
 import store from "./index.js";
 
 let t: TestHarness;
 const setup = (async () => {
   // Clean store file from previous runs
-  try { (await import("fs")).unlinkSync("data/store.json"); } catch {}
+  try {
+    (await import("node:fs")).unlinkSync("data/store.json");
+  } catch {}
   t = await createTestHarness({ services: [store] });
 })();
 afterAll(() => {
   t?.cleanup();
-  try { (require("fs")).unlinkSync("data/store.json"); } catch {}
+  try {
+    require("node:fs").unlinkSync("data/store.json");
+  } catch {}
 });
 
 const A = { auth: true };
-const put = (key: string, value: unknown) => ({ method: "PUT", body: { value }, auth: true });
-const del = (key: string) => ({ method: "DELETE", auth: true });
+const put = (_key: string, value: unknown) => ({ method: "PUT", body: { value }, auth: true });
+const del = (_key: string) => ({ method: "DELETE", auth: true });
 
 describe("store", () => {
   test("list keys — empty initially", async () => {

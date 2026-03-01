@@ -1,14 +1,14 @@
-import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createTestHarness, type TestHarness } from "../../src/core/testing.js";
 import cron, {
+  clearAllTimers,
+  getNextRunTime,
+  jobs,
   matchCronField,
   matchesCron,
   nextCronRun,
   parseInterval,
-  getNextRunTime,
-  jobs,
   runHistory,
-  clearAllTimers,
 } from "./index.js";
 
 let t: TestHarness;
@@ -189,7 +189,7 @@ describe("job CRUD", () => {
   });
 
   test("POST /cron/jobs — validates schedule", async () => {
-    const { status, data } = await t.json<any>("/cron/jobs", {
+    const { status } = await t.json<any>("/cron/jobs", {
       method: "POST",
       auth: true,
       body: {

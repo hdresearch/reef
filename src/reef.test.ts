@@ -1,9 +1,9 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createReef } from "./reef.js";
 
 const TOKEN = "test-token-reef";
 process.env.VERS_AUTH_TOKEN = TOKEN;
-const headers = { "Authorization": `Bearer ${TOKEN}`, "Content-Type": "application/json" };
+const headers = { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" };
 
 describe("reef", () => {
   let app: any;
@@ -16,11 +16,13 @@ describe("reef", () => {
   async function json(path: string, opts?: { method?: string; body?: unknown; auth?: boolean }) {
     await setup;
     const h = opts?.auth === false ? {} : headers;
-    const res = await app.fetch(new Request(`http://localhost${path}`, {
-      method: opts?.method ?? "GET",
-      headers: h,
-      body: opts?.body ? JSON.stringify(opts.body) : undefined,
-    }));
+    const res = await app.fetch(
+      new Request(`http://localhost${path}`, {
+        method: opts?.method ?? "GET",
+        headers: h,
+        body: opts?.body ? JSON.stringify(opts.body) : undefined,
+      }),
+    );
     return { status: res.status, data: await res.json() };
   }
 

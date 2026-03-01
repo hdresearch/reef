@@ -1,6 +1,6 @@
 import type { ServiceModule } from "../src/core/types.js";
-import { LogStore } from "./store.js";
 import { createRoutes } from "./routes.js";
+import { LogStore } from "./store.js";
 import { registerTools } from "./tools.js";
 
 const store = new LogStore();

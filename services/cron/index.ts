@@ -13,11 +13,11 @@
  * Storage: data/cron-jobs.json (loaded on init, saved on change)
  */
 
-import { Hono } from "hono";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { Hono } from "hono";
 import { ulid } from "ulid";
-import type { ServiceModule, ServiceContext } from "../../src/core/types.js";
+import type { ServiceContext, ServiceModule } from "../../src/core/types.js";
 
 // =============================================================================
 // Types
@@ -73,7 +73,7 @@ function matchCronField(field: string, value: number, max: number): boolean {
 
   if (field.startsWith("*/")) {
     const step = parseInt(field.slice(2), 10);
-    if (isNaN(step) || step <= 0) return false;
+    if (Number.isNaN(step) || step <= 0) return false;
     return value % step === 0;
   }
 
@@ -83,7 +83,7 @@ function matchCronField(field: string, value: number, max: number): boolean {
   }
 
   const num = parseInt(field, 10);
-  if (isNaN(num)) return false;
+  if (Number.isNaN(num)) return false;
   return value === num;
 }
 
@@ -141,11 +141,16 @@ function parseInterval(s: string): number | null {
   const n = parseInt(m[1], 10);
   if (n <= 0) return null;
   switch (m[2]) {
-    case "s": return n * 1000;
-    case "m": return n * 60_000;
-    case "h": return n * 3_600_000;
-    case "d": return n * 86_400_000;
-    default: return null;
+    case "s":
+      return n * 1000;
+    case "m":
+      return n * 60_000;
+    case "h":
+      return n * 3_600_000;
+    case "d":
+      return n * 86_400_000;
+    default:
+      return null;
   }
 }
 
@@ -172,7 +177,7 @@ function getNextRunTime(schedule: string, after: Date): Date | null {
 // =============================================================================
 
 let dataFilePath = "";
-let ctx: ServiceContext | null = null;
+let _ctx: ServiceContext | null = null;
 
 const jobs = new Map<string, CronJob>();
 const runHistory = new Map<string, RunRecord[]>(); // jobId -> runs (max 20)
@@ -189,7 +194,7 @@ function loadJobs(): void {
   try {
     if (existsSync(dataFilePath)) {
       const raw = JSON.parse(readFileSync(dataFilePath, "utf-8"));
-      const list: CronJob[] = Array.isArray(raw) ? raw : raw.jobs ?? [];
+      const list: CronJob[] = Array.isArray(raw) ? raw : (raw.jobs ?? []);
       for (const job of list) {
         jobs.set(job.id, job);
       }
@@ -387,18 +392,18 @@ function validateSchedule(schedule: string): string | null {
     if (part === "*") continue;
     if (part.startsWith("*/")) {
       const n = parseInt(part.slice(2), 10);
-      if (isNaN(n) || n <= 0) return `Invalid step value: ${part}`;
+      if (Number.isNaN(n) || n <= 0) return `Invalid step value: ${part}`;
       continue;
     }
     if (part.includes(",")) {
       for (const sub of part.split(",")) {
         const n = parseInt(sub.trim(), 10);
-        if (isNaN(n) || n < 0) return `Invalid value: ${sub}`;
+        if (Number.isNaN(n) || n < 0) return `Invalid value: ${sub}`;
       }
       continue;
     }
     const n = parseInt(part, 10);
-    if (isNaN(n) || n < 0) return `Invalid value: ${part}`;
+    if (Number.isNaN(n) || n < 0) return `Invalid value: ${part}`;
   }
   return null;
 }
@@ -476,7 +481,7 @@ routes.get("/jobs", (c) => {
   const now = new Date();
   const list = Array.from(jobs.values()).map((job) => ({
     ...job,
-    nextRunAt: job.enabled ? getNextRunTime(job.schedule, now)?.toISOString() ?? null : null,
+    nextRunAt: job.enabled ? (getNextRunTime(job.schedule, now)?.toISOString() ?? null) : null,
   }));
   return c.json({ jobs: list, count: list.length });
 });
@@ -490,7 +495,7 @@ routes.get("/jobs/:id", (c) => {
   const runs = (runHistory.get(job.id) ?? []).slice().reverse();
   return c.json({
     ...job,
-    nextRunAt: job.enabled ? getNextRunTime(job.schedule, now)?.toISOString() ?? null : null,
+    nextRunAt: job.enabled ? (getNextRunTime(job.schedule, now)?.toISOString() ?? null) : null,
     runs,
   });
 });
@@ -574,17 +579,20 @@ routes.get("/_panel", (c) => {
   const now = new Date();
   const jobList = Array.from(jobs.values());
 
-  const jobRows = jobList.map((job) => {
-    const nextRun = job.enabled ? getNextRunTime(job.schedule, now)?.toISOString() ?? "—" : "disabled";
-    const runs = (runHistory.get(job.id) ?? []).slice(-5).reverse();
-    const recentHtml = runs.length
-      ? runs.map((r) => {
-          const statusColor = r.status === "success" ? "#4caf50" : r.status === "error" ? "#f44336" : "#ff9800";
-          return `<span style="color:${statusColor}" title="${r.error || r.output || ""}">${r.status}</span>`;
-        }).join(", ")
-      : "<em>none</em>";
+  const jobRows = jobList
+    .map((job) => {
+      const nextRun = job.enabled ? (getNextRunTime(job.schedule, now)?.toISOString() ?? "—") : "disabled";
+      const runs = (runHistory.get(job.id) ?? []).slice(-5).reverse();
+      const recentHtml = runs.length
+        ? runs
+            .map((r) => {
+              const statusColor = r.status === "success" ? "#4caf50" : r.status === "error" ? "#f44336" : "#ff9800";
+              return `<span style="color:${statusColor}" title="${r.error || r.output || ""}">${r.status}</span>`;
+            })
+            .join(", ")
+        : "<em>none</em>";
 
-    return `<tr>
+      return `<tr>
       <td>${job.name}</td>
       <td><code>${job.schedule}</code></td>
       <td>${job.type}</td>
@@ -592,7 +600,8 @@ routes.get("/_panel", (c) => {
       <td>${nextRun}</td>
       <td>${recentHtml}</td>
     </tr>`;
-  }).join("\n");
+    })
+    .join("\n");
 
   const html = `<!DOCTYPE html>
 <html>
@@ -637,7 +646,7 @@ const cron: ServiceModule = {
   routes,
 
   init(serviceCtx: ServiceContext) {
-    ctx = serviceCtx;
+    _ctx = serviceCtx;
     // Resolve data file path relative to project root (parent of servicesDir)
     const projectRoot = resolve(serviceCtx.servicesDir, "..");
     const dataDir = join(projectRoot, "data");
@@ -663,9 +672,17 @@ const cron: ServiceModule = {
       summary: "Create a cron job",
       body: {
         name: { type: "string", required: true, description: "Job name" },
-        schedule: { type: "string", required: true, description: "Cron expression (5 fields) or interval (e.g. 30s, 5m, 1h, 1d)" },
+        schedule: {
+          type: "string",
+          required: true,
+          description: "Cron expression (5 fields) or interval (e.g. 30s, 5m, 1h, 1d)",
+        },
         type: { type: "string", required: true, description: "Job type: agent, http, or exec" },
-        config: { type: "object", required: true, description: "Type-specific config. agent: {prompt}. http: {method, path, body?}. exec: {command}" },
+        config: {
+          type: "object",
+          required: true,
+          description: "Type-specific config. agent: {prompt}. http: {method, path, body?}. exec: {command}",
+        },
         enabled: { type: "boolean", description: "Whether the job is active (default: true)" },
       },
       response: "The created job object with generated ID and timestamps",
@@ -711,10 +728,7 @@ const cron: ServiceModule = {
     },
   },
 
-  capabilities: [
-    "cron.schedule",
-    "cron.execute",
-  ],
+  capabilities: ["cron.schedule", "cron.execute"],
 };
 
 export default cron;

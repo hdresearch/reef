@@ -10,12 +10,7 @@
  */
 
 import { Hono } from "hono";
-import type {
-  ServiceModule,
-  ServiceContext,
-  RouteDocs,
-  ParamDoc,
-} from "../src/core/types.js";
+import type { ParamDoc, ServiceContext, ServiceModule } from "../src/core/types.js";
 
 let ctx: ServiceContext;
 
@@ -116,12 +111,8 @@ function renderHTML(docs: ServiceDoc[]): string {
       const routes = svc.routes
         .map((r) => {
           const color = methodColor[r.method] || "#ccc";
-          const summary = r.summary
-            ? `<span class="summary">${esc(r.summary)}</span>`
-            : "";
-          const detail = r.detail
-            ? `<div class="detail">${esc(r.detail)}</div>`
-            : "";
+          const summary = r.summary ? `<span class="summary">${esc(r.summary)}</span>` : "";
+          const detail = r.detail ? `<div class="detail">${esc(r.detail)}</div>` : "";
           const params = renderParamTable("Path params", r.params);
           const query = renderParamTable("Query params", r.query);
           const body = renderParamTable("Body", r.body);
@@ -135,7 +126,7 @@ function renderHTML(docs: ServiceDoc[]): string {
               ? `<div class="route-details">${detail}${params}${query}${body}${response}</div>`
               : "";
 
-          return `<div class="route${expandClass}"${hasDetails ? ' onclick="this.classList.toggle(\'open\')"' : ""}>
+          return `<div class="route${expandClass}"${hasDetails ? " onclick=\"this.classList.toggle('open')\"" : ""}>
             <div class="route-header">
               <span class="method" style="color:${color}">${esc(r.method)}</span>
               <span class="path">${esc(r.path)}</span>
@@ -147,21 +138,11 @@ function renderHTML(docs: ServiceDoc[]): string {
         .join("\n");
 
       const badges = [
-        svc.auth
-          ? '<span class="badge auth">auth</span>'
-          : '<span class="badge public">public</span>',
-        svc.capabilities.hasTools
-          ? '<span class="badge tools">tools</span>'
-          : "",
-        svc.capabilities.hasBehaviors
-          ? '<span class="badge behaviors">behaviors</span>'
-          : "",
-        svc.capabilities.hasWidget
-          ? '<span class="badge widget">widget</span>'
-          : "",
-        svc.capabilities.hasStore
-          ? '<span class="badge store">store</span>'
-          : "",
+        svc.auth ? '<span class="badge auth">auth</span>' : '<span class="badge public">public</span>',
+        svc.capabilities.hasTools ? '<span class="badge tools">tools</span>' : "",
+        svc.capabilities.hasBehaviors ? '<span class="badge behaviors">behaviors</span>' : "",
+        svc.capabilities.hasWidget ? '<span class="badge widget">widget</span>' : "",
+        svc.capabilities.hasStore ? '<span class="badge store">store</span>' : "",
       ]
         .filter(Boolean)
         .join(" ");
@@ -190,10 +171,7 @@ function renderHTML(docs: ServiceDoc[]): string {
     .join("\n");
 
   const totalRoutes = docs.reduce((sum, s) => sum + s.routes.length, 0);
-  const documented = docs.reduce(
-    (sum, s) => sum + s.routes.filter((r) => r.summary).length,
-    0,
-  );
+  const documented = docs.reduce((sum, s) => sum + s.routes.filter((r) => r.summary).length, 0);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -323,17 +301,12 @@ function renderHTML(docs: ServiceDoc[]): string {
 </html>`;
 }
 
-function renderParamTable(
-  title: string,
-  params?: Record<string, ParamDoc>,
-): string {
+function renderParamTable(title: string, params?: Record<string, ParamDoc>): string {
   if (!params || Object.keys(params).length === 0) return "";
 
   const rows = Object.entries(params)
     .map(([name, p]) => {
-      const req = p.required
-        ? ' <span class="param-required">required</span>'
-        : "";
+      const req = p.required ? ' <span class="param-required">required</span>' : "";
       return `<div class="param-row">
         <span class="param-name">${esc(name)}${req}</span>
         <span class="param-type">${esc(p.type ?? "")}</span>
@@ -349,11 +322,7 @@ function renderParamTable(
 }
 
 function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 // =============================================================================

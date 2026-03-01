@@ -8,11 +8,11 @@
  *   board:task_deleted  → (ignored)
  */
 
-import type { ServiceModule, ServiceContext, FleetClient } from "../src/core/types.js";
-import { FeedStore } from "./store.js";
-import { createRoutes } from "./routes.js";
-import { registerTools } from "./tools.js";
+import type { FleetClient, ServiceContext, ServiceModule } from "../src/core/types.js";
 import { registerBehaviors } from "./behaviors.js";
+import { createRoutes } from "./routes.js";
+import { FeedStore } from "./store.js";
+import { registerTools } from "./tools.js";
 
 const store = new FeedStore();
 
@@ -28,7 +28,12 @@ const feed: ServiceModule = {
       summary: "Publish an event to the feed",
       body: {
         agent: { type: "string", required: true, description: "Agent name that produced the event" },
-        type: { type: "string", required: true, description: "task_started | task_completed | task_failed | blocker_found | question | finding | skill_proposed | file_changed | cost_update | agent_started | agent_stopped | token_update | custom" },
+        type: {
+          type: "string",
+          required: true,
+          description:
+            "task_started | task_completed | task_failed | blocker_found | question | finding | skill_proposed | file_changed | cost_update | agent_started | agent_stopped | token_update | custom",
+        },
         summary: { type: "string", required: true, description: "Short human-readable summary" },
         detail: { type: "string", description: "Longer detail or structured JSON string" },
         metadata: { type: "object", description: "Arbitrary key-value metadata" },
@@ -60,7 +65,8 @@ const feed: ServiceModule = {
     },
     "GET /stream": {
       summary: "Server-Sent Events stream of new events in real time",
-      detail: "Connect with EventSource. Pass ?since=<ulid> to replay missed events on reconnect. Pass ?agent=<name> to filter by agent. Sends heartbeat comments every 15s.",
+      detail:
+        "Connect with EventSource. Pass ?since=<ulid> to replay missed events on reconnect. Pass ?agent=<name> to filter by agent. Sends heartbeat comments every 15s.",
       query: {
         agent: { type: "string", description: "Filter to events from this agent only" },
         since: { type: "string", description: "ULID — replay events since this ID before streaming" },

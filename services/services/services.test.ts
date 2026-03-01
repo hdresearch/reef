@@ -4,14 +4,8 @@
  * Moved from tests/server.test.ts — tests the /services management API.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import {
-  mkdirSync,
-  rmSync,
-  writeFileSync,
-  readFileSync,
-  existsSync,
-} from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "../../src/core/server.js";
 
@@ -19,10 +13,7 @@ const TEST_DIR = join(import.meta.dir, ".tmp-services-mgr");
 const AUTH_TOKEN = "test-token-12345";
 const originalToken = process.env.VERS_AUTH_TOKEN;
 
-function writeService(
-  name: string,
-  opts: { response?: Record<string, unknown>; requiresAuth?: boolean } = {},
-) {
+function writeService(name: string, opts: { response?: Record<string, unknown>; requiresAuth?: boolean } = {}) {
   const dir = join(TEST_DIR, name);
   mkdirSync(dir, { recursive: true });
   const response = JSON.stringify(opts.response ?? { name, ok: true });
@@ -50,7 +41,7 @@ function req(
 ) {
   const headers: Record<string, string> = {};
   if (opts.body) headers["Content-Type"] = "application/json";
-  if (opts.auth) headers["Authorization"] = `Bearer ${opts.auth}`;
+  if (opts.auth) headers.Authorization = `Bearer ${opts.auth}`;
   return app.fetch(
     new Request(`http://localhost${path}`, {
       method: opts.method ?? "GET",
@@ -402,8 +393,20 @@ export default {
       join(TEST_DIR, ".installer.json"),
       JSON.stringify({
         installed: [
-          { dirName: "board", source: "local", type: "local", installedAt: new Date().toISOString(), seed: "sha256:conf123" },
-          { dirName: "feed", source: "local", type: "local", installedAt: new Date().toISOString(), seed: "sha256:conf123" },
+          {
+            dirName: "board",
+            source: "local",
+            type: "local",
+            installedAt: new Date().toISOString(),
+            seed: "sha256:conf123",
+          },
+          {
+            dirName: "feed",
+            source: "local",
+            type: "local",
+            installedAt: new Date().toISOString(),
+            seed: "sha256:conf123",
+          },
           { dirName: "unrelated", source: "local", type: "local", installedAt: new Date().toISOString() },
         ],
       }),

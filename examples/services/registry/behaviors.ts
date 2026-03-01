@@ -28,7 +28,9 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
           name: client.agentName,
           status: "running",
         });
-      } catch { /* best-effort */ }
+      } catch {
+        /* best-effort */
+      }
     }
   });
 
@@ -37,7 +39,9 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
     if (!client.getBaseUrl() || !client.vmId) return;
     try {
       await client.api("PATCH", `/registry/vms/${client.vmId}`, { status: "stopped" });
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
   });
 
   // Start heartbeat timer on session start
@@ -47,7 +51,9 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
     heartbeatTimer = setInterval(async () => {
       try {
         await client.api("POST", `/registry/vms/${client.vmId}/heartbeat`);
-      } catch { /* best-effort */ }
+      } catch {
+        /* best-effort */
+      }
     }, 60_000);
   });
 
@@ -60,28 +66,29 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
   });
 
   // Handle swarm/lieutenant lifecycle events from other extensions
-  pi.events.on("vers:agent_spawned", async (data: {
-    vmId: string; label: string; role: string; address: string; commitId?: string;
-  }) => {
-    if (!client.getBaseUrl()) return;
-    try {
-      await client.api("POST", "/registry/vms", {
-        id: data.vmId,
-        name: data.label,
-        role: data.role || "worker",
-        address: data.address,
-        registeredBy: "reef",
-        metadata: {
-          agentId: data.label,
-          commitId: data.commitId,
-          registeredVia: "vers:agent_spawned",
-          createdAt: new Date().toISOString(),
-        },
-      });
-    } catch (err) {
-      console.error(`[registry] Registration failed for ${data.label}: ${err instanceof Error ? err.message : err}`);
-    }
-  });
+  pi.events.on(
+    "vers:agent_spawned",
+    async (data: { vmId: string; label: string; role: string; address: string; commitId?: string }) => {
+      if (!client.getBaseUrl()) return;
+      try {
+        await client.api("POST", "/registry/vms", {
+          id: data.vmId,
+          name: data.label,
+          role: data.role || "worker",
+          address: data.address,
+          registeredBy: "reef",
+          metadata: {
+            agentId: data.label,
+            commitId: data.commitId,
+            registeredVia: "vers:agent_spawned",
+            createdAt: new Date().toISOString(),
+          },
+        });
+      } catch (err) {
+        console.error(`[registry] Registration failed for ${data.label}: ${err instanceof Error ? err.message : err}`);
+      }
+    },
+  );
 
   pi.events.on("vers:agent_destroyed", async (data: { vmId: string; label: string }) => {
     if (!client.getBaseUrl()) return;
@@ -92,30 +99,40 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
     }
   });
 
-  pi.events.on("vers:lt_created", async (data: {
-    vmId: string; name: string; role: string; address: string;
-    ltRole?: string; commitId?: string; createdAt?: string;
-  }) => {
-    if (!client.getBaseUrl()) return;
-    try {
-      await client.api("POST", "/registry/vms", {
-        id: data.vmId,
-        name: data.name,
-        role: data.role || "lieutenant",
-        address: data.address,
-        registeredBy: "reef",
-        metadata: {
-          agentId: data.name,
-          role: data.ltRole,
-          commitId: data.commitId,
-          createdAt: data.createdAt,
-          registeredVia: "vers:lt_created",
-        },
-      });
-    } catch (err) {
-      console.error(`[registry] LT registration failed for ${data.name}: ${err instanceof Error ? err.message : err}`);
-    }
-  });
+  pi.events.on(
+    "vers:lt_created",
+    async (data: {
+      vmId: string;
+      name: string;
+      role: string;
+      address: string;
+      ltRole?: string;
+      commitId?: string;
+      createdAt?: string;
+    }) => {
+      if (!client.getBaseUrl()) return;
+      try {
+        await client.api("POST", "/registry/vms", {
+          id: data.vmId,
+          name: data.name,
+          role: data.role || "lieutenant",
+          address: data.address,
+          registeredBy: "reef",
+          metadata: {
+            agentId: data.name,
+            role: data.ltRole,
+            commitId: data.commitId,
+            createdAt: data.createdAt,
+            registeredVia: "vers:lt_created",
+          },
+        });
+      } catch (err) {
+        console.error(
+          `[registry] LT registration failed for ${data.name}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    },
+  );
 
   pi.events.on("vers:lt_destroyed", async (data: { vmId: string; name: string }) => {
     if (!client.getBaseUrl()) return;

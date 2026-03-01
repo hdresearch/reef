@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { ConversationTree } from "./tree.js";
 
 describe("ConversationTree", () => {
@@ -65,7 +65,7 @@ describe("ConversationTree", () => {
       const tree = new ConversationTree();
       const root = tree.add(null, "system", "Root.");
       const c1 = tree.add(root.id, "user", "A.");
-      const c2 = tree.add(root.id, "event", "B.");
+      const _c2 = tree.add(root.id, "event", "B.");
       tree.add(c1.id, "assistant", "Response.");
 
       const kids = tree.children(root.id);
@@ -80,8 +80,8 @@ describe("ConversationTree", () => {
       const respA = tree.add(userA.id, "assistant", "Done A.");
       const respB = tree.add(userB.id, "assistant", "Done B.");
 
-      expect(tree.ancestors(respA.id).map(n => n.content)).toEqual(["Root.", "Task A.", "Done A."]);
-      expect(tree.ancestors(respB.id).map(n => n.content)).toEqual(["Root.", "Task B.", "Done B."]);
+      expect(tree.ancestors(respA.id).map((n) => n.content)).toEqual(["Root.", "Task A.", "Done A."]);
+      expect(tree.ancestors(respB.id).map((n) => n.content)).toEqual(["Root.", "Task B.", "Done B."]);
       expect(tree.children(root.id).length).toBe(2);
     });
   });
@@ -147,7 +147,7 @@ describe("ConversationTree", () => {
       tree.setRef("t", u2.id);
 
       const path = tree.ancestors(u2.id);
-      expect(path.map(n => n.content)).toEqual(["Init.", "Hello.", "Hi!", "What is 2+2?"]);
+      expect(path.map((n) => n.content)).toEqual(["Init.", "Hello.", "Hi!", "What is 2+2?"]);
     });
 
     test("activeTasks counts running", () => {

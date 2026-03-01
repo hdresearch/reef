@@ -15,12 +15,11 @@
  */
 
 import { join, resolve } from "node:path";
-import { existsSync } from "node:fs";
 import { Hono } from "hono";
 import { bearerAuth } from "./auth.js";
 import { discoverServiceModules, loadServiceModule } from "./discover.js";
 import { ServiceEventBus } from "./events.js";
-import type { ServiceModule, ServiceContext } from "./types.js";
+import type { ServiceContext, ServiceModule } from "./types.js";
 
 export const DEFAULT_SERVICES_DIR = "./services";
 
@@ -33,7 +32,7 @@ export interface ServerOptions {
 export async function createServer(options: ServerOptions) {
   const servicesDir = options.servicesDir ?? process.env.SERVICES_DIR ?? DEFAULT_SERVICES_DIR;
   const resolvedServicesDir = resolve(servicesDir);
-  const initialModules = options.modules ?? await discoverServiceModules(servicesDir);
+  const initialModules = options.modules ?? (await discoverServiceModules(servicesDir));
   const app = new Hono();
   const events = new ServiceEventBus();
 
@@ -70,9 +69,7 @@ export async function createServer(options: ServerOptions) {
     dirForModule.delete(name);
   }
 
-  async function loadFromDir(
-    dirName: string,
-  ): Promise<{ name: string; action: "added" | "updated" }> {
+  async function loadFromDir(dirName: string): Promise<{ name: string; action: "added" | "updated" }> {
     const dirPath = join(resolvedServicesDir, dirName);
     const serviceModule = await loadServiceModule(dirPath);
 
@@ -225,9 +222,7 @@ export async function startServer(options: ServerOptions = {}) {
   const port = options.port ?? parseInt(process.env.PORT || "3000", 10);
 
   if (!process.env.VERS_AUTH_TOKEN) {
-    console.warn(
-      "  VERS_AUTH_TOKEN is not set — all endpoints are unauthenticated.",
-    );
+    console.warn("  VERS_AUTH_TOKEN is not set — all endpoints are unauthenticated.");
   }
 
   console.log("  services:");

@@ -2,24 +2,31 @@
  * Feed tools — publish events, list events, get stats.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { FleetClient } from "../src/core/types.js";
-import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import type { FleetClient } from "../src/core/types.js";
 
 export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
     name: "feed_publish",
     label: "Feed: Publish Event",
-    description:
-      "Publish an event to the activity feed. Used for coordination, progress reporting, and audit trails.",
+    description: "Publish an event to the activity feed. Used for coordination, progress reporting, and audit trails.",
     parameters: Type.Object({
       type: StringEnum(
         [
-          "task_started", "task_completed", "task_failed",
-          "blocker_found", "question", "finding",
-          "skill_proposed", "file_changed", "cost_update",
-          "agent_started", "agent_stopped", "custom",
+          "task_started",
+          "task_completed",
+          "task_failed",
+          "blocker_found",
+          "question",
+          "finding",
+          "skill_proposed",
+          "file_changed",
+          "cost_update",
+          "agent_started",
+          "agent_stopped",
+          "custom",
         ] as const,
         { description: "Event type" },
       ),

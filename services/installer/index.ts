@@ -17,19 +17,11 @@
  * which services came from external sources vs. built-in.
  */
 
-import { Hono } from "hono";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  rmSync,
-  symlinkSync,
-  lstatSync,
-} from "node:fs";
-import { join, basename, dirname, resolve } from "node:path";
 import { execSync } from "node:child_process";
-import type { ServiceModule, ServiceContext } from "../src/core/types.js";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { Hono } from "hono";
+import type { ServiceContext, ServiceModule } from "../src/core/types.js";
 
 let ctx: ServiceContext;
 
@@ -70,13 +62,8 @@ function saveRegistry(entries: InstalledEntry[]): void {
   writeFileSync(registryPath(), JSON.stringify({ installed: entries }, null, 2));
 }
 
-function findEntry(
-  entries: InstalledEntry[],
-  nameOrSource: string,
-): InstalledEntry | undefined {
-  return entries.find(
-    (e) => e.dirName === nameOrSource || e.source === nameOrSource,
-  );
+function findEntry(entries: InstalledEntry[], nameOrSource: string): InstalledEntry | undefined {
+  return entries.find((e) => e.dirName === nameOrSource || e.source === nameOrSource);
 }
 
 // =============================================================================
@@ -127,7 +114,7 @@ export function parseSource(source: string): ParsedSource {
   }
 
   // Everything else is git. Extract optional @ref suffix first.
-  let raw = source;
+  const raw = source;
   let ref: string | undefined;
 
   // Match @ref at the end, but not the @ in git@github.com:...
@@ -160,9 +147,7 @@ export function parseSource(source: string): ParsedSource {
     url = `https://github.com/${shorthandMatch[1]}`;
     ref = shorthandMatch[2];
   } else {
-    throw new Error(
-      `Cannot parse source: "${source}". Expected a local path, git URL, or user/repo shorthand.`,
-    );
+    throw new Error(`Cannot parse source: "${source}". Expected a local path, git URL, or user/repo shorthand.`);
   }
 
   // Extract repo name: last path segment, strip .git
@@ -184,16 +169,11 @@ function exec(cmd: string, cwd?: string): string {
   }).trim();
 }
 
-async function installFromGit(
-  parsed: ParsedSource,
-  servicesDir: string,
-): Promise<string> {
+async function installFromGit(parsed: ParsedSource, servicesDir: string): Promise<string> {
   const targetDir = join(servicesDir, parsed.dirName);
 
   if (existsSync(targetDir)) {
-    throw new Error(
-      `Directory "${parsed.dirName}" already exists. Use update to pull latest, or remove first.`,
-    );
+    throw new Error(`Directory "${parsed.dirName}" already exists. Use update to pull latest, or remove first.`);
   }
 
   // Clone
@@ -203,7 +183,12 @@ async function installFromGit(
   // Install dependencies if package.json exists
   if (existsSync(join(targetDir, "package.json"))) {
     const hasBun = (() => {
-      try { exec("bun --version"); return true; } catch { return false; }
+      try {
+        exec("bun --version");
+        return true;
+      } catch {
+        return false;
+      }
     })();
     exec(hasBun ? "bun install" : "npm install", targetDir);
   }
@@ -211,16 +196,11 @@ async function installFromGit(
   return targetDir;
 }
 
-function installFromLocal(
-  parsed: ParsedSource,
-  servicesDir: string,
-): string {
+function installFromLocal(parsed: ParsedSource, servicesDir: string): string {
   const targetDir = join(servicesDir, parsed.dirName);
 
   if (existsSync(targetDir)) {
-    throw new Error(
-      `Directory "${parsed.dirName}" already exists. Remove first.`,
-    );
+    throw new Error(`Directory "${parsed.dirName}" already exists. Remove first.`);
   }
 
   // Symlink so changes to the source are reflected immediately
@@ -237,23 +217,19 @@ async function installFromFleet(
   const targetDir = join(servicesDir, serviceName);
 
   if (existsSync(targetDir)) {
-    throw new Error(
-      `Directory "${serviceName}" already exists. Remove first.`,
-    );
+    throw new Error(`Directory "${serviceName}" already exists. Remove first.`);
   }
 
   // Fetch the tarball from the remote instance's export endpoint
   const exportUrl = `${baseUrl.replace(/\/$/, "")}/services/export/${serviceName}`;
   const headers: Record<string, string> = {};
-  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
 
   const response = await fetch(exportUrl, { headers });
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(
-      `Failed to fetch "${serviceName}" from ${baseUrl}: ${response.status} ${body}`,
-    );
+    throw new Error(`Failed to fetch "${serviceName}" from ${baseUrl}: ${response.status} ${body}`);
   }
 
   // Write tarball to a temp file and extract
@@ -271,15 +247,18 @@ async function installFromFleet(
   // Verify extraction worked
   if (!existsSync(join(targetDir, "index.ts"))) {
     rmSync(targetDir, { recursive: true, force: true });
-    throw new Error(
-      `Extracted tarball for "${serviceName}" has no index.ts`,
-    );
+    throw new Error(`Extracted tarball for "${serviceName}" has no index.ts`);
   }
 
   // Install dependencies if needed
   if (existsSync(join(targetDir, "package.json"))) {
     const hasBun = (() => {
-      try { exec("bun --version"); return true; } catch { return false; }
+      try {
+        exec("bun --version");
+        return true;
+      } catch {
+        return false;
+      }
     })();
     exec(hasBun ? "bun install" : "npm install", targetDir);
   }
@@ -304,7 +283,12 @@ async function updateGit(entry: InstalledEntry, servicesDir: string): Promise<vo
   // Reinstall dependencies
   if (existsSync(join(targetDir, "package.json"))) {
     const hasBun = (() => {
-      try { exec("bun --version"); return true; } catch { return false; }
+      try {
+        exec("bun --version");
+        return true;
+      } catch {
+        return false;
+      }
     })();
     exec(hasBun ? "bun install" : "npm install", targetDir);
   }
@@ -334,10 +318,7 @@ routes.post("/install", async (c) => {
       const registry = loadRegistry();
 
       if (findEntry(registry, name)) {
-        return c.json(
-          { error: `"${name}" is already installed. Use update or remove first.` },
-          409,
-        );
+        return c.json({ error: `"${name}" is already installed. Use update or remove first.` }, 409);
       }
 
       await installFromFleet(from, name, ctx.servicesDir, token);
@@ -355,13 +336,16 @@ routes.post("/install", async (c) => {
       const result = await ctx.loadModule(name);
       console.log(`  [install] /${result.name} — loaded`);
 
-      return c.json({
-        name: result.name,
-        dirName: name,
-        from,
-        type: "fleet",
-        action: "installed",
-      }, 201);
+      return c.json(
+        {
+          name: result.name,
+          dirName: name,
+          from,
+          type: "fleet",
+          action: "installed",
+        },
+        201,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return c.json({ error: msg }, 400);
@@ -378,10 +362,7 @@ routes.post("/install", async (c) => {
     const registry = loadRegistry();
 
     if (findEntry(registry, parsed.dirName)) {
-      return c.json(
-        { error: `"${parsed.dirName}" is already installed. Use update or remove first.` },
-        409,
-      );
+      return c.json({ error: `"${parsed.dirName}" is already installed. Use update or remove first.` }, 409);
     }
 
     const servicesDir = ctx.servicesDir;
@@ -398,10 +379,7 @@ routes.post("/install", async (c) => {
     const indexPath = join(servicesDir, parsed.dirName, "index.ts");
     if (!existsSync(indexPath)) {
       rmSync(join(servicesDir, parsed.dirName), { recursive: true, force: true });
-      return c.json(
-        { error: `No index.ts found in ${parsed.dirName}. Not a valid service module.` },
-        400,
-      );
+      return c.json({ error: `No index.ts found in ${parsed.dirName}. Not a valid service module.` }, 400);
     }
 
     registry.push({
@@ -417,13 +395,16 @@ routes.post("/install", async (c) => {
     const result = await ctx.loadModule(parsed.dirName);
     console.log(`  [install] /${result.name} — loaded`);
 
-    return c.json({
-      name: result.name,
-      dirName: parsed.dirName,
-      source,
-      type: parsed.type,
-      action: "installed",
-    }, 201);
+    return c.json(
+      {
+        name: result.name,
+        dirName: parsed.dirName,
+        source,
+        type: parsed.type,
+        action: "installed",
+      },
+      201,
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: msg }, 400);
@@ -567,13 +548,26 @@ const installer: ServiceModule = {
   routeDocs: {
     "POST /install": {
       summary: "Install a service module from a source",
-      detail: "Three modes: git clone (source), local symlink (source), or pull from another reef instance (from + name). Installs dependencies and hot-loads the module.",
+      detail:
+        "Three modes: git clone (source), local symlink (source), or pull from another reef instance (from + name). Installs dependencies and hot-loads the module.",
       body: {
-        source: { type: "string", required: false, description: "Git URL, local path, or user/repo shorthand. Append @ref to pin." },
-        from: { type: "string", required: false, description: "Base URL of another reef instance (e.g. http://host:3000)" },
+        source: {
+          type: "string",
+          required: false,
+          description: "Git URL, local path, or user/repo shorthand. Append @ref to pin.",
+        },
+        from: {
+          type: "string",
+          required: false,
+          description: "Base URL of another reef instance (e.g. http://host:3000)",
+        },
         name: { type: "string", required: false, description: "Service name to pull (required with 'from')" },
         token: { type: "string", required: false, description: "Auth token for the remote instance (if needed)" },
-        seed: { type: "string", required: false, description: "Seed content hash (sha256:...) if installing as part of a germination" },
+        seed: {
+          type: "string",
+          required: false,
+          description: "Seed content hash (sha256:...) if installing as part of a germination",
+        },
       },
       response: "{ name, dirName, source|from, type, action: 'installed' }",
     },
@@ -605,12 +599,12 @@ const installer: ServiceModule = {
 
   // Reef-specific substrate capabilities
   capabilities: [
-    "reef.install",         // install services from git, local, or fleet at runtime
-    "reef.install.git",     // clone from git repos (GitHub shorthand, HTTPS, SSH)
-    "reef.install.local",   // symlink from local paths
-    "reef.install.fleet",   // pull from another reef instance
-    "reef.update",          // pull latest and hot-reload
-    "reef.remove",          // unload + delete installed services
+    "reef.install", // install services from git, local, or fleet at runtime
+    "reef.install.git", // clone from git repos (GitHub shorthand, HTTPS, SSH)
+    "reef.install.local", // symlink from local paths
+    "reef.install.fleet", // pull from another reef instance
+    "reef.update", // pull latest and hot-reload
+    "reef.remove", // unload + delete installed services
   ],
 };
 

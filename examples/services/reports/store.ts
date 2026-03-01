@@ -2,9 +2,9 @@
  * Reports store — markdown reports with tagging.
  */
 
-import { ulid } from "ulid";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { ulid } from "ulid";
 
 export interface Report {
   id: string;
@@ -29,7 +29,10 @@ export interface ReportFilters {
 }
 
 export class ValidationError extends Error {
-  constructor(message: string) { super(message); this.name = "ValidationError"; }
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
 }
 
 export class ReportsStore {
@@ -65,7 +68,10 @@ export class ReportsStore {
   }
 
   flush(): void {
-    if (this.writeTimer) { clearTimeout(this.writeTimer); this.writeTimer = null; }
+    if (this.writeTimer) {
+      clearTimeout(this.writeTimer);
+      this.writeTimer = null;
+    }
     const dir = dirname(this.filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(this.filePath, JSON.stringify({ reports: Array.from(this.reports.values()) }, null, 2));
@@ -92,7 +98,9 @@ export class ReportsStore {
     return report;
   }
 
-  get(id: string): Report | undefined { return this.reports.get(id); }
+  get(id: string): Report | undefined {
+    return this.reports.get(id);
+  }
 
   list(filters?: ReportFilters): Report[] {
     let results = Array.from(this.reports.values());

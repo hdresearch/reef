@@ -16,7 +16,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import type { ServiceModule, ServiceContext } from "../src/core/types.js";
+import type { ServiceContext, ServiceModule } from "../src/core/types.js";
 
 let ctx: ServiceContext;
 
@@ -57,7 +57,7 @@ interface GeneratedFile {
 // =============================================================================
 
 function generateStore(name: string): string {
-  const className = toPascalCase(name) + "Store";
+  const className = `${toPascalCase(name)}Store`;
   return `/**
  * ${className} — data persistence for the ${name} service.
  *
@@ -157,10 +157,8 @@ export class ${className} {
 }
 
 function generateRoutes(name: string, routeSpecs: RouteSpec[], hasStore: boolean): string {
-  const className = toPascalCase(name) + "Store";
-  const storeImport = hasStore
-    ? `import type { ${className} } from "./store.js";`
-    : "";
+  const className = `${toPascalCase(name)}Store`;
+  const storeImport = hasStore ? `import type { ${className} } from "./store.js";` : "";
   const storeParam = hasStore ? `store: ${className}` : "";
 
   const handlers = routeSpecs
@@ -202,8 +200,12 @@ function generateTools(name: string, routeSpecs: RouteSpec[]): string {
       const paramFields = r.body
         ? Object.entries(r.body)
             .map(([key, spec]) => {
-              const typeStr = spec.type === "string" ? "Type.String" : spec.type === "number" ? "Type.Number" : "Type.String";
-              const wrapped = spec.required === false ? `Type.Optional(${typeStr}({ description: "${spec.description || key}" }))` : `${typeStr}({ description: "${spec.description || key}" })`;
+              const typeStr =
+                spec.type === "string" ? "Type.String" : spec.type === "number" ? "Type.Number" : "Type.String";
+              const wrapped =
+                spec.required === false
+                  ? `Type.Optional(${typeStr}({ description: "${spec.description || key}" }))`
+                  : `${typeStr}({ description: "${spec.description || key}" })`;
               return `      ${key}: ${wrapped},`;
             })
             .join("\n")
@@ -239,7 +241,7 @@ ${toolFunctions}
 `;
 }
 
-function generateBehaviors(name: string): string {
+function generateBehaviors(_name: string): string {
   return `import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { FleetClient } from "../../src/core/types.js";
 
@@ -313,10 +315,8 @@ function generatePanel(name: string): string {
 }
 
 function generateIndex(name: string, spec: ScaffoldRequest): string {
-  const className = toPascalCase(name) + "Store";
-  const imports: string[] = [
-    `import type { ServiceModule, ServiceContext } from "../../src/core/types.js";`,
-  ];
+  const className = `${toPascalCase(name)}Store`;
+  const imports: string[] = [`import type { ServiceModule, ServiceContext } from "../../src/core/types.js";`];
 
   if (spec.store) {
     imports.push(`import { ${className} } from "./store.js";`);
@@ -356,7 +356,10 @@ function generateIndex(name: string, spec: ScaffoldRequest): string {
     parts.push(`      summary: ${JSON.stringify(r.description || `${r.method} ${r.path}`)},`);
     if (r.body) {
       const bodyEntries = Object.entries(r.body)
-        .map(([k, v]) => `        ${k}: { type: ${JSON.stringify(v.type || "string")}, required: ${v.required ?? true}, description: ${JSON.stringify(v.description || k)} },`)
+        .map(
+          ([k, v]) =>
+            `        ${k}: { type: ${JSON.stringify(v.type || "string")}, required: ${v.required ?? true}, description: ${JSON.stringify(v.description || k)} },`,
+        )
         .join("\n");
       parts.push(`      body: {\n${bodyEntries}\n      },`);
     }
@@ -438,7 +441,7 @@ function generateIndex(name: string, spec: ScaffoldRequest): string {
 }
 
 function generateTest(name: string, spec: ScaffoldRequest): string {
-  const importPath = spec.store ? `./index.js` : `./index.js`;
+  const _importPath = spec.store ? `./index.js` : `./index.js`;
   const testCases: string[] = [];
 
   for (const r of spec.routes ?? []) {
@@ -531,7 +534,10 @@ function validateSpec(body: unknown): { spec: ScaffoldRequest; error?: string } 
     return { spec: null as any, error: "name is required (string)" };
   }
 
-  const name = b.name.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  const name = b.name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-");
   if (!name || name.length < 2) {
     return { spec: null as any, error: "name must be at least 2 characters (a-z, 0-9, hyphens)" };
   }
@@ -616,7 +622,12 @@ routes.post("/create", async (c) => {
 
   // Don't overwrite existing services
   if (existsSync(targetDir)) {
-    return c.json({ error: `Service directory "${spec.name}" already exists. Use preview to inspect, then write files manually to update.` }, 409);
+    return c.json(
+      {
+        error: `Service directory "${spec.name}" already exists. Use preview to inspect, then write files manually to update.`,
+      },
+      409,
+    );
   }
 
   const files = generateFiles(spec);
@@ -643,14 +654,17 @@ routes.post("/create", async (c) => {
     }
   }
 
-  return c.json({
-    name: spec.name,
-    files: files.map((f) => f.path),
-    count: files.length,
-    directory: targetDir,
-    loaded: loadResult ?? undefined,
-    loadError: loadError ?? undefined,
-  }, 201);
+  return c.json(
+    {
+      name: spec.name,
+      files: files.map((f) => f.path),
+      count: files.length,
+      directory: targetDir,
+      loaded: loadResult ?? undefined,
+      loadError: loadError ?? undefined,
+    },
+    201,
+  );
 });
 
 // =============================================================================
@@ -696,7 +710,7 @@ const scaffold: ServiceModule = {
   },
 
   capabilities: [
-    "reef.scaffold",           // can generate service module skeletons
+    "reef.scaffold", // can generate service module skeletons
   ],
 
   init(serviceCtx: ServiceContext) {
