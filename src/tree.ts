@@ -1,15 +1,15 @@
 /**
- * Conversation Tree
+ * Event Tree
  *
- * Every message is a node with a parent. The tree structure emerges naturally:
- * any node can have multiple children (forks). Named refs point to leaf nodes,
- * like git branches pointing to commits.
+ * Every event is a node with a parent. The tree structure emerges naturally:
+ * user prompts, tool calls, tool results, assistant responses, cron fires,
+ * service deploys — all nodes with causal links (parentId).
  *
  * Key concepts:
- *   - Node: a single message with a parentId
- *   - Ref: a named pointer to a node (e.g. "main" → latest system event)
+ *   - Node: a single event with a parentId
+ *   - Ref: a named pointer to a node (e.g. "main" → system root, "task-1" → latest response)
  *   - Path: ancestors from a node back to root = the conversation context
- *   - Fork: add a child to any node — if it already has children, that's a branch point
+ *   - Fork: add a child to any node — multiple children = branch point
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -71,6 +71,9 @@ export class ConversationTree {
   /** All nodes by ID. */
   nodes: Map<string, TreeNode> = new Map();
 
+  /** Parent → child IDs, maintained on insert. */
+  private childIndex: Map<string, string[]> = new Map();
+
   /** Named refs — point to a node ID. "main" is the world timeline. */
   refs: Map<string, string> = new Map();
 
@@ -95,9 +98,21 @@ export class ConversationTree {
         this.refs = new Map(Object.entries(data.refs ?? {}));
         this.tasks = new Map(Object.entries(data.tasks ?? {}));
         this.root = data.root ?? null;
+        this.rebuildChildIndex();
         console.log(`  [tree] loaded ${this.nodes.size} nodes from ${path}`);
       } catch (err) {
         console.error(`  [tree] failed to load ${path}:`, err);
+      }
+    }
+  }
+
+  private rebuildChildIndex(): void {
+    this.childIndex.clear();
+    for (const [id, node] of this.nodes) {
+      if (node.parentId) {
+        const kids = this.childIndex.get(node.parentId);
+        if (kids) kids.push(id);
+        else this.childIndex.set(node.parentId, [id]);
       }
     }
   }
@@ -128,6 +143,11 @@ export class ConversationTree {
       ...extra,
     };
     this.nodes.set(node.id, node);
+    if (parentId) {
+      const kids = this.childIndex.get(parentId);
+      if (kids) kids.push(node.id);
+      else this.childIndex.set(parentId, [node.id]);
+    }
     if (!parentId && !this.root) this.root = node.id;
     this.save();
     return node;
@@ -180,7 +200,9 @@ export class ConversationTree {
 
   /** Get direct children of a node. */
   children(nodeId: string): TreeNode[] {
-    return [...this.nodes.values()].filter(n => n.parentId === nodeId);
+    const ids = this.childIndex.get(nodeId);
+    if (!ids) return [];
+    return ids.map(id => this.nodes.get(id)!).filter(Boolean);
   }
 
   /** Get the path from root to a ref's current node. */
@@ -309,6 +331,7 @@ export class ConversationTree {
     tree.refs = new Map(Object.entries(data.refs ?? {}));
     tree.tasks = new Map(Object.entries(data.tasks ?? {}));
     tree.root = data.root ?? null;
+    tree.rebuildChildIndex();
     return tree;
   }
 }

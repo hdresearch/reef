@@ -711,7 +711,7 @@ const services: ServiceModule = {
       name: "reef_task_list",
       label: "Reef: List Tasks",
       description:
-        "List all conversation tasks. Each task is a branch in the conversation tree. "
+        "List all tasks. Each task is a ref in the event tree. "
         + "Shows status (running/done/error), the trigger prompt, and timing. "
         + "Use to check what work has been done or monitor active tasks.",
       parameters: Type.Object({
