@@ -98,7 +98,7 @@ export class ConversationTree {
   private archivedTasks: Set<string> = new Set();
 
   /** How many completed tasks to keep hot before archiving. */
-  hotLimit = 50;
+  hotLimit = 1500;
 
   // ---------------------------------------------------------------------------
   // Persistence
