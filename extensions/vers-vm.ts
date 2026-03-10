@@ -431,6 +431,9 @@ class VersClient {
 // =============================================================================
 
 export default function versVmExtension(pi: ExtensionAPI) {
+  // Skip entirely if no Vers API key available — don't clutter the tool list.
+  const earlyKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
+  if (!earlyKey) return;
   pi.registerFlag("vers-api-key", {
     description: "Vers API key (default: VERS_API_KEY env var)",
     type: "string",

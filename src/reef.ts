@@ -420,10 +420,41 @@ export async function createReef(config: ReefConfig = {}) {
 }
 
 export async function startReef(config: ReefConfig = {}) {
-  const { app, tree, piProcesses, liveModules, sseClients } = await createReef(config);
-  const port = config.server?.port ?? parseInt(process.env.PORT ?? "3000", 10);
+  // Bun version guard
+  const MIN_BUN = "1.2.0";
+  const bunVersion = typeof Bun !== "undefined" ? Bun.version : undefined;
+  if (!bunVersion) {
+    console.error("  reef requires Bun. Install it: https://bun.sh");
+    process.exit(1);
+  }
+  const [major, minor, patch] = bunVersion.split(".").map(Number);
+  const [minMajor, minMinor, minPatch] = MIN_BUN.split(".").map(Number);
+  if (
+    major < minMajor ||
+    (major === minMajor && minor < minMinor) ||
+    (major === minMajor && minor === minMinor && patch < minPatch)
+  ) {
+    console.error(`  reef requires Bun >= ${MIN_BUN} (you have ${bunVersion}). Run: bun upgrade`);
+    process.exit(1);
+  }
 
-  console.log("  mode: agent");
+  const { app, tree, piProcesses, liveModules, sseClients } = await createReef(config);
+  const port = config.server?.port ?? parseInt(process.env.PORT ?? "4200", 10);
+
+  // Port conflict detection
+  try {
+    const test = Bun.serve({ fetch: () => new Response(), port, hostname: "::" });
+    test.stop();
+  } catch (e: any) {
+    if (e?.code === "EADDRINUSE" || e?.message?.includes("address already in use")) {
+      console.error(`\n  Port ${port} is already in use.`);
+      console.error(`  Try: PORT=${port + 1} bun run start\n`);
+      process.exit(1);
+    }
+    // Other errors — let Bun.serve below handle it
+  }
+
+  console.log("\n  🐚 reef\n");
   console.log("  services:");
   for (const mod of liveModules.values()) {
     if (mod.routes) console.log(`    /${mod.name} — ${mod.description || mod.name}`);
@@ -431,6 +462,11 @@ export async function startReef(config: ReefConfig = {}) {
   console.log(`    /reef — agent conversation + task submission`);
 
   const server = Bun.serve({ fetch: app.fetch, port, hostname: "::", idleTimeout: 120 });
+
+  console.log();
+  console.log(`  Dashboard  http://localhost:${port}/ui`);
+  console.log(`  API docs   http://localhost:${port}/docs`);
+  console.log(`  Health     http://localhost:${port}/health`);
   console.log(`\n  reef running on :${port}\n`);
 
   async function shutdown() {

@@ -16,7 +16,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Hono } from "hono";
-import type { FleetClient, ServiceContext, ServiceModule } from "../src/core/types.js";
+import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
 
 /** Seed metadata stored alongside the installer registry */
 interface SeedMeta {

@@ -5,9 +5,15 @@ description: Set up a reef server with example services. Use when bootstrapping 
 
 # Setup Reef
 
-Reef ships with core infrastructure services in `services/` (docs, installer, services, store, cron, ui). Fleet coordination services live in `examples/services/` and need to be copied into `services/` to activate them.
+All services ship pre-installed in `services/`. Just start the server:
 
-## Available Example Services
+```bash
+bun install
+export ANTHROPIC_API_KEY=your-key
+bun run start
+```
+
+## Services
 
 | Service | What it does |
 |---------|-------------|
@@ -20,118 +26,25 @@ Reef ships with core infrastructure services in `services/` (docs, installer, se
 | **reports** | Markdown reports with title, author, tags |
 | **usage** | Cost & token tracking with per-agent summaries (depends on feed) |
 | **updater** | Auto-update reef from npm |
-
-## Dependencies
-
-Some services depend on others. Install dependencies first:
-
-- **usage** depends on **feed**
-- **ui** is a core service; works best with **board** and **feed** (for panels)
-
-## Install All Example Services
-
-To install everything:
-
-```bash
-cp -r examples/services/feed services/feed
-cp -r examples/services/board services/board
-cp -r examples/services/log services/log
-cp -r examples/services/journal services/journal
-cp -r examples/services/registry services/registry
-cp -r examples/services/commits services/commits
-cp -r examples/services/reports services/reports
-cp -r examples/services/usage services/usage
-cp -r examples/services/updater services/updater
-```
-
-Then restart or reload:
-
-```bash
-curl -X POST http://localhost:3000/services/reload -H "Authorization: Bearer $TOKEN"
-```
-
-## Install a Subset
-
-Pick what you need. A minimal coordination setup:
-
-```bash
-# Task tracking + activity feed
-cp -r examples/services/feed services/feed
-cp -r examples/services/board services/board
-
-# Work log
-cp -r examples/services/log services/log
-
-# Web dashboard is built-in at services/ui — no copy needed
-```
-
-Reload:
-
-```bash
-curl -X POST http://localhost:3000/services/reload -H "Authorization: Bearer $TOKEN"
-```
-
-## Fix Import Paths
-
-The example services import types from `../src/core/types.js` (relative to `examples/services/`). After copying to `services/`, the import path resolves to `services/src/core/types.js` which doesn't exist.
-
-**You must fix the imports** in each copied service. Change:
-
-```ts
-// Before (in examples/services/)
-import type { ServiceModule } from "../src/core/types.js";
-```
-
-```ts
-// After (in services/)
-import type { ServiceModule } from "../../src/core/types.js";
-```
-
-Run this to fix all imports at once after copying:
-
-```bash
-find services/ -name '*.ts' -exec sed -i '' 's|from "../src/core/|from "../../src/core/|g' {} +
-find services/ -name '*.ts' -exec sed -i '' 's|from "\.\./src/core/|from "../../src/core/|g' {} +
-```
-
-On Linux (no `-i ''`):
-
-```bash
-find services/ -name '*.ts' -exec sed -i 's|from "../src/core/|from "../../src/core/|g' {} +
-```
+| **scaffold** | Generate service module skeletons |
+| **store** | Key-value store with TTL |
+| **cron** | Scheduled jobs (cron expressions + intervals) |
+| **docs** | Auto-generated API documentation |
+| **installer** | Install, update, and remove service modules |
+| **ui** | Web dashboard |
 
 ## Verify
 
-After copying and fixing imports:
-
 ```bash
-# Check the server starts
-bun run start
+# Check health
+curl http://localhost:4200/health
 
-# Or check health
-curl http://localhost:3000/health
+# Check docs
+curl http://localhost:4200/docs
 ```
 
-The health endpoint lists all loaded services. Every service you copied should appear.
+The health endpoint lists all loaded services.
 
-## Runtime Install (Alternative)
+## Creating New Services
 
-Instead of copying, you can use the installer to symlink from examples:
-
-```bash
-curl -X POST http://localhost:3000/installer/install \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"source": "./examples/services/board"}'
-```
-
-This creates a symlink — changes to the example source are reflected immediately. Good for development, but the import path issue still applies if examples use relative paths to `src/core/`.
-
-## Checklist
-
-- [ ] Copied the services you need from `examples/services/` to `services/`
-- [ ] Installed dependencies first (feed before usage)
-- [ ] Fixed import paths (`../src/core/` → `../../src/core/`)
-- [ ] Server starts without errors
-- [ ] All copied services appear in `GET /health`
-- [ ] `GET /docs` shows routes for each new service
+See `skills/create-service/SKILL.md` for how to build your own service modules.

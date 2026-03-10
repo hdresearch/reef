@@ -65,7 +65,7 @@ export default function (pi: ExtensionAPI) {
       message: Type.String({
         description:
           "What to remind about — include enough context to act on it. " +
-          "E.g. 'Check pipeline abc123 status on VM 0ed565. curl -s localhost:3000/pipeline/runs/abc123'",
+          "E.g. 'Check pipeline abc123 status on VM 0ed565. curl -s localhost:4200/pipeline/runs/abc123'",
       }),
       delay: Type.String({
         description: "How long to wait. Examples: '30s', '5m', '15m', '1h', '2h'",

@@ -240,6 +240,9 @@ class VersSSHClient {
 // =============================================================================
 
 export default function versVmCopyExtension(pi: ExtensionAPI) {
+  // Skip entirely if no Vers API key available.
+  const earlyKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
+  if (!earlyKey) return;
   let client: VersSSHClient | undefined;
 
   function getClient(): VersSSHClient {

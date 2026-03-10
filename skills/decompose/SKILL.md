@@ -1,3 +1,8 @@
+---
+name: decompose
+description: Recursively decompose tasks across multiple VMs. Use when a task has multiple independent subsystems that should be parallelized across child agents, each on their own Vers VM.
+---
+
 # Recursive Task Decomposition
 
 You are an agent in a recursive task tree. Your job is to either **do the work** or **break it down and delegate**.
@@ -46,7 +51,7 @@ Use the `vers_vm_restore` tool with the GOLDEN_COMMIT_ID from your task prompt. 
 **Step 2: Spawn the task on the child's reef**
 The child VM already has reef running from the golden snapshot:
 ```bash
-TASK_ID=$(curl -s -X POST "https://${CHILD_VM_ID}.vm.vers.sh:3000/agent/tasks" \
+TASK_ID=$(curl -s -X POST "https://${CHILD_VM_ID}.vm.vers.sh:4200/agent/tasks" \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -64,7 +69,7 @@ while true; do
   for child in "${CHILDREN[@]}"; do
     VM_ID="${child%%:*}"
     TASK_ID="${child##*:}"
-    STATUS=$(curl -s "https://${VM_ID}.vm.vers.sh:3000/agent/tasks/${TASK_ID}" \
+    STATUS=$(curl -s "https://${VM_ID}.vm.vers.sh:4200/agent/tasks/${TASK_ID}" \
       -H "Authorization: Bearer $VERS_AUTH_TOKEN" | python3 -c "
 import sys,json; print(json.load(sys.stdin)['status'])")
     echo "$TASK_ID on $VM_ID: $STATUS"
@@ -117,7 +122,7 @@ When you're a leaf (single coherent module):
 - Write tests, make them pass
 - Log to feed:
 ```bash
-curl -X POST localhost:3000/feed/events \
+curl -X POST localhost:4200/feed/events \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"task.complete","agent":"'$(cat /etc/vm_id)'","data":{"summary":"what you built","files":["list","of","files"]}}'

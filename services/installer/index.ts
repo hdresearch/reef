@@ -21,7 +21,7 @@ import { execSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { Hono } from "hono";
-import type { ServiceContext, ServiceModule } from "../src/core/types.js";
+import type { ServiceContext, ServiceModule } from "../../src/core/types.js";
 
 let ctx: ServiceContext;
 

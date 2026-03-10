@@ -10,7 +10,7 @@
  */
 
 import { Hono } from "hono";
-import type { ParamDoc, ServiceContext, ServiceModule } from "../src/core/types.js";
+import type { ParamDoc, ServiceContext, ServiceModule } from "../../src/core/types.js";
 
 let ctx: ServiceContext;
 

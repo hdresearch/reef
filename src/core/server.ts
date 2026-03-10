@@ -219,7 +219,7 @@ export async function createServer(options: ServerOptions) {
  */
 export async function startServer(options: ServerOptions = {}) {
   const { app, liveModules } = await createServer(options);
-  const port = options.port ?? parseInt(process.env.PORT || "3000", 10);
+  const port = options.port ?? parseInt(process.env.PORT || "4200", 10);
 
   if (!process.env.VERS_AUTH_TOKEN) {
     console.warn("  VERS_AUTH_TOKEN is not set — all endpoints are unauthenticated.");

@@ -62,7 +62,7 @@ You don't need to restart the server to work with modules. The server provides r
 **Deploy** (`POST /services/deploy`) — validate + test + load in one atomic step:
 
 ```bash
-curl -X POST http://localhost:3000/services/deploy \
+curl -X POST http://localhost:4200/services/deploy \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name": "your-service"}'
@@ -388,29 +388,29 @@ export default yourService;
 
 ```bash
 # Hot-load your new module
-curl -X POST http://localhost:3000/services/reload/your-service \
+curl -X POST http://localhost:4200/services/reload/your-service \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN"
 
 # Check it's loaded
-curl http://localhost:3000/health
+curl http://localhost:4200/health
 
 # Check the auto-generated docs
-curl http://localhost:3000/docs/your-service
+curl http://localhost:4200/docs/your-service
 
 # Test your routes
-curl -X POST http://localhost:3000/your-service \
+curl -X POST http://localhost:4200/your-service \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name": "test"}'
 
-curl http://localhost:3000/your-service \
+curl http://localhost:4200/your-service \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN"
 ```
 
 After making changes, reload without restarting:
 
 ```bash
-curl -X POST http://localhost:3000/services/reload/your-service \
+curl -X POST http://localhost:4200/services/reload/your-service \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN"
 ```
 
@@ -521,10 +521,10 @@ export default serverOnly;
 If another reef instance has a service you want:
 
 ```bash
-curl -X POST http://localhost:3000/installer/install \
+curl -X POST http://localhost:4200/installer/install \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"from": "http://other-reef:3000", "name": "their-service", "token": "their-token"}'
+  -d '{"from": "http://other-reef:4200", "name": "their-service", "token": "their-token"}'
 ```
 
 ## UI Panels

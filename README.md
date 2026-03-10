@@ -8,33 +8,37 @@ Reef is a plugin-based system where every capability is a service module — a f
 
 ```bash
 bun install
-
-export VERS_AUTH_TOKEN=your-secret-token
 export ANTHROPIC_API_KEY=your-key
-
-bun run start
+bun run start              # default port 4200
+PORT=8080 bun run start    # custom port
 ```
 
-Reef starts in agent mode with infrastructure services:
+Reef starts with all services loaded:
 
 ```
-  mode: agent
+  🐚 reef
+
   services:
-    /docs — Auto-generated API documentation
-    /installer — Install, update, and remove service modules
-    /services — Service module manager
+    /board — Shared task tracking
+    /feed — Activity event stream
+    /log — Append-only work log
     /store — Key-value store with TTL
-    /cron — Scheduled jobs (cron expressions + intervals)
-    /agent — Agent task management
+    /cron — Scheduled jobs
+    /docs — Auto-generated API documentation
+    ...
     /reef — Event tree, task submission, SSE stream
 
-  reef running on :3000
+  Dashboard  http://localhost:4200/ui
+  API docs   http://localhost:4200/docs
+  Health     http://localhost:4200/health
+
+  reef running on :4200
 ```
 
 Submit a task:
 
 ```bash
-curl -X POST localhost:3000/reef/submit \
+curl -X POST localhost:4200/reef/submit \
   -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"task": "List the services and tell me what each does."}'
@@ -75,19 +79,19 @@ Every event is a node with a `parentId`. The tree structure emerges naturally:
 
 ```bash
 # Full tree
-curl localhost:3000/reef/tree -H "Authorization: Bearer $TOKEN"
+curl localhost:4200/reef/tree -H "Authorization: Bearer $TOKEN"
 
 # Single node + children
-curl localhost:3000/reef/tree/:id -H "Authorization: Bearer $TOKEN"
+curl localhost:4200/reef/tree/:id -H "Authorization: Bearer $TOKEN"
 
 # Ancestor path
-curl localhost:3000/reef/tree/:id/path -H "Authorization: Bearer $TOKEN"
+curl localhost:4200/reef/tree/:id/path -H "Authorization: Bearer $TOKEN"
 
 # All tasks (filterable by status)
-curl localhost:3000/reef/tasks?status=done -H "Authorization: Bearer $TOKEN"
+curl localhost:4200/reef/tasks?status=done -H "Authorization: Bearer $TOKEN"
 
 # SSE event stream (includes nodeId + parentId on every event)
-curl localhost:3000/reef/events -H "Authorization: Bearer $TOKEN"
+curl localhost:4200/reef/events -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Conversation continuation
@@ -95,7 +99,7 @@ curl localhost:3000/reef/events -H "Authorization: Bearer $TOKEN"
 Reply to any node by passing `parentId`:
 
 ```bash
-curl -X POST localhost:3000/reef/submit \
+curl -X POST localhost:4200/reef/submit \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"task": "Now multiply by 10", "taskId": "math", "parentId": "<assistant-node-id>"}'
@@ -149,29 +153,29 @@ ctx.events.fire("reef:event", {
 
 ```bash
 # Reload all (picks up new, changed, deleted modules)
-curl -X POST localhost:3000/services/reload \
+curl -X POST localhost:4200/services/reload \
   -H "Authorization: Bearer $TOKEN"
 
 # Reload one
-curl -X POST localhost:3000/services/reload/my-service \
+curl -X POST localhost:4200/services/reload/my-service \
   -H "Authorization: Bearer $TOKEN"
 
 # Unload
-curl -X DELETE localhost:3000/services/my-service \
+curl -X DELETE localhost:4200/services/my-service \
   -H "Authorization: Bearer $TOKEN"
 
 # Deploy (validate + test + load in one step)
-curl -X POST localhost:3000/services/deploy \
+curl -X POST localhost:4200/services/deploy \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-service"}'
 
 # Export as tarball
-curl localhost:3000/services/export/my-service \
+curl localhost:4200/services/export/my-service \
   -H "Authorization: Bearer $TOKEN" > my-service.tar.gz
 
 # Manifest (all services + capabilities)
-curl localhost:3000/services/manifest \
+curl localhost:4200/services/manifest \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -181,19 +185,19 @@ The installer handles git repos, local paths, and fleet-to-fleet transfer.
 
 ```bash
 # From GitHub
-curl -X POST localhost:3000/installer/install \
+curl -X POST localhost:4200/installer/install \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"source": "user/repo"}'
 
 # From local path (symlink)
-curl -X POST localhost:3000/installer/install \
+curl -X POST localhost:4200/installer/install \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"source": "/path/to/my-service"}'
 
 # From another reef instance
-curl -X POST localhost:3000/installer/install \
+curl -X POST localhost:4200/installer/install \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"from": "http://other-reef:3000", "name": "their-service", "token": "their-token"}'
@@ -201,14 +205,9 @@ curl -X POST localhost:3000/installer/install \
 
 Git source formats: `user/repo`, `user/repo@v1.0`, `https://github.com/user/repo`, `git@github.com:user/repo`, `gitlab.com/team/repo`
 
-## Example services
+## Services
 
-Fleet coordination services live in `examples/services/`. Copy what you need:
-
-```bash
-cp -r examples/services/board services/
-curl -X POST localhost:3000/services/reload -H "Authorization: Bearer $TOKEN"
-```
+All services ship in `services/` and load automatically on startup:
 
 | Service | Description |
 |---------|-------------|
@@ -223,6 +222,10 @@ curl -X POST localhost:3000/services/reload -H "Authorization: Bearer $TOKEN"
 | **reports** | Markdown report storage |
 | **scaffold** | Generate service module skeletons |
 | **updater** | Auto-update from npm |
+| **store** | Key-value store with TTL |
+| **cron** | Scheduled jobs (cron expressions + intervals) |
+| **docs** | Auto-generated API documentation |
+| **installer** | Install, update, and remove service modules |
 
 ## Agent tools
 
@@ -232,8 +235,10 @@ Reef is also a [pi](https://github.com/badlogic/pi-mono) package. When a task ru
 - **reef_deploy** — validate, test, and load a service in one step
 - **reef_task_list** / **reef_task_read** — inspect completed tasks
 - **reef_store_get** / **reef_store_put** / **reef_store_list** — key-value storage
-- **vers_vm_create** / **vers_vm_branch** / **vers_vm_commit** — VM management
 - Plus any tools registered by your own service modules
+
+With [Vers](https://vers.sh) configured (`VERS_API_KEY`), VM orchestration tools are also available:
+- **vers_vm_create** / **vers_vm_branch** / **vers_vm_commit** — VM management
 
 ## Development
 
@@ -259,5 +264,5 @@ One bad module can't take down the server.
 
 ## Requirements
 
-- [Bun](https://bun.sh)
+- [Bun](https://bun.sh) >= 1.2
 - [pi](https://github.com/badlogic/pi-mono) (for agent tasks)

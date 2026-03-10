@@ -10,7 +10,7 @@
  *
  * Configure via env vars:
  *   SERVICES_DIR       — path to services directory (default: ./services)
- *   PORT               — server port (default: 3000)
+ *   PORT               — server port (default: 4200)
  *   VERS_COMMIT_ID     — golden VM commit to fork branches from
  *   ANTHROPIC_API_KEY  — API key for branch agents
  *   PI_MODEL           — model for branch agents (default: claude-sonnet-4-20250514)

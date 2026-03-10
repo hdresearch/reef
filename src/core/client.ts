@@ -73,7 +73,7 @@ export function createFleetClient(): FleetClient {
       content: [
         {
           type: "text",
-          text: "Error: VERS_INFRA_URL environment variable is not set.\n\nSet it to the base URL of your reef instance, e.g.:\n  export VERS_INFRA_URL=http://localhost:3000",
+          text: "Error: VERS_INFRA_URL environment variable is not set.\n\nSet it to the base URL of your reef instance, e.g.:\n  export VERS_INFRA_URL=http://localhost:4200",
         },
       ],
       isError: true,
