@@ -6,15 +6,15 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import type { FleetClient } from "../../src/core/types.js";
 
-const ROLE_VALUES = ["infra", "lieutenant", "worker", "golden", "custom"] as const;
-
 export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
     name: "registry_list",
     label: "Registry: List VMs",
     description: "List VMs in the coordination registry. Optionally filter by role, status, or parent.",
     parameters: Type.Object({
-      role: Type.Optional(Type.String({ description: "Filter by role: infra | lieutenant | worker | golden | custom" })),
+      role: Type.Optional(
+        Type.String({ description: "Filter by role: infra | lieutenant | worker | golden | custom" }),
+      ),
       status: Type.Optional(Type.String({ description: "Filter by status: running | paused | stopped" })),
     }),
     async execute(_id, params) {

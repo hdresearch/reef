@@ -2,25 +2,25 @@
  * Vers Config service — centralized config resolution for the Vers platform.
  *
  * Replaces scattered config files from pi-vers:
- *   ~/.vers/keys.json          → reef store (encrypted at rest)
- *   ~/.vers/config.json        → reef store
- *   ~/.vers/agent-services.json → reef core auth (VERS_INFRA_URL, VERS_AUTH_TOKEN)
+ *   ~/.vers/keys.json           → reef config overrides + file fallback
+ *   ~/.vers/config.json         → reef config overrides + file fallback
+ *   ~/.vers/agent-services.json → reef config overrides + file fallback
  *   ~/.pi/lieutenants.json     → reef SQLite (lieutenant service)
  *
  * SSH-specific config (keys, control sockets) stays in pi-vers.
  *
  * Config hierarchy (highest priority first):
  *   1. Environment variables (VERS_API_KEY, VERS_AUTH_TOKEN, etc.)
- *   2. Reef store values (set via API or tools)
+ *   2. Reef override file values (set via API or tools)
  *   3. File-based fallbacks (~/.vers/keys.json, etc.)
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { Hono } from "hono";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { Hono } from "hono";
 import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
 
 // =============================================================================
@@ -37,8 +37,24 @@ interface VersConfig {
   agentRole: string | null;
 }
 
-/** Stored overrides (set via API, persisted in reef store) */
+const OVERRIDES_PATH = join(process.cwd(), "data", "vers-config.json");
+
+/** Stored overrides (set via API, persisted in reef data dir) */
 const overrides: Record<string, string> = {};
+
+function loadOverrides() {
+  try {
+    if (!existsSync(OVERRIDES_PATH)) return;
+    Object.assign(overrides, JSON.parse(readFileSync(OVERRIDES_PATH, "utf-8")));
+  } catch {
+    // Fall back to empty overrides on malformed data.
+  }
+}
+
+function saveOverrides() {
+  mkdirSync(join(process.cwd(), "data"), { recursive: true });
+  writeFileSync(OVERRIDES_PATH, JSON.stringify(overrides, null, 2));
+}
 
 function loadFileConfig(filename: string): Record<string, unknown> {
   try {
@@ -130,6 +146,7 @@ routes.put("/:key", async (c) => {
   }
 
   overrides[key] = body.value;
+  saveOverrides();
   return c.json({ key, set: true, source: "store" });
 });
 
@@ -138,6 +155,7 @@ routes.delete("/:key", (c) => {
   const key = c.req.param("key").toUpperCase();
   if (overrides[key]) {
     delete overrides[key];
+    saveOverrides();
     return c.json({ key, deleted: true });
   }
   return c.json({ error: "Key not found in overrides" }, 404);
@@ -168,28 +186,21 @@ routes.get("/resolve/:key", (c) => {
   });
 });
 
-// =============================================================================
-// Module export
-// =============================================================================
-
-let storeRef: any = null;
-
 const versConfig: ServiceModule = {
   name: "vers-config",
   description: "Centralized Vers platform config resolution",
   routes,
 
-  init(ctx: ServiceContext) {
-    // Load saved overrides from reef store if available
-    const storeModule = ctx.getStore<any>("store");
-    storeRef = storeModule;
+  init(_ctx: ServiceContext) {
+    loadOverrides();
   },
 
   registerTools(pi: ExtensionAPI, client: FleetClient) {
     pi.registerTool({
       name: "vers_config_get",
       label: "Vers Config: View",
-      description: "View the current Vers platform configuration. Shows resolved values from env, store, or file sources.",
+      description:
+        "View the current Vers platform configuration. Shows resolved values from env, store, or file sources.",
       parameters: Type.Object({}),
       async execute() {
         if (!client.getBaseUrl()) return client.noUrl();

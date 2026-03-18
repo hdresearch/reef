@@ -3,10 +3,26 @@ import { createTestHarness, type TestHarness } from "../../../src/core/testing.j
 import updater from "./index.js";
 
 let t: TestHarness;
+const originalFetch = globalThis.fetch;
 const setup = (async () => {
   t = await createTestHarness({ services: [updater] });
 })();
-afterAll(() => t?.cleanup());
+
+globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+  if (url === "https://registry.npmjs.org/@versdotsh/reef/latest") {
+    return new Response(JSON.stringify({ version: "0.3.0" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return originalFetch(input as any, init);
+};
+
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+  t?.cleanup();
+});
 
 describe("updater", () => {
   test("returns status", async () => {

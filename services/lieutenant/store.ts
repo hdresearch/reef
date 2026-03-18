@@ -232,10 +232,11 @@ export class LieutenantStore {
   }
 
   appendOutput(name: string, delta: string): void {
-    this.db.run(
-      "UPDATE lieutenants SET last_output = last_output || ?, last_activity_at = ? WHERE name = ?",
-      [delta, new Date().toISOString(), name],
-    );
+    this.db.run("UPDATE lieutenants SET last_output = last_output || ?, last_activity_at = ? WHERE name = ?", [
+      delta,
+      new Date().toISOString(),
+      name,
+    ]);
   }
 
   /** Push current lastOutput to history and reset it */
