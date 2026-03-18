@@ -9,22 +9,36 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import type { FleetClient } from "../../src/core/types.js";
 
+function registerNamedTool(
+  pi: ExtensionAPI,
+  names: string[],
+  spec: Omit<Parameters<ExtensionAPI["registerTool"]>[0], "name">,
+) {
+  for (const name of names) {
+    pi.registerTool({ ...spec, name });
+  }
+}
+
 export function registerTools(pi: ExtensionAPI, client: FleetClient) {
-  // --- reef_lt_create ---
-  pi.registerTool({
-    name: "reef_lt_create",
+  registerNamedTool(pi, ["reef_lt_create", "vers_lt_create"], {
     label: "Create Lieutenant",
     description: [
       "Spawn a persistent agent session (lieutenant).",
       "Lieutenants persist across tasks, accumulate context, and support multi-turn interaction.",
-      "Set local=true to run as a local subprocess (no VM). Remote mode requires a Vers VM.",
+      "Remote mode is the default and requires a golden commit plus access to Vers.",
+      "Set local=true to run as a local subprocess instead.",
     ].join(" "),
     parameters: Type.Object({
       name: Type.String({ description: "Short name for this lieutenant (e.g., 'infra', 'billing')" }),
       role: Type.String({ description: "Role description — becomes the lieutenant's system prompt context" }),
-      local: Type.Optional(Type.Boolean({ description: "Run locally as a subprocess instead of on a VM (default: true)" })),
+      local: Type.Optional(
+        Type.Boolean({ description: "Run locally as a subprocess instead of on a VM (default: false)" }),
+      ),
       model: Type.Optional(Type.String({ description: "Model ID (e.g., claude-sonnet-4-20250514)" })),
-      commitId: Type.Optional(Type.String({ description: "Golden image commit ID for VM creation (remote mode only)" })),
+      commitId: Type.Optional(
+        Type.String({ description: "Golden image commit ID for VM creation (remote mode only)" }),
+      ),
+      anthropicApiKey: Type.Optional(Type.String({ description: "Anthropic API key override (remote or local)" })),
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
@@ -32,9 +46,10 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
         const result = await client.api<any>("POST", "/lieutenant/lieutenants", {
           name: params.name,
           role: params.role,
-          local: params.local ?? true,
+          local: params.local ?? false,
           model: params.model,
           commitId: params.commitId,
+          anthropicApiKey: params.anthropicApiKey,
         });
         const loc = result.isLocal ? "[local]" : `[VM: ${result.vmId}]`;
         return client.ok(
@@ -49,9 +64,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     },
   });
 
-  // --- reef_lt_send ---
-  pi.registerTool({
-    name: "reef_lt_send",
+  registerNamedTool(pi, ["reef_lt_send", "vers_lt_send"], {
     label: "Send to Lieutenant",
     description: [
       "Send a message to a lieutenant. Modes:",
@@ -71,10 +84,14 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
       try {
-        const result = await client.api<any>("POST", `/lieutenant/lieutenants/${encodeURIComponent(params.name)}/send`, {
-          message: params.message,
-          mode: params.mode,
-        });
+        const result = await client.api<any>(
+          "POST",
+          `/lieutenant/lieutenants/${encodeURIComponent(params.name)}/send`,
+          {
+            message: params.message,
+            mode: params.mode,
+          },
+        );
         const msg = params.message;
         const preview = msg.length > 120 ? `${msg.slice(0, 120)}...` : msg;
         const note = result.note ? ` (${result.note})` : "";
@@ -85,15 +102,16 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     },
   });
 
-  // --- reef_lt_read ---
-  pi.registerTool({
-    name: "reef_lt_read",
+  registerNamedTool(pi, ["reef_lt_read", "vers_lt_read"], {
     label: "Read Lieutenant Output",
-    description: "Read output from a lieutenant. Shows current response if working, or last completed response if idle.",
+    description:
+      "Read output from a lieutenant. Shows current response if working, or last completed response if idle.",
     parameters: Type.Object({
       name: Type.String({ description: "Lieutenant name" }),
       tail: Type.Optional(Type.Number({ description: "Characters from end (default: all)" })),
-      history: Type.Optional(Type.Number({ description: "Number of previous responses to include (default: 0, max: 20)" })),
+      history: Type.Optional(
+        Type.Number({ description: "Number of previous responses to include (default: 0, max: 20)" }),
+      ),
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
@@ -119,9 +137,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     },
   });
 
-  // --- reef_lt_status ---
-  pi.registerTool({
-    name: "reef_lt_status",
+  registerNamedTool(pi, ["reef_lt_status", "vers_lt_status"], {
     label: "Lieutenant Status",
     description: "Overview of all lieutenants: status, role, task count, last activity.",
     parameters: Type.Object({}),
@@ -159,9 +175,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     },
   });
 
-  // --- reef_lt_pause ---
-  pi.registerTool({
-    name: "reef_lt_pause",
+  registerNamedTool(pi, ["reef_lt_pause", "vers_lt_pause"], {
     label: "Pause Lieutenant",
     description:
       "Pause a lieutenant's VM. Preserves full state (memory + disk). Can be resumed later. Only works for remote (VM) lieutenants.",
@@ -179,9 +193,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     },
   });
 
-  // --- reef_lt_resume ---
-  pi.registerTool({
-    name: "reef_lt_resume",
+  registerNamedTool(pi, ["reef_lt_resume", "vers_lt_resume"], {
     label: "Resume Lieutenant",
     description: "Resume a paused lieutenant. VM resumes from exact state including the pi session.",
     parameters: Type.Object({
@@ -198,9 +210,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     },
   });
 
-  // --- reef_lt_destroy ---
-  pi.registerTool({
-    name: "reef_lt_destroy",
+  registerNamedTool(pi, ["reef_lt_destroy", "vers_lt_destroy"], {
     label: "Destroy Lieutenant",
     description: "Tear down a lieutenant — kills pi process, removes from tracking. Pass name='*' to destroy all.",
     parameters: Type.Object({
@@ -221,9 +231,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     },
   });
 
-  // --- reef_lt_discover ---
-  pi.registerTool({
-    name: "reef_lt_discover",
+  registerNamedTool(pi, ["reef_lt_discover", "vers_lt_discover"], {
     label: "Discover Lieutenants",
     description:
       "Discover running lieutenants from the registry and reconnect to them. Use after session restart to recover lieutenant state.",

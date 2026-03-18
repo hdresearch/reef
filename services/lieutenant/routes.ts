@@ -3,23 +3,30 @@
  */
 
 import { Hono } from "hono";
+import type { LieutenantRuntime } from "./runtime.js";
 import type { LieutenantStore, LtStatus } from "./store.js";
 import { ConflictError, NotFoundError, ValidationError } from "./store.js";
-import type { LieutenantRuntime } from "./runtime.js";
 
-export function createRoutes(store: LieutenantStore, runtime: LieutenantRuntime): Hono {
+export function createRoutes(store: LieutenantStore, getRuntime: () => LieutenantRuntime): Hono {
   const routes = new Hono();
 
   // POST /lieutenants — create a new lieutenant
   routes.post("/lieutenants", async (c) => {
     try {
       const body = await c.req.json();
-      const { name, role, local, model, commitId } = body;
+      const { name, role, local, model, commitId, anthropicApiKey } = body;
 
       if (!name || typeof name !== "string") return c.json({ error: "name is required" }, 400);
       if (!role || typeof role !== "string") return c.json({ error: "role is required" }, 400);
 
-      const lt = await runtime.create({ name, role, isLocal: !!local, model, commitId });
+      const lt = await getRuntime().create({
+        name,
+        role,
+        isLocal: !!local,
+        model,
+        commitId,
+        anthropicApiKey,
+      });
       return c.json(lt, 201);
     } catch (e) {
       if (e instanceof ValidationError) return c.json({ error: e.message }, 400);
@@ -49,7 +56,7 @@ export function createRoutes(store: LieutenantStore, runtime: LieutenantRuntime)
       const { message, mode } = body;
       if (!message || typeof message !== "string") return c.json({ error: "message is required" }, 400);
 
-      const result = await runtime.send(c.req.param("name"), message, mode);
+      const result = await getRuntime().send(c.req.param("name"), message, mode);
       return c.json(result);
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
@@ -67,7 +74,13 @@ export function createRoutes(store: LieutenantStore, runtime: LieutenantRuntime)
     const lt = store.getByName(name);
     if (!lt || lt.status === "destroyed") return c.json({ error: "Lieutenant not found" }, 404);
 
-    let output = lt.lastOutput || "(no output yet)";
+    let output = lt.lastOutput;
+    if (!output && lt.status !== "working") {
+      output = lt.outputHistory.at(-1) || "";
+    }
+    if (!output) {
+      output = "(no output yet)";
+    }
     if (tail && output.length > tail) {
       output = `...${output.slice(-tail)}`;
     }
@@ -97,7 +110,7 @@ export function createRoutes(store: LieutenantStore, runtime: LieutenantRuntime)
   // POST /lieutenants/:name/pause — pause a lieutenant
   routes.post("/lieutenants/:name/pause", async (c) => {
     try {
-      const result = await runtime.pause(c.req.param("name"));
+      const result = await getRuntime().pause(c.req.param("name"));
       return c.json(result);
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
@@ -109,7 +122,7 @@ export function createRoutes(store: LieutenantStore, runtime: LieutenantRuntime)
   // POST /lieutenants/:name/resume — resume a paused lieutenant
   routes.post("/lieutenants/:name/resume", async (c) => {
     try {
-      const result = await runtime.resume(c.req.param("name"));
+      const result = await getRuntime().resume(c.req.param("name"));
       return c.json(result);
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
@@ -122,7 +135,7 @@ export function createRoutes(store: LieutenantStore, runtime: LieutenantRuntime)
   routes.delete("/lieutenants/:name", async (c) => {
     try {
       const name = c.req.param("name");
-      const result = await runtime.destroy(name);
+      const result = await getRuntime().destroy(name);
       return c.json(result);
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
@@ -132,13 +145,13 @@ export function createRoutes(store: LieutenantStore, runtime: LieutenantRuntime)
 
   // POST /lieutenants/destroy-all — destroy all lieutenants
   routes.post("/lieutenants/destroy-all", async (c) => {
-    const results = await runtime.destroyAll();
+    const results = await getRuntime().destroyAll();
     return c.json({ results });
   });
 
   // POST /lieutenants/discover — discover lieutenants from registry
   routes.post("/lieutenants/discover", async (c) => {
-    const results = await runtime.discover();
+    const results = await getRuntime().discover();
     return c.json({ results });
   });
 

@@ -8,7 +8,7 @@
  *   - Config diff between VMs
  */
 
-import type { FleetClient, ServiceModule } from "../../src/core/types.js";
+import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
 import { registerBehaviors } from "./behaviors.js";
 import { createRoutes } from "./routes.js";
 import { RegistryStore } from "./store.js";
@@ -20,6 +20,49 @@ const registry: ServiceModule = {
   name: "registry",
   description: "VM service discovery — SQLite-backed with lineage tracking",
   routes: createRoutes(store),
+
+  init(ctx: ServiceContext) {
+    ctx.events.on("lieutenant:created", (data: any) => {
+      if (!data?.vmId || data.isLocal) return;
+      store.register({
+        id: data.vmId,
+        name: data.name,
+        role: "lieutenant",
+        address: data.address || `${data.vmId}.vm.vers.sh`,
+        parentVmId: data.parentVmId || undefined,
+        registeredBy: "lieutenant-service",
+        metadata: {
+          role: data.role,
+          createdAt: data.createdAt,
+          commitId: data.commitId,
+          registeredVia: data.reconnected ? "lieutenant:reconnected" : "lieutenant:created",
+        },
+      });
+    });
+
+    ctx.events.on("lieutenant:paused", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "paused" });
+      } catch {
+        // Ignore out-of-order lifecycle events.
+      }
+    });
+
+    ctx.events.on("lieutenant:resumed", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "running" });
+      } catch {
+        // Ignore out-of-order lifecycle events.
+      }
+    });
+
+    ctx.events.on("lieutenant:destroyed", (data: any) => {
+      if (!data?.vmId) return;
+      store.deregister(data.vmId);
+    });
+  },
 
   store: {
     flush() {

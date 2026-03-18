@@ -13,10 +13,10 @@
  *   Infra VM       — reef + core + specific service module
  */
 
-import { Hono } from "hono";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
+import { Hono } from "hono";
+import type { FleetClient, ServiceModule } from "../../src/core/types.js";
 
 // =============================================================================
 // Types
@@ -168,27 +168,27 @@ ENVEOF
 set -a; source .env; set +a
 
 # ===== 7. Selective module loading =====
-# Core services directory is always loaded.
-# For non-full profiles, we remove services that aren't in the DNA.
+# Reef discovers services from SERVICES_DIR. Build a curated directory so the
+# selected DNA actually controls which service modules load.
 ACTIVE_ORGANS="${profile.organs.join(" ")}"
 echo "[boot] Active organs: $ACTIVE_ORGANS"
 
 ${
   req.type !== "full"
     ? `
-# Disable non-DNA services by creating .disabled marker
-for dir in services/*/; do
+# Build an active services directory with symlinks to the selected modules
+rm -rf /root/reef/services-active
+mkdir -p /root/reef/services-active
+for dir in /root/reef/services/*/; do
   svc=$(basename "$dir")
-  if ! echo "$ACTIVE_ORGANS" | grep -qw "$svc"; then
-    touch "$dir/.disabled"
-    echo "[boot] Disabled: $svc"
-  else
-    rm -f "$dir/.disabled" 2>/dev/null
+  if echo "$ACTIVE_ORGANS" | grep -qw "$svc"; then
+    ln -s "../services/$svc" "/root/reef/services-active/$svc"
     echo "[boot] Enabled: $svc"
   fi
 done
+export SERVICES_DIR=/root/reef/services-active
 `
-    : "# Full profile — all services enabled"
+    : 'export SERVICES_DIR="/root/reef/services"'
 }
 
 ${
@@ -206,7 +206,7 @@ if [ -d /root/.pi/extensions ]; then
 fi
 cd /root/reef
 `
-    : "# Skipping pi-vers (not needed for ${req.type} VMs)"
+    : `# Skipping pi-vers (not needed for ${req.type} VMs)`
 }
 
 # ===== 9. Register in roof reef's VM tree =====
@@ -327,10 +327,10 @@ routes.get("/script/:type", (c) => {
   if (!PROFILES[type]) return c.json({ error: `Unknown VM type: ${type}` }, 404);
 
   const script = generateBootScript({
-    vmId: "${VERS_VM_ID}",
-    name: "${VERS_AGENT_NAME}",
+    vmId: "__VERS_VM_ID__",
+    name: "__VERS_AGENT_NAME__",
     type,
-    parentVmId: "${REEF_PARENT_VM_ID}",
+    parentVmId: "__REEF_PARENT_VM_ID__",
   });
 
   return new Response(script, {

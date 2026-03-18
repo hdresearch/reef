@@ -15,6 +15,7 @@ const TEST_DIR = join(import.meta.dir, ".tmp-services-inst");
 const EXTERNAL_DIR = join(import.meta.dir, ".tmp-external");
 const AUTH_TOKEN = "test-token-12345";
 const originalToken = process.env.VERS_AUTH_TOKEN;
+const originalFetch = globalThis.fetch;
 
 function req(
   app: { fetch: (req: Request) => Promise<Response> },
@@ -40,6 +41,17 @@ async function json(
 ) {
   const res = await req(app, path, opts);
   return { status: res.status, data: await res.json() };
+}
+
+function installSourceFetchProxy(baseUrl: string, app: { fetch: (req: Request) => Promise<Response> }) {
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input.toString(), init);
+    const url = new URL(request.url);
+    if (url.origin === baseUrl) {
+      return app.fetch(new Request(`http://localhost${url.pathname}${url.search}`, request));
+    }
+    return originalFetch(input as any, init);
+  };
 }
 
 function writeExternal(name: string, response: Record<string, unknown> = { external: true }) {
@@ -85,6 +97,7 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(TEST_DIR, { recursive: true, force: true });
   rmSync(EXTERNAL_DIR, { recursive: true, force: true });
+  globalThis.fetch = originalFetch;
   if (originalToken) {
     process.env.VERS_AUTH_TOKEN = originalToken;
   } else {
@@ -420,7 +433,6 @@ export default { name: "updatable-svc", routes, requiresAuth: false };
 describe("fleet-to-fleet install", () => {
   const SOURCE_DIR = join(import.meta.dir, ".tmp-source-services");
   const DEST_DIR = join(import.meta.dir, ".tmp-dest-services");
-  let sourceServer: ReturnType<typeof Bun.serve> | undefined;
 
   function setupSourceServer() {
     mkdirSync(SOURCE_DIR, { recursive: true });
@@ -469,8 +481,6 @@ export default { name: "exportable", description: "A service that can be exporte
   });
 
   afterEach(() => {
-    sourceServer?.stop();
-    sourceServer = undefined;
     rmSync(SOURCE_DIR, { recursive: true, force: true });
     rmSync(DEST_DIR, { recursive: true, force: true });
   });
@@ -478,8 +488,8 @@ export default { name: "exportable", description: "A service that can be exporte
   test("install a service from another instance", async () => {
     setupSourceServer();
     const source = await createServer({ servicesDir: SOURCE_DIR });
-    sourceServer = Bun.serve({ fetch: source.app.fetch, port: 0 });
-    const sourceUrl = `http://localhost:${sourceServer.port}`;
+    const sourceUrl = "http://source.test";
+    installSourceFetchProxy(sourceUrl, source.app);
 
     const exportCheck = await fetch(`${sourceUrl}/services/export/exportable`, {
       headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
@@ -535,8 +545,8 @@ export default { name: "exportable", description: "A service that can be exporte
   test("fails gracefully when remote service doesn't exist", async () => {
     setupSourceServer();
     const source = await createServer({ servicesDir: SOURCE_DIR });
-    sourceServer = Bun.serve({ fetch: source.app.fetch, port: 0 });
-    const sourceUrl = `http://localhost:${sourceServer.port}`;
+    const sourceUrl = "http://source.test";
+    installSourceFetchProxy(sourceUrl, source.app);
 
     const { app } = await setupDestServer();
     const { status, data } = await json(app, "/installer/install", {
@@ -551,8 +561,8 @@ export default { name: "exportable", description: "A service that can be exporte
   test("update re-pulls from the same remote", async () => {
     setupSourceServer();
     const source = await createServer({ servicesDir: SOURCE_DIR });
-    sourceServer = Bun.serve({ fetch: source.app.fetch, port: 0 });
-    const sourceUrl = `http://localhost:${sourceServer.port}`;
+    const sourceUrl = "http://source.test";
+    installSourceFetchProxy(sourceUrl, source.app);
 
     const { app } = await setupDestServer();
     await json(app, "/installer/install", {

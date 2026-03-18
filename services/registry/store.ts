@@ -10,7 +10,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { ulid } from "ulid";
 
 // =============================================================================
 // Types
@@ -175,7 +174,11 @@ export class RegistryStore {
           JSON.stringify(input.reefConfig || existing.reefConfig),
           input.registeredBy.trim(),
           now,
-          input.metadata ? JSON.stringify(input.metadata) : (existing.metadata ? JSON.stringify(existing.metadata) : null),
+          input.metadata
+            ? JSON.stringify(input.metadata)
+            : existing.metadata
+              ? JSON.stringify(existing.metadata)
+              : null,
           input.id,
         ],
       );
@@ -315,10 +318,7 @@ export class RegistryStore {
 
   /** Get all direct children of a VM */
   children(vmId: string): VM[] {
-    return this.db
-      .query("SELECT * FROM vms WHERE parent_vm_id = ? ORDER BY registered_at")
-      .all(vmId)
-      .map(rowToVM);
+    return this.db.query("SELECT * FROM vms WHERE parent_vm_id = ? ORDER BY registered_at").all(vmId).map(rowToVM);
   }
 
   /** Get ancestors from a VM up to the root */
