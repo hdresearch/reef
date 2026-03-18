@@ -23,6 +23,13 @@ const ORIGINAL_ENV = {
   VERS_AGENT_NAME: process.env.VERS_AGENT_NAME,
 };
 
+function createJsonResponse(payload: unknown, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 function restoreEnv() {
   for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
     if (value === undefined) {
@@ -205,6 +212,88 @@ describe("lieutenant routes and runtime", () => {
     expect(destroyed.status).toBe(200);
     expect(destroyed.data.destroyed).toBe(true);
     expect(store.getByName("local-alpha")?.status).toBe("destroyed");
+
+    await runtime.shutdown();
+    store.close();
+  });
+
+  test("registers a remote reef lieutenant and syncs status/output over HTTP", async () => {
+    const store = new LieutenantStore(join(TMP_DIR, "remote-runtime.sqlite"));
+    const fetchCalls: Array<{ method: string; url: string; body?: any }> = [];
+    let remoteTaskStatus: "missing" | "running" | "done" = "missing";
+    let leafId = "leaf-1";
+
+    const runtime = new LieutenantRuntime({
+      events: new ServiceEventBus(),
+      store,
+      getVmState: async () => "running",
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        const method = init?.method || "GET";
+        const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+        fetchCalls.push({ method, url, body });
+
+        if (url.endsWith("/reef/tasks/lt-remote-http")) {
+          if (remoteTaskStatus === "missing") return createJsonResponse({ error: "not found" }, 404);
+          if (remoteTaskStatus === "running") {
+            return createJsonResponse({ name: "lt-remote-http", status: "running", leafId, nodes: [] });
+          }
+          return createJsonResponse({
+            name: "lt-remote-http",
+            status: "done",
+            leafId,
+            nodes: [
+              { id: "u-1", parentId: null, role: "user", content: "hello remote" },
+              { id: "a-1", parentId: "u-1", role: "assistant", content: "remote-output" },
+            ],
+          });
+        }
+
+        if (url.endsWith("/reef/submit")) {
+          remoteTaskStatus = "running";
+          return createJsonResponse({ id: "lt-remote-http", status: "running", nodeId: "u-2" }, 202);
+        }
+
+        return createJsonResponse({ error: "unexpected" }, 500);
+      },
+    });
+    const app = createRoutes(store, () => runtime);
+
+    const registered = await json(app, "/lieutenants/register", {
+      method: "POST",
+      body: {
+        name: "remote-http",
+        role: "remote reef lieutenant",
+        vmId: "vm-remote-1",
+      },
+    });
+    expect(registered.status).toBe(201);
+    expect(registered.data.isLocal).toBe(false);
+    expect(registered.data.status).toBe("idle");
+
+    const listBeforeSend = await json(app, "/lieutenants", {});
+    expect(listBeforeSend.status).toBe(200);
+    expect(listBeforeSend.data.count).toBe(1);
+
+    const sent = await json(app, "/lieutenants/remote-http/send", {
+      method: "POST",
+      body: { message: "hello remote" },
+    });
+    expect(sent.status).toBe(200);
+    expect(sent.data.sent).toBe(true);
+    expect(store.getByName("remote-http")?.status).toBe("working");
+
+    remoteTaskStatus = "done";
+    leafId = "a-1";
+
+    const read = await json(app, "/lieutenants/remote-http/read");
+    expect(read.status).toBe(200);
+    expect(read.data.status).toBe("idle");
+    expect(read.data.output).toContain("remote-output");
+    expect(store.getByName("remote-http")?.outputHistory.at(-1)).toBe("remote-output");
+
+    const submitCall = fetchCalls.find((call) => call.url.endsWith("/reef/submit"));
+    expect(submitCall?.body.taskId).toBe("lt-remote-http");
 
     await runtime.shutdown();
     store.close();

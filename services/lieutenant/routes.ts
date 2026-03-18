@@ -35,15 +35,35 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
     }
   });
 
+  routes.post("/lieutenants/register", async (c) => {
+    try {
+      const body = await c.req.json();
+      const { name, role, vmId, parentAgent } = body;
+
+      if (!name || typeof name !== "string") return c.json({ error: "name is required" }, 400);
+      if (!role || typeof role !== "string") return c.json({ error: "role is required" }, 400);
+      if (!vmId || typeof vmId !== "string") return c.json({ error: "vmId is required" }, 400);
+
+      const lt = await getRuntime().registerRemote({ name, role, vmId, parentAgent });
+      return c.json(lt, 201);
+    } catch (e) {
+      if (e instanceof ValidationError) return c.json({ error: e.message }, 400);
+      if (e instanceof ConflictError) return c.json({ error: e.message }, 409);
+      throw e;
+    }
+  });
+
   // GET /lieutenants — list all active lieutenants
-  routes.get("/lieutenants", (c) => {
+  routes.get("/lieutenants", async (c) => {
+    await getRuntime().refreshAll();
     const status = c.req.query("status") as LtStatus | undefined;
     const lts = store.list(status ? { status } : undefined);
     return c.json({ lieutenants: lts, count: lts.length });
   });
 
   // GET /lieutenants/:name — get a lieutenant by name
-  routes.get("/lieutenants/:name", (c) => {
+  routes.get("/lieutenants/:name", async (c) => {
+    await getRuntime().refresh(c.req.param("name"));
     const lt = store.getByName(c.req.param("name"));
     if (!lt || lt.status === "destroyed") return c.json({ error: "Lieutenant not found" }, 404);
     return c.json(lt);
@@ -66,10 +86,12 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
   });
 
   // GET /lieutenants/:name/read — read lieutenant output
-  routes.get("/lieutenants/:name/read", (c) => {
+  routes.get("/lieutenants/:name/read", async (c) => {
     const name = c.req.param("name");
     const tail = c.req.query("tail") ? parseInt(c.req.query("tail")!, 10) : undefined;
     const history = c.req.query("history") ? parseInt(c.req.query("history")!, 10) : undefined;
+
+    await getRuntime().refresh(name);
 
     const lt = store.getByName(name);
     if (!lt || lt.status === "destroyed") return c.json({ error: "Lieutenant not found" }, 404);

@@ -102,6 +102,16 @@ const lieutenant: ServiceModule = {
       query: { status: { type: "string", description: "Filter by status" } },
       response: "{ lieutenants: [...], count }",
     },
+    "POST /lieutenants/register": {
+      summary: "Register an already-bootstrapped remote reef node as a lieutenant",
+      body: {
+        name: { type: "string", required: true, description: "Lieutenant name" },
+        role: { type: "string", required: true, description: "Role label for the lieutenant" },
+        vmId: { type: "string", required: true, description: "Vers VM ID for the remote reef node" },
+        parentAgent: { type: "string", description: "Optional parent/root agent name" },
+      },
+      response: "The registered lieutenant object",
+    },
     "GET /lieutenants/:name": {
       summary: "Get a lieutenant by name",
       params: { name: { type: "string", required: true, description: "Lieutenant name" } },

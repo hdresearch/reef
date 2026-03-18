@@ -25,6 +25,8 @@ import { ConflictError, NotFoundError, ValidationError } from "./store.js";
 export interface LieutenantRuntimeOptions {
   events: ServiceEventBus;
   store: LieutenantStore;
+  fetchImpl?: typeof fetch;
+  getVmState?: typeof getVersVmState;
 }
 
 interface CreateParams {
@@ -40,10 +42,14 @@ export class LieutenantRuntime {
   private readonly handles = new Map<string, RpcHandle>();
   private readonly events: ServiceEventBus;
   private readonly store: LieutenantStore;
+  private readonly fetchImpl: typeof fetch;
+  private readonly getVmState: typeof getVersVmState;
 
   constructor(opts: LieutenantRuntimeOptions) {
     this.events = opts.events;
     this.store = opts.store;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.getVmState = opts.getVmState ?? getVersVmState;
   }
 
   private ensureNameAvailable(name: string): void {
@@ -64,6 +70,157 @@ export class LieutenantRuntime {
       parentVmId: process.env.VERS_VM_ID || null,
       ...extra,
     };
+  }
+
+  private remoteBaseUrl(lt: Lieutenant): string {
+    return `https://${lt.vmId}.vm.vers.sh:3000`;
+  }
+
+  private remoteTaskId(name: string): string {
+    return `lt-${name}`;
+  }
+
+  private authHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (process.env.VERS_AUTH_TOKEN) {
+      headers.Authorization = `Bearer ${process.env.VERS_AUTH_TOKEN}`;
+    }
+    return headers;
+  }
+
+  private async remoteRequest<T>(
+    lt: Lieutenant,
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; payload: T | null }> {
+    const response = await this.fetchImpl(`${this.remoteBaseUrl(lt)}${path}`, {
+      method,
+      headers: this.authHeaders(),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+    const text = await response.text();
+    const payload = text ? (JSON.parse(text) as T) : null;
+    return { status: response.status, payload };
+  }
+
+  private extractRemoteOutput(task: any): string {
+    const nodes = Array.isArray(task?.nodes) ? task.nodes : [];
+    for (let index = nodes.length - 1; index >= 0; index -= 1) {
+      const node = nodes[index];
+      if (node?.role === "assistant" && typeof node.content === "string" && node.content.trim()) {
+        return node.content.trim();
+      }
+    }
+
+    if (typeof task?.artifacts?.summary === "string" && task.artifacts.summary.trim()) {
+      return task.artifacts.summary.trim();
+    }
+
+    return "";
+  }
+
+  private async waitForRemoteReef(lt: Lieutenant, timeoutMs = 60_000): Promise<void> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        const response = await this.fetchImpl(`${this.remoteBaseUrl(lt)}/health`);
+        if (response.ok) return;
+      } catch {
+        // retry until timeout
+      }
+      await Bun.sleep(2_000);
+    }
+
+    throw new Error(`Timed out waiting for reef health on ${lt.vmId}`);
+  }
+
+  private async syncRemoteLieutenant(input: string | Lieutenant): Promise<Lieutenant | undefined> {
+    const lt = typeof input === "string" ? this.store.getByName(input) : input;
+    if (!lt || lt.isLocal) return lt;
+    if (this.handles.get(lt.name)?.isAlive()) return lt;
+    if (!lt.vmId) return lt;
+
+    try {
+      const vmState = await this.getVmState(lt.vmId);
+      if (vmState === "Paused" || vmState === "paused") {
+        return this.store.update(lt.name, { status: "paused" });
+      }
+      if (vmState !== "Running" && vmState !== "running") {
+        return this.store.update(lt.name, { status: "error" });
+      }
+    } catch {
+      return this.store.update(lt.name, { status: "error" });
+    }
+
+    let taskPayload: any = null;
+    try {
+      const task = await this.remoteRequest<any>(
+        lt,
+        "GET",
+        `/reef/tasks/${encodeURIComponent(this.remoteTaskId(lt.name))}`,
+      );
+      if (task.status === 404) {
+        return this.store.update(lt.name, { status: "idle" });
+      }
+      if (task.status >= 400 || !task.payload) {
+        return this.store.update(lt.name, { status: "error" });
+      }
+      taskPayload = task.payload;
+    } catch {
+      return this.store.update(lt.name, { status: "error" });
+    }
+
+    const taskStatus = taskPayload?.status;
+    if (taskStatus === "running") {
+      return this.store.update(lt.name, { status: "working" });
+    }
+
+    const nextStatus = taskStatus === "error" ? "error" : "idle";
+    const output = this.extractRemoteOutput(taskPayload);
+    const current = this.store.getByName(lt.name);
+    const lastHistory = current?.outputHistory.at(-1) || "";
+
+    if (output && output !== lastHistory) {
+      this.store.update(lt.name, { status: nextStatus, lastOutput: output });
+      this.store.rotateOutput(lt.name);
+    } else {
+      this.store.update(lt.name, { status: nextStatus });
+    }
+
+    return this.store.getByName(lt.name);
+  }
+
+  async refresh(name: string): Promise<Lieutenant | undefined> {
+    return this.syncRemoteLieutenant(name);
+  }
+
+  async refreshAll(): Promise<void> {
+    for (const lt of this.store.list()) {
+      await this.syncRemoteLieutenant(lt);
+    }
+  }
+
+  async registerRemote(params: {
+    name: string;
+    role: string;
+    vmId: string;
+    parentAgent?: string;
+  }): Promise<Lieutenant> {
+    const { name, role, vmId, parentAgent } = params;
+    this.ensureNameAvailable(name);
+
+    const lt = this.store.create({
+      name,
+      role,
+      vmId,
+      isLocal: false,
+      parentAgent,
+    });
+
+    await this.syncRemoteLieutenant(lt);
+    return this.store.getByName(name)!;
   }
 
   async create(params: CreateParams): Promise<Lieutenant> {
@@ -170,7 +327,52 @@ export class LieutenantRuntime {
 
     const handle = this.handles.get(name);
     if (!handle || !handle.isAlive()) {
-      throw new ValidationError(`No active RPC connection for '${name}'`);
+      if (lt.isLocal) {
+        throw new ValidationError(`No active RPC connection for '${name}'`);
+      }
+
+      const current = (await this.syncRemoteLieutenant(name)) || this.store.getByName(name);
+      if (!current) throw new NotFoundError(`Lieutenant '${name}' not found`);
+      if (current.status === "paused") {
+        throw new ValidationError(`Lieutenant '${name}' is paused. Resume it first.`);
+      }
+      if (current.status === "working") {
+        throw new ValidationError(
+          `Lieutenant '${name}' is already working. Remote reef lieutenants do not support queued follow-ups or steer yet.`,
+        );
+      }
+
+      let actualMode = mode || "prompt";
+      let note: string | undefined;
+      if (actualMode === "steer") {
+        actualMode = "followUp";
+        note = "steer is treated as a follow-up continuation for remote reef lieutenants";
+      }
+
+      const existingTask = await this.remoteRequest<any>(
+        current,
+        "GET",
+        `/reef/tasks/${encodeURIComponent(this.remoteTaskId(name))}`,
+      );
+      const body: Record<string, string> = {
+        task: message,
+        taskId: this.remoteTaskId(name),
+      };
+      if (existingTask.status !== 404 && existingTask.payload?.leafId) {
+        body.parentId = existingTask.payload.leafId;
+      }
+
+      const submitted = await this.remoteRequest<any>(current, "POST", "/reef/submit", body);
+      if (submitted.status >= 400) {
+        throw new ValidationError(`Remote reef submit failed for '${name}'`);
+      }
+
+      this.store.update(name, {
+        status: "working",
+        taskCount: current.taskCount + 1,
+        lastOutput: "",
+      });
+      return { sent: true, mode: actualMode, note };
     }
 
     let actualMode = mode || "prompt";
@@ -223,18 +425,25 @@ export class LieutenantRuntime {
     if (!lt.vmId) throw new ValidationError(`Lieutenant '${name}' has no VM attached`);
 
     await setVersVmState(lt.vmId, "Running");
-    await waitForRemoteRpcSession(lt.vmId);
-
     const existingHandle = this.handles.get(name);
     if (existingHandle?.reconnectTail) {
+      await waitForRemoteRpcSession(lt.vmId);
       existingHandle.reconnectTail();
-    } else {
+      this.store.update(name, { status: "idle" });
+    } else if (existingHandle) {
+      await waitForRemoteRpcSession(lt.vmId);
       const handle = await reconnectRemoteRpcAgent(lt.vmId);
       this.handles.set(name, handle);
       this.installEventHandler(name);
+      this.store.update(name, { status: "idle" });
+    } else {
+      await this.waitForRemoteReef(lt);
+      await this.syncRemoteLieutenant(name);
+      const refreshed = this.store.getByName(name);
+      if (refreshed && refreshed.status === "paused") {
+        this.store.update(name, { status: "idle" });
+      }
     }
-
-    this.store.update(name, { status: "idle" });
     this.events.fire("lieutenant:resumed", this.buildCreateEvent(this.store.getByName(name)!));
     return { resumed: true };
   }
@@ -324,32 +533,11 @@ export class LieutenantRuntime {
 
     for (const [name, candidate] of candidates) {
       try {
-        const state = await getVersVmState(candidate.vmId);
-        if (state === "Paused" || state === "paused") {
-          this.store.update(name, { status: "paused" });
-          results.push(`${name}: available (paused, VM ${candidate.vmId.slice(0, 12)})`);
-          continue;
-        }
-        if (state !== "Running" && state !== "running") {
-          results.push(`${name}: VM ${candidate.vmId.slice(0, 12)} in unexpected state "${state}"`);
-          continue;
-        }
-
-        const handle = await reconnectRemoteRpcAgent(candidate.vmId);
-        this.handles
-          .get(name)
-          ?.kill()
-          .catch(() => {});
-        this.handles.set(name, handle);
-        this.installEventHandler(name);
-        this.store.update(name, { status: "idle" });
-        this.events.fire(
-          "lieutenant:created",
-          this.buildCreateEvent(this.store.getByName(name)!, { reconnected: true }),
-        );
-        results.push(`${name}: reconnected to VM ${candidate.vmId.slice(0, 12)}`);
+        const refreshed = await this.syncRemoteLieutenant(candidate);
+        const status = refreshed?.status || candidate.status;
+        results.push(`${name}: available (${status}, VM ${candidate.vmId.slice(0, 12)})`);
       } catch (err) {
-        results.push(`${name}: reconnect failed — ${err instanceof Error ? err.message : String(err)}`);
+        results.push(`${name}: discovery failed — ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
