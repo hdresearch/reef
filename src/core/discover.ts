@@ -12,7 +12,7 @@
  * so init() hooks can safely reference stores from upstream modules.
  */
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ServiceModule } from "./types.js";
 
@@ -38,9 +38,12 @@ export async function discoverServiceModules(servicesDir: string): Promise<Servi
   const errors: Array<{ dir: string; error: string }> = [];
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    const entryPath = join(resolved, entry.name);
+    const isDirectory = entry.isDirectory();
+    const isSymlinkedDirectory = entry.isSymbolicLink() && existsSync(entryPath) && statSync(entryPath).isDirectory();
+    if (!isDirectory && !isSymlinkedDirectory) continue;
 
-    const indexPath = join(resolved, entry.name, "index.ts");
+    const indexPath = join(entryPath, "index.ts");
     if (!existsSync(indexPath)) continue;
 
     try {

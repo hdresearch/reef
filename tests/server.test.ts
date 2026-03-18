@@ -14,6 +14,7 @@ import {
   rmSync,
   writeFileSync,
   existsSync,
+  symlinkSync,
 } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "../src/core/server.js";
@@ -161,6 +162,17 @@ describe("discovery", () => {
     const { data } = await json(app, "/health");
     expect(data.services).toContain("good");
     expect(data.services).not.toContain("empty-dir");
+  });
+
+  test("discovers symlinked service directories", async () => {
+    writeService("alpha", { requiresAuth: false });
+    symlinkSync(join(TEST_DIR, "alpha"), join(TEST_DIR, "alpha-link"), "dir");
+
+    const { app } = await createServer({ servicesDir: TEST_DIR });
+
+    const { status, data } = await json(app, "/health");
+    expect(status).toBe(200);
+    expect(data.services).toContain("alpha");
   });
 
   test("respects dependency ordering", async () => {
