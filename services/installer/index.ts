@@ -77,6 +77,10 @@ interface ParsedSource {
   dirName: string;
 }
 
+function shellQuote(value: string): string {
+  return JSON.stringify(value);
+}
+
 /**
  * Parse a source string into a structured object.
  *
@@ -169,6 +173,31 @@ function exec(cmd: string, cwd?: string): string {
   }).trim();
 }
 
+function resolveGitHeadRef(url: string): string | undefined {
+  try {
+    const output = exec(`git ls-remote --symref ${shellQuote(url)} HEAD`);
+    const match = output.match(/^ref:\s+refs\/heads\/([^\s]+)\s+HEAD$/m);
+    return match?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveGitCloneRef(url: string, explicitRef?: string): string | undefined {
+  if (explicitRef) return explicitRef;
+
+  const headRef = resolveGitHeadRef(url);
+  if (headRef) return headRef;
+
+  try {
+    const output = exec(`git ls-remote --heads ${shellQuote(url)}`);
+    const match = output.match(/refs\/heads\/([^\s]+)$/m);
+    return match?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
 async function installFromGit(parsed: ParsedSource, servicesDir: string): Promise<string> {
   const targetDir = join(servicesDir, parsed.dirName);
 
@@ -177,8 +206,9 @@ async function installFromGit(parsed: ParsedSource, servicesDir: string): Promis
   }
 
   // Clone
-  const refArg = parsed.ref ? `--branch ${parsed.ref} --single-branch` : "";
-  exec(`git clone ${refArg} ${parsed.url} ${targetDir}`);
+  const ref = resolveGitCloneRef(parsed.url, parsed.ref);
+  const refArg = ref ? `--branch ${shellQuote(ref)} --single-branch ` : "";
+  exec(`git clone ${refArg}${shellQuote(parsed.url)} ${shellQuote(targetDir)}`);
 
   // Install dependencies if package.json exists
   if (existsSync(join(targetDir, "package.json"))) {

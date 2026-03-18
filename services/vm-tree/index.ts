@@ -17,14 +17,23 @@
  * Database: data/vms.sqlite (included in starter image)
  */
 
-import { Hono } from "hono";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { Hono } from "hono";
 import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
 import type { VMCategory } from "./store.js";
 import { VMTreeStore } from "./store.js";
 
 const store = new VMTreeStore();
+let snapshotTimer: ReturnType<typeof setInterval> | null = null;
+
+function currentReefConfig(ctx: ServiceContext) {
+  const modules = ctx.getModules();
+  return {
+    organs: modules.map((mod) => mod.name).sort(),
+    capabilities: Array.from(new Set(modules.flatMap((mod) => mod.capabilities || []))).sort(),
+  };
+}
 
 // =============================================================================
 // Routes
@@ -141,7 +150,6 @@ routes.post("/snapshot", (c) => {
 
 // GET /_panel — dashboard
 routes.get("/_panel", (c) => {
-  const allVMs = store.list();
   const stats = store.stats();
   const tree = store.tree();
 
@@ -193,7 +201,11 @@ routes.get("/_panel", (c) => {
   <div class="stats">
     ${stats.total} VM${stats.total !== 1 ? "s" : ""} |
     ${stats.roots} root${stats.roots !== 1 ? "s" : ""} |
-    ${Object.entries(stats.byCategory).map(([k, v]) => `${v} ${k}`).join(", ") || "empty"}
+    ${
+      Object.entries(stats.byCategory)
+        .map(([k, v]) => `${v} ${k}`)
+        .join(", ") || "empty"
+    }
   </div>
   <div class="tree">
     ${tree.length > 0 ? renderTree(tree) : '<em style="color:#666">No VMs in tree</em>'}
@@ -214,25 +226,42 @@ const vmTree: ServiceModule = {
   routes,
 
   init(ctx: ServiceContext) {
-    // Register hourly snapshot cron job if cron service is available
-    const cron = ctx.getModule("cron");
-    if (cron) {
-      // Schedule via the cron service's HTTP API
-      const port = parseInt(process.env.PORT || "3000", 10);
-      const token = process.env.VERS_AUTH_TOKEN || "";
-      fetch(`http://localhost:${port}/cron/jobs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          name: "vm-tree-snapshot",
-          schedule: "1h",
-          type: "http",
-          config: { method: "POST", path: "/vm-tree/snapshot" },
-          enabled: true,
-        }),
-      }).catch(() => {
-        /* best-effort — cron may not be ready yet */
+    const currentVmId = process.env.VERS_VM_ID;
+    if (currentVmId) {
+      store.upsert({
+        vmId: currentVmId,
+        name: process.env.VERS_AGENT_NAME || "reef",
+        category: "infra_vm",
+        reefConfig: currentReefConfig(ctx),
       });
+    }
+
+    ctx.events.on("lieutenant:created", (data: any) => {
+      if (!data?.vmId || data.isLocal) return;
+      store.upsert({
+        vmId: data.vmId,
+        name: data.name,
+        parentVmId: data.parentVmId || undefined,
+        category: "lieutenant",
+        reefConfig: {
+          organs: ["lieutenant"],
+          capabilities: ["vers-lieutenant"],
+        },
+      });
+    });
+
+    if (!snapshotTimer) {
+      snapshotTimer = setInterval(
+        () => {
+          try {
+            store.snapshot();
+            store.pruneSnapshots();
+          } catch (err) {
+            console.error(`  [vm-tree] snapshot failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        },
+        60 * 60 * 1000,
+      );
     }
   },
 
@@ -241,6 +270,10 @@ const vmTree: ServiceModule = {
       store.flush();
     },
     async close() {
+      if (snapshotTimer) {
+        clearInterval(snapshotTimer);
+        snapshotTimer = null;
+      }
       store.close();
     },
   },
@@ -273,12 +306,7 @@ const vmTree: ServiceModule = {
       parameters: Type.Object({
         name: Type.String({ description: "VM name" }),
         category: Type.Union(
-          [
-            Type.Literal("lieutenant"),
-            Type.Literal("swarm_vm"),
-            Type.Literal("agent_vm"),
-            Type.Literal("infra_vm"),
-          ],
+          [Type.Literal("lieutenant"), Type.Literal("swarm_vm"), Type.Literal("agent_vm"), Type.Literal("infra_vm")],
           { description: "VM category" },
         ),
         parentVmId: Type.Optional(Type.String({ description: "Parent VM ID in the lineage tree" })),
@@ -297,10 +325,9 @@ const vmTree: ServiceModule = {
         if (!client.getBaseUrl()) return client.noUrl();
         try {
           const result = await client.api<any>("POST", "/vm-tree/vms", params);
-          return client.ok(
-            `Registered "${result.name}" (${result.category}) in tree. ID: ${result.vmId}`,
-            { vm: result },
-          );
+          return client.ok(`Registered "${result.name}" (${result.category}) in tree. ID: ${result.vmId}`, {
+            vm: result,
+          });
         } catch (e: any) {
           return client.err(e.message);
         }

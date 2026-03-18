@@ -17,7 +17,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, copyFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ulid } from "ulid";
 
@@ -52,6 +52,7 @@ export interface CreateVMInput {
 
 export interface UpdateVMInput {
   name?: string;
+  parentVmId?: string | null;
   category?: VMCategory;
   reefConfig?: ReefConfig;
 }
@@ -151,6 +152,10 @@ export class VMTreeStore {
     if (input.category && !VALID_CATEGORIES.has(input.category)) {
       throw new Error(`invalid category: ${input.category}`);
     }
+    if (input.parentVmId !== undefined && input.parentVmId !== null && input.parentVmId !== vm.parentVmId) {
+      const parent = this.get(input.parentVmId);
+      if (!parent) throw new Error(`parent VM '${input.parentVmId}' not found`);
+    }
 
     const sets: string[] = [];
     const params: any[] = [];
@@ -163,6 +168,10 @@ export class VMTreeStore {
       sets.push("category = ?");
       params.push(input.category);
     }
+    if (input.parentVmId !== undefined) {
+      sets.push("parent_vm_id = ?");
+      params.push(input.parentVmId);
+    }
     if (input.reefConfig !== undefined) {
       sets.push("reef_config = ?");
       params.push(JSON.stringify(input.reefConfig));
@@ -174,6 +183,18 @@ export class VMTreeStore {
 
     this.db.run(`UPDATE vms SET ${sets.join(", ")} WHERE vm_id = ?`, params);
     return this.get(vmId)!;
+  }
+
+  upsert(input: CreateVMInput): VMNode {
+    const existing = input.vmId ? this.get(input.vmId) : undefined;
+    if (!existing) return this.create(input);
+
+    return this.update(existing.vmId, {
+      name: input.name,
+      parentVmId: input.parentVmId ?? existing.parentVmId,
+      category: input.category,
+      reefConfig: input.reefConfig ?? existing.reefConfig,
+    });
   }
 
   remove(vmId: string): boolean {
@@ -214,10 +235,7 @@ export class VMTreeStore {
   // =========================================================================
 
   children(vmId: string): VMNode[] {
-    return this.db
-      .query("SELECT * FROM vms WHERE parent_vm_id = ? ORDER BY created_at")
-      .all(vmId)
-      .map(rowToNode);
+    return this.db.query("SELECT * FROM vms WHERE parent_vm_id = ? ORDER BY created_at").all(vmId).map(rowToNode);
   }
 
   ancestors(vmId: string): VMNode[] {
@@ -307,18 +325,12 @@ export class VMTreeStore {
   /** Find VMs that have a specific organ loaded */
   findByOrgan(organ: string): VMNode[] {
     // SQLite JSON — use LIKE for simplicity since json_each requires extension
-    return this.db
-      .query(`SELECT * FROM vms WHERE reef_config LIKE ?`)
-      .all(`%"${organ}"%`)
-      .map(rowToNode);
+    return this.db.query(`SELECT * FROM vms WHERE reef_config LIKE ?`).all(`%"${organ}"%`).map(rowToNode);
   }
 
   /** Find VMs that have a specific capability */
   findByCapability(capability: string): VMNode[] {
-    return this.db
-      .query(`SELECT * FROM vms WHERE reef_config LIKE ?`)
-      .all(`%"${capability}"%`)
-      .map(rowToNode);
+    return this.db.query(`SELECT * FROM vms WHERE reef_config LIKE ?`).all(`%"${capability}"%`).map(rowToNode);
   }
 
   // =========================================================================
@@ -328,6 +340,7 @@ export class VMTreeStore {
   /** Create a snapshot of the database */
   snapshot(snapshotDir = "data/snapshots"): string {
     if (!existsSync(snapshotDir)) mkdirSync(snapshotDir, { recursive: true });
+    this.db.exec("PRAGMA wal_checkpoint(FULL)");
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const snapshotPath = join(snapshotDir, `vms-${timestamp}.sqlite`);
     copyFileSync(this.dbPath, snapshotPath);

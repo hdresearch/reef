@@ -20,9 +20,8 @@
  *         lieutenant:resumed, lieutenant:destroyed
  */
 
-import { Hono } from "hono";
-import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
 import { ServiceEventBus } from "../../src/core/events.js";
+import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
 import { createRoutes } from "./routes.js";
 import { LieutenantRuntime } from "./runtime.js";
 import { LieutenantStore } from "./store.js";
@@ -32,7 +31,7 @@ const store = new LieutenantStore();
 
 // Create runtime with a placeholder event bus — will be replaced in init()
 let runtime = new LieutenantRuntime({ events: new ServiceEventBus(), store });
-const routes = createRoutes(store, runtime);
+const routes = createRoutes(store, () => runtime);
 
 const lieutenant: ServiceModule = {
   name: "lieutenant",
@@ -40,16 +39,13 @@ const lieutenant: ServiceModule = {
   routes,
 
   init(ctx: ServiceContext) {
-    // Re-create runtime with the real event bus from the service context
     runtime = new LieutenantRuntime({
       events: ctx.events,
       store,
     });
-    // Update route handlers to use the real runtime
-    // The Hono routes capture `runtime` by reference through the closure in createRoutes,
-    // but since we re-assigned `runtime` above, we need to patch the routes object.
-    // Instead, we replace the routes property directly.
-    (lieutenant as any).routes = createRoutes(store, runtime);
+    runtime.rehydrate().catch((err) => {
+      console.error(`  [lieutenant] rehydrate failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
   },
 
   store: {
@@ -94,9 +90,10 @@ const lieutenant: ServiceModule = {
       body: {
         name: { type: "string", required: true, description: "Lieutenant name" },
         role: { type: "string", required: true, description: "Role description (becomes system prompt context)" },
-        local: { type: "boolean", description: "Run locally as subprocess (default: true)" },
+        local: { type: "boolean", description: "Run locally as subprocess (default: false)" },
         model: { type: "string", description: "Model ID" },
         commitId: { type: "string", description: "Golden image commit ID (remote mode)" },
+        anthropicApiKey: { type: "string", description: "Anthropic API key override (defaults to server env)" },
       },
       response: "The created lieutenant object",
     },
