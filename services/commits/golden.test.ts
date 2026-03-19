@@ -11,6 +11,7 @@ describe("golden bootstrap", () => {
       'export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
     );
     expect(script).toContain("export SERVICES_DIR=/root/reef/services-active");
+    expect(script).toContain("export REEF_CHILD_AGENT=true");
     expect(script).toContain('if ! grep -q "reef-agent.sh" "$shell_rc"; then');
     expect(script).toContain("printf '");
     expect(script).toContain('"$PI_PATH" install /root/pi-vers');

@@ -11,6 +11,7 @@ export function createFleetClient(): FleetClient {
   const agentName = process.env.VERS_AGENT_NAME || `agent-${process.pid}`;
   const vmId = process.env.VERS_VM_ID || undefined;
   const agentRole = process.env.VERS_AGENT_ROLE || "worker";
+  const isChildAgent = process.env.REEF_CHILD_AGENT === "true";
 
   function getBaseUrl(): string | null {
     return process.env.VERS_INFRA_URL || null;
@@ -86,6 +87,7 @@ export function createFleetClient(): FleetClient {
     agentName,
     vmId,
     agentRole,
+    isChildAgent,
     ok,
     err,
     noUrl,

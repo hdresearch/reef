@@ -13,60 +13,32 @@ afterEach(() => {
 });
 
 describe("bootloader", () => {
-  test("generate emits punkin-backed harness registration for full VMs", async () => {
-    const res = await t.json<{ script: string; profile: { capabilities: string[] } }>("/bootloader/generate", {
-      method: "POST",
-      auth: true,
-      body: {
-        vmId: "vm-test-1",
-        name: "lt-alpha",
-        type: "full",
-        parentVmId: "vm-root-1",
+  test("generate emits reef-only bootstrap for infra VMs", async () => {
+    const res = await t.json<{ script: string; profile: { capabilities: string[]; services: string[] } }>(
+      "/bootloader/generate",
+      {
+        method: "POST",
+        auth: true,
+        body: {
+          vmId: "vm-test-1",
+          name: "infra-alpha",
+          type: "infra",
+          extraServices: ["ui"],
+        },
       },
-    });
+    );
 
     expect(res.status).toBe(201);
-    expect(res.data.profile.capabilities).toContain("punkin");
-    expect(res.data.script).toContain("PUNKIN_BIN=punkin");
-    expect(res.data.script).toContain("PI_PATH=punkin");
-    expect(res.data.script).toContain('"$PI_PATH" install /root/reef');
-    expect(res.data.script).toContain('"$PI_PATH" install /root/pi-vers');
-    expect(res.data.script).toContain("cat > /usr/local/bin/punkin <<'EOF'");
-    expect(res.data.script).toContain(". /etc/profile.d/reef-agent.sh");
-    expect(res.data.script).toContain(
-      'export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
-    );
-    expect(res.data.script).toContain("ln -sf /usr/local/bin/punkin /usr/local/bin/pi");
-    expect(res.data.script).toContain("Child agent VM configured to use the root reef");
-    expect(res.data.script).not.toContain("systemctl start reef");
-  });
-
-  test("generate emits punkin v1rc3 bootstrap for swarm VMs", async () => {
-    const res = await t.json<{ script: string; profile: { capabilities: string[] } }>("/bootloader/generate", {
-      method: "POST",
-      auth: true,
-      body: {
-        vmId: "vm-test-2",
-        name: "swarm-alpha",
-        type: "swarm",
-        parentVmId: "vm-lt-1",
-      },
-    });
-
-    expect(res.status).toBe(201);
-    expect(res.data.profile.capabilities).toContain("punkin");
-    expect(res.data.script).toContain("git checkout v1rc3");
-    expect(res.data.script).toContain("PUNKIN_BIN=punkin");
-    expect(res.data.script).toContain("PI_PATH=punkin");
-    expect(res.data.script).toContain('"$PI_PATH" install /root/reef');
-    expect(res.data.script).toContain('"$PI_PATH" install /root/pi-vers');
-    expect(res.data.script).toContain("cat > /usr/local/bin/punkin <<'EOF'");
-    expect(res.data.script).toContain(". /etc/profile.d/reef-agent.sh");
-    expect(res.data.script).toContain(
-      'export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
-    );
-    expect(res.data.script).toContain("ln -sf /usr/local/bin/punkin /usr/local/bin/pi");
-    expect(res.data.script).toContain("Child agent VM configured to use the root reef");
-    expect(res.data.script).not.toContain("systemctl start reef");
+    expect(res.data.profile.services).toContain("ui");
+    expect(res.data.profile.capabilities).toEqual([]);
+    expect(res.data.script).toContain("bun install");
+    expect(res.data.script).toContain("nohup bun run src/main.ts");
+    expect(res.data.script).toContain('category": "infra_vm"');
+    expect(res.data.script).toContain('role": "infra"');
+    expect(res.data.script).not.toContain("git clone https://github.com/hdresearch/pi-vers.git");
+    expect(res.data.script).not.toContain("git clone https://github.com/hdresearch/punkin-pi.git");
+    expect(res.data.script).not.toContain("install /root/pi-vers");
+    expect(res.data.script).not.toContain("install /root/reef");
+    expect(res.data.script).not.toContain("REEF_CHILD_AGENT=true");
   });
 });

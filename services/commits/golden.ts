@@ -159,6 +159,7 @@ export PUNKIN_BIN=punkin
 export PI_PATH=punkin
 export PI_VERS_HOME=/root/pi-vers
 export SERVICES_DIR=/root/reef/services-active
+export REEF_CHILD_AGENT=true
 ENVEOF
 chmod 0644 /etc/profile.d/reef-agent.sh
 

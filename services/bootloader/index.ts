@@ -1,16 +1,9 @@
 /**
- * Bootloader service — manages VM bootstrapping with selective module loading.
+ * Bootloader service — generates bootstrap scripts for infra-style Reef VMs.
  *
- * When a lieutenant spins up agent VMs, this service handles the boot flow:
- *   1. Prepare boot config (VM DNA: which modules + capabilities)
- *   2. Generate boot scripts for different VM types
- *   3. Track boot status and report to the VM tree
- *
- * VM Type Profiles:
- *   Full agent VM  — punkin + pi-vers + root reef extension
- *   Swarm worker   — punkin + pi-vers + root reef extension
- *   Lightweight    — punkin + root reef extension, no pi-vers
- *   Infra VM       — reef + core + specific service module
+ * Runtime agent VMs should come from the reusable golden image. The bootloader
+ * remains only for the cases where Reef needs to stand up another infra VM that
+ * runs its own local Reef server with a selected service set.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -22,13 +15,12 @@ import type { FleetClient, ServiceModule } from "../../src/core/types.js";
 // Types
 // =============================================================================
 
-export type VMType = "full" | "swarm" | "lightweight" | "infra";
+export type VMType = "infra";
 
 export interface BootProfile {
   type: VMType;
   services: string[];
   capabilities: string[];
-  installPiVers: boolean;
   description: string;
 }
 
@@ -56,32 +48,10 @@ export interface BootResult {
 // =============================================================================
 
 const PROFILES: Record<VMType, BootProfile> = {
-  full: {
-    type: "full",
-    services: ["store", "cron", "lieutenant", "registry", "vm-tree", "vers-config", "docs", "installer"],
-    capabilities: ["punkin", "vers-vm", "vers-vm-copy", "vers-swarm", "ssh"],
-    installPiVers: true,
-    description: "Full agent VM — punkin + pi-vers + root reef extension. Can promote to lieutenant.",
-  },
-  swarm: {
-    type: "swarm",
-    services: ["store", "cron"],
-    capabilities: ["punkin", "vers-vm", "vers-vm-copy", "vers-swarm"],
-    installPiVers: true,
-    description: "Swarm worker — punkin + pi-vers + root reef extension for fleet task execution.",
-  },
-  lightweight: {
-    type: "lightweight",
-    services: ["store"],
-    capabilities: ["punkin"],
-    installPiVers: false,
-    description: "Lightweight worker — punkin + root reef extension, no pi-vers. For short-lived sessions.",
-  },
   infra: {
     type: "infra",
     services: ["store", "cron", "docs"],
     capabilities: [],
-    installPiVers: false,
     description: "Infra VM — core reef + specific service. For Gitea, MinIO, persistent services.",
   },
 };
@@ -104,7 +74,6 @@ export function generateBootScript(req: BootRequest): string {
   }
 
   const roofUrl = req.roofReefUrl || process.env.VERS_INFRA_URL || "http://localhost:3000";
-  const shouldStartLocalReef = req.type === "infra";
 
   return `#!/bin/bash
 # Reef bootloader — auto-generated for ${req.name} (${req.type})
@@ -153,67 +122,12 @@ else
   }
 fi
 
-# ===== 6. Clone/update pi-vers =====
-if [ -d /root/pi-vers ]; then
-  echo "[boot] Updating existing pi-vers..."
-  cd /root/pi-vers && git pull --ff-only 2>/dev/null || true
-else
-  echo "[boot] Cloning pi-vers..."
-  git clone https://github.com/hdresearch/pi-vers.git /root/pi-vers 2>/dev/null || true
-fi
-
-# ===== 7. Clone/update punkin-pi =====
-if [ -d /root/punkin-pi ]; then
-  echo "[boot] Updating existing punkin-pi..."
-  cd /root/punkin-pi && git fetch --tags --force 2>/dev/null || true
-  cd /root/punkin-pi && git checkout v1rc3 2>/dev/null || true
-else
-  echo "[boot] Cloning punkin-pi..."
-  git clone https://github.com/hdresearch/punkin-pi.git /root/punkin-pi 2>/dev/null || true
-  cd /root/punkin-pi && git checkout v1rc3 2>/dev/null || true
-fi
-
 cd /root/reef
 
-# ===== 8. Build punkin harness =====
-if [ -d /root/punkin-pi ]; then
-  cd /root/punkin-pi
-  HUSKY=0 npm install 2>/dev/null || npm install
-  npm run build 2>/dev/null || true
-  if [ -x /root/punkin-pi/builds/punkin ]; then
-    cat > /usr/local/bin/punkin <<'EOF'
-#!/bin/sh
-if [ -f /etc/profile.d/reef-agent.sh ]; then
-  set -a
-  . /etc/profile.d/reef-agent.sh
-  set +a
-fi
-exec /root/punkin-pi/builds/punkin "$@"
-EOF
-  elif [ -x /root/punkin-pi/packages/coding-agent/dist/cli.js ]; then
-    chmod +x /root/punkin-pi/packages/coding-agent/dist/cli.js
-    cat > /usr/local/bin/punkin <<'EOF'
-#!/bin/sh
-if [ -f /etc/profile.d/reef-agent.sh ]; then
-  set -a
-  . /etc/profile.d/reef-agent.sh
-  set +a
-fi
-exec /root/punkin-pi/packages/coding-agent/dist/cli.js "$@"
-EOF
-  fi
-  if [ -x /usr/local/bin/punkin ]; then
-    chmod +x /usr/local/bin/punkin
-    ln -sf /usr/local/bin/punkin /usr/local/bin/pi
-  fi
-fi
-
-cd /root/reef
-
-# ===== 9. Install dependencies =====
+# ===== 6. Install dependencies =====
 bun install --frozen-lockfile 2>/dev/null || bun install
 
-# ===== 10. Activate the local service set for the harness =====
+# ===== 7. Activate the local service set =====
 rm -rf /root/reef/services-active
 mkdir -p /root/reef/services-active
 ACTIVE_SERVICES="${profile.services.join(" ")}"
@@ -224,45 +138,7 @@ for dir in /root/reef/services/*/; do
   fi
 done
 
-# ===== 11. Configure shared agent harness =====
-mkdir -p /root/.pi/agent /root/workspace /etc/profile.d
-cat > /etc/profile.d/reef-agent.sh << 'ENVEOF'
-export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-export VERS_INFRA_URL=${roofUrl}
-export PUNKIN_BIN=punkin
-export PI_PATH=punkin
-export PI_VERS_HOME=/root/pi-vers
-export SERVICES_DIR=/root/reef/services-active
-ENVEOF
-chmod 0644 /etc/profile.d/reef-agent.sh
-for shell_rc in /root/.profile /root/.bashrc /root/.zshenv; do
-  touch "$shell_rc"
-  if ! grep -q "reef-agent.sh" "$shell_rc"; then
-    printf '\n[ -f /etc/profile.d/reef-agent.sh ] && . /etc/profile.d/reef-agent.sh\n' >> "$shell_rc"
-  fi
-done
-set -a; source /etc/profile.d/reef-agent.sh; set +a
-
-${
-  profile.installPiVers
-    ? `
-# ===== 12. Register harness packages =====
-echo "[boot] Registering root reef extension + pi-vers in harness..."
-if command -v "$PI_PATH" >/dev/null 2>&1; then
-  "$PI_PATH" install /root/reef
-  "$PI_PATH" install /root/pi-vers
-fi
-`
-    : `
-# ===== 12. Register harness packages =====
-echo "[boot] Registering root reef extension in harness..."
-if command -v "$PI_PATH" >/dev/null 2>&1; then
-  "$PI_PATH" install /root/reef
-fi
-`
-}
-
-# ===== 12. Register in roof reef's VM tree =====
+# ===== 8. Register in roof reef's VM tree =====
 echo "[boot] Registering in VM tree..."
 curl -sf -X POST "${roofUrl}/vm-tree/vms" \\
   -H "Content-Type: application/json" \\
@@ -270,25 +146,19 @@ curl -sf -X POST "${roofUrl}/vm-tree/vms" \\
   -d '{
     "vmId": "${req.vmId}",
     "name": "${req.name}",
-    "category": "${req.type === "full" ? "agent_vm" : req.type === "swarm" ? "swarm_vm" : req.type === "lightweight" ? "swarm_vm" : "infra_vm"}",
+    "category": "infra_vm",
     "parentVmId": ${req.parentVmId ? `"${req.parentVmId}"` : "null"},
     "reefConfig": ${JSON.stringify({ services: profile.services, capabilities: profile.capabilities })}
   }' 2>/dev/null || echo "[boot] VM tree registration failed (non-fatal)"
 
-${
-  shouldStartLocalReef
-    ? `
-# ===== 13. Start reef via systemd =====
+# ===== 9. Start reef via systemd =====
 cat > /root/reef/.env << 'ENVEOF'
 # Auto-generated by reef bootloader
 VERS_VM_ID=${req.vmId}
 VERS_AGENT_NAME=${req.name}
-VERS_AGENT_ROLE=${req.type}
+VERS_AGENT_ROLE=infra
 VERS_INFRA_URL=${roofUrl}
-PUNKIN_BIN=punkin
-PI_PATH=punkin
-PI_VERS_HOME=/root/pi-vers
-REEF_VM_TYPE=${req.type}
+REEF_VM_TYPE=infra
 REEF_SERVICES=${profile.services.join(",")}
 REEF_CAPABILITIES=${profile.capabilities.join(",")}
 ${req.parentVmId ? `REEF_PARENT_VM_ID=${req.parentVmId}` : ""}
@@ -318,23 +188,15 @@ if ! curl -sf http://localhost:3000/health > /dev/null 2>&1; then
   tail -20 /tmp/reef.log 2>/dev/null
   exit 1
 fi
-`
-    : `
-# ===== 13. Child agent contract =====
-echo "[boot] Child agent VM configured to use the root reef at ${roofUrl}"
-test -x /usr/local/bin/pi
-test -d /root/reef/services-active
-`
-}
 
-# ===== 14. Register in root registry =====
+# ===== 10. Register in root registry =====
 curl -sf -X POST "${roofUrl}/registry/vms" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer \${VERS_AUTH_TOKEN:-}" \\
   -d '{
     "id": "${req.vmId}",
     "name": "${req.name}",
-    "role": "${req.type === "infra" ? "infra" : "worker"}",
+    "role": "infra",
     "address": "${req.vmId}.vm.vers.sh",
     "registeredBy": "bootloader",
     "reefConfig": ${JSON.stringify({ services: profile.services, capabilities: profile.capabilities })}
@@ -373,7 +235,7 @@ routes.post("/generate", async (c) => {
     return c.json({ error: "vmId, name, and type are required" }, 400);
   }
   if (!PROFILES[type as VMType]) {
-    return c.json({ error: `Unknown VM type: ${type}. Valid: full, swarm, lightweight, infra` }, 400);
+    return c.json({ error: `Unknown VM type: ${type}. Valid: infra` }, 400);
   }
 
   const script = generateBootScript({
@@ -431,14 +293,11 @@ const bootloader: ServiceModule = {
       name: "reef_boot_generate",
       label: "Bootloader: Generate Script",
       description:
-        "Generate a boot script to bootstrap reef on a new VM. Configures modules and capabilities based on VM type.",
+        "Generate a boot script to bootstrap an infra Reef VM. Agent VMs should come from the golden image instead.",
       parameters: Type.Object({
         vmId: Type.String({ description: "VM ID to bootstrap" }),
         name: Type.String({ description: "VM name" }),
-        type: Type.Union(
-          [Type.Literal("full"), Type.Literal("swarm"), Type.Literal("lightweight"), Type.Literal("infra")],
-          { description: "VM type profile" },
-        ),
+        type: Type.Literal("infra", { description: "Bootloader only supports infra VMs" }),
         parentVmId: Type.Optional(Type.String({ description: "Parent VM ID" })),
         extraServices: Type.Optional(Type.Array(Type.String(), { description: "Additional services to include" })),
         extraOrgans: Type.Optional(
@@ -454,7 +313,6 @@ const bootloader: ServiceModule = {
               `Boot script generated for "${result.name}" (${result.type})`,
               `  Services: ${result.profile.services.join(", ")}`,
               `  Capabilities: ${result.profile.capabilities.join(", ")}`,
-              `  Pi-vers: ${result.profile.installPiVers ? "yes" : "no"}`,
               `  Script length: ${result.script.length} chars`,
               "",
               "Use SCP to copy and execute on the VM:",
@@ -472,7 +330,8 @@ const bootloader: ServiceModule = {
     pi.registerTool({
       name: "reef_boot_profiles",
       label: "Bootloader: List Profiles",
-      description: "List available VM type profiles and their default DNA (modules + capabilities).",
+      description:
+        "List available infra boot profiles. Child agent VMs should be created from the golden image instead.",
       parameters: Type.Object({}),
       async execute() {
         if (!client.getBaseUrl()) return client.noUrl();
@@ -486,7 +345,6 @@ const bootloader: ServiceModule = {
                 `  ${profile.description}`,
                 `  Services: ${profile.services.join(", ")}`,
                 `  Capabilities: ${profile.capabilities.join(", ") || "none"}`,
-                `  Pi-vers: ${profile.installPiVers ? "yes" : "no"}`,
               ].join("\n"),
             );
           }
@@ -502,19 +360,19 @@ const bootloader: ServiceModule = {
 
   routeDocs: {
     "GET /profiles": {
-      summary: "List available VM type profiles",
-      response: "{ profiles: { full, swarm, lightweight, infra } }",
+      summary: "List available infra VM boot profiles",
+      response: "{ profiles: { infra } }",
     },
     "GET /profiles/:type": {
       summary: "Get a specific VM profile",
-      params: { type: { type: "string", required: true, description: "full | swarm | lightweight | infra" } },
+      params: { type: { type: "string", required: true, description: "infra" } },
     },
     "POST /generate": {
-      summary: "Generate a boot script for a VM",
+      summary: "Generate a boot script for an infra VM",
       body: {
         vmId: { type: "string", required: true, description: "VM ID" },
         name: { type: "string", required: true, description: "VM name" },
-        type: { type: "string", required: true, description: "VM type: full | swarm | lightweight | infra" },
+        type: { type: "string", required: true, description: "VM type: infra" },
         parentVmId: { type: "string", description: "Parent VM ID" },
         extraServices: { type: "string[]", description: "Additional services to include" },
         extraOrgans: { type: "string[]", description: "Backward-compatible alias for extraServices" },
