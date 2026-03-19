@@ -18,5 +18,14 @@ describe("golden bootstrap", () => {
     expect(script).toContain('"$PI_PATH" install /root/reef');
     expect(script).toContain("chmod +x /usr/local/bin/punkin 2>/dev/null || true");
     expect(script).not.toContain("if [ -x /usr/local/bin/punkin ]");
+    expect(script).toContain("for pkg_root in /root/pi-vers /root/reef; do");
+    expect(script).toContain('ln -sfn /root/punkin-pi/packages/tui "$pkg_root/node_modules/@mariozechner/pi-tui"');
+    expect(script).toContain(
+      'ln -sfn /root/punkin-pi/packages/coding-agent "$pkg_root/node_modules/@mariozechner/pi-coding-agent"',
+    );
+    expect(script).toContain('ln -sfn /root/punkin-pi/packages/ai "$pkg_root/node_modules/@mariozechner/pi-ai"');
+    expect(script).toContain(
+      'ln -sfn /root/punkin-pi/packages/agent "$pkg_root/node_modules/@mariozechner/pi-agent-core"',
+    );
   });
 });

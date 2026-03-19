@@ -116,6 +116,14 @@ npm run build
 cd /root/reef
 bun install
 
+for pkg_root in /root/pi-vers /root/reef; do
+  mkdir -p "$pkg_root/node_modules/@mariozechner"
+  ln -sfn /root/punkin-pi/packages/tui "$pkg_root/node_modules/@mariozechner/pi-tui"
+  ln -sfn /root/punkin-pi/packages/coding-agent "$pkg_root/node_modules/@mariozechner/pi-coding-agent"
+  ln -sfn /root/punkin-pi/packages/ai "$pkg_root/node_modules/@mariozechner/pi-ai"
+  ln -sfn /root/punkin-pi/packages/agent "$pkg_root/node_modules/@mariozechner/pi-agent-core"
+done
+
 rm -rf /root/reef/services-active
 mkdir -p /root/reef/services-active
 for dir in /root/reef/services/*/; do
