@@ -664,6 +664,21 @@ async function updateStatus() {
 // =============================================================================
 
 const loadedPanels = new Map();
+const LIVE_REFRESH_PANELS = new Set(['registry', 'vm-tree', 'lieutenant']);
+
+async function fetchPanel(name) {
+  const r = await fetch(`${API}/${name}/_panel`);
+  if (!r.ok) return null;
+  if (!(r.headers.get('content-type') || '').includes('html')) return null;
+  return { name, html: await r.text() };
+}
+
+async function refreshPanel(name) {
+  if (!loadedPanels.has(name)) return;
+  const panel = await fetchPanel(name);
+  if (!panel) return;
+  injectPanel(loadedPanels.get(name), panel.html);
+}
 
 async function discoverPanels() {
   try {
@@ -673,12 +688,7 @@ async function discoverPanels() {
     const services = data.modules || data.services || [];
 
     const results = await Promise.allSettled(
-      services.filter(s => s.name !== 'ui').map(async (s) => {
-        const r = await fetch(`${API}/${s.name}/_panel`);
-        if (!r.ok) return null;
-        if (!(r.headers.get('content-type') || '').includes('html')) return null;
-        return { name: s.name, html: await r.text() };
-      })
+      services.filter(s => s.name !== 'ui').map(s => fetchPanel(s.name))
     );
 
     const panels = results.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value);
@@ -718,6 +728,14 @@ function togglePanel(name) {
   $('panel-area').className = 'open';
   document.querySelectorAll('.panel-view').forEach(v => v.classList.toggle('active', v.id === `panel-${name}`));
   $('tabs').querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
+  if (LIVE_REFRESH_PANELS.has(name)) {
+    refreshPanel(name).catch(() => {});
+  }
+}
+
+function refreshActivePanel() {
+  if (!activePanel || !LIVE_REFRESH_PANELS.has(activePanel)) return;
+  refreshPanel(activePanel).catch(() => {});
 }
 
 function injectPanel(container, html) {
@@ -774,9 +792,9 @@ loadHistory().then(() => {
   updateStatus();
   discoverPanels();
   setInterval(discoverPanels, 30000);
+  setInterval(refreshActivePanel, 10000);
   setInterval(updateStatus, 10000);
 });
-
 
 
 

@@ -21,6 +21,7 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
+import { resolveAgentBinary } from "@hdresearch/pi-v/core";
 import { Hono } from "hono";
 import { bearerAuth } from "./core/auth.js";
 import { createServer, type ServerOptions } from "./core/server.js";
@@ -53,7 +54,7 @@ function spawnTask(
     onError: (err: string) => void;
   },
 ): ChildProcess {
-  const piPath = process.env.PI_PATH ?? "pi";
+  const piPath = resolveAgentBinary();
   const cwd = process.env.REEF_DIR ?? process.cwd();
 
   const child = spawn(piPath, ["--mode", "rpc", "--no-session", "--append-system-prompt", treeContext], {
@@ -61,6 +62,7 @@ function spawnTask(
     cwd,
     env: {
       ...process.env,
+      PI_PATH: process.env.PI_PATH || piPath,
       ...(opts.model ? { PI_MODEL: opts.model } : {}),
     },
   });

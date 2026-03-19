@@ -7,15 +7,14 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { loadVersKeyFromDisk, resolveAgentBinary, VersClient } from "@hdresearch/pi-v/core";
 
 const RPC_DIR = "/tmp/pi-rpc";
 const RPC_IN = `${RPC_DIR}/in`;
 const RPC_OUT = `${RPC_DIR}/out`;
 const RPC_ERR = `${RPC_DIR}/err`;
-const DEFAULT_VERS_BASE_URL = "https://api.vers.sh/api/v1";
 
 type EventHandler = (event: any) => void;
 
@@ -41,13 +40,7 @@ export interface RemoteRpcOptions {
   systemPrompt?: string;
   model?: string;
 }
-
-interface SSHKeyInfo {
-  ssh_port: number;
-  ssh_private_key: string;
-}
-
-const keyCache = new Map<string, string>();
+const versClient = new VersClient();
 
 function createHandlerSet() {
   const handlers = new Set<EventHandler>();
@@ -70,113 +63,22 @@ function createHandlerSet() {
   };
 }
 
-function loadVersApiKey(): string {
-  if (process.env.VERS_API_KEY) return process.env.VERS_API_KEY;
-  try {
-    const data = readFileSync(join(homedir(), ".vers", "keys.json"), "utf-8");
-    return JSON.parse(data)?.keys?.VERS_API_KEY || "";
-  } catch {
-    return "";
-  }
-}
-
-function getVersBaseUrl(): string {
-  return process.env.VERS_BASE_URL || DEFAULT_VERS_BASE_URL;
-}
-
-async function versApi<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const apiKey = loadVersApiKey();
-  if (!apiKey) throw new Error("VERS_API_KEY is not configured");
-
-  const res = await fetch(`${getVersBaseUrl()}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Vers API ${method} ${path} failed (${res.status}): ${text}`);
-  }
-
-  const contentType = res.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) return (await res.json()) as T;
-  return undefined as T;
-}
-
-async function ensureKeyFile(vmId: string): Promise<string> {
-  const cached = keyCache.get(vmId);
-  if (cached && existsSync(cached)) return cached;
-
-  const info = await versApi<SSHKeyInfo>("GET", `/vm/${encodeURIComponent(vmId)}/ssh_key`);
-  const keyDir = join(tmpdir(), "vers-ssh-keys");
-  mkdirSync(keyDir, { recursive: true });
-  const keyPath = join(keyDir, `vers-${vmId.slice(0, 16)}.pem`);
-  writeFileSync(keyPath, info.ssh_private_key, { mode: 0o600 });
-  keyCache.set(vmId, keyPath);
-  return keyPath;
-}
-
-function sshArgs(keyPath: string, vmId: string): string[] {
-  return [
-    "-i",
-    keyPath,
-    "-o",
-    "StrictHostKeyChecking=no",
-    "-o",
-    "UserKnownHostsFile=/dev/null",
-    "-o",
-    "LogLevel=ERROR",
-    "-o",
-    "ConnectTimeout=30",
-    "-o",
-    "ServerAliveInterval=15",
-    "-o",
-    "ServerAliveCountMax=4",
-    "-o",
-    "ProxyCommand=openssl s_client -connect %h:443 -servername %h -quiet 2>/dev/null",
-    `root@${vmId}.vm.vers.sh`,
-  ];
-}
-
-async function sshExec(
-  keyPath: string,
-  vmId: string,
-  command: string,
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return await new Promise((resolve, reject) => {
-    const child = spawn("ssh", [...sshArgs(keyPath, vmId), command], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      resolve({ stdout, stderr, exitCode: code ?? 0 });
-    });
-  });
+function escapeEnvValue(value: string): string {
+  return value.replace(/'/g, "'\\''");
 }
 
 function buildRemoteEnv(opts: RemoteRpcOptions): string {
+  const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const exports = [
-    `export ANTHROPIC_API_KEY='${opts.anthropicApiKey.replace(/'/g, "'\\''")}'`,
-    process.env.VERS_API_KEY ? `export VERS_API_KEY='${loadVersApiKey().replace(/'/g, "'\\''")}'` : "",
-    process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${process.env.VERS_BASE_URL.replace(/'/g, "'\\''")}'` : "",
-    process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${process.env.VERS_INFRA_URL.replace(/'/g, "'\\''")}'` : "",
-    process.env.VERS_AUTH_TOKEN ? `export VERS_AUTH_TOKEN='${process.env.VERS_AUTH_TOKEN.replace(/'/g, "'\\''")}'` : "",
+    `export ANTHROPIC_API_KEY='${escapeEnvValue(opts.anthropicApiKey)}'`,
+    versApiKey ? `export VERS_API_KEY='${escapeEnvValue(versApiKey)}'` : "",
+    process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
+    process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
+    process.env.VERS_AUTH_TOKEN ? `export VERS_AUTH_TOKEN='${escapeEnvValue(process.env.VERS_AUTH_TOKEN)}'` : "",
+    process.env.PI_PATH ? `export PI_PATH='${escapeEnvValue(process.env.PI_PATH)}'` : "",
+    process.env.PUNKIN_BIN ? `export PUNKIN_BIN='${escapeEnvValue(process.env.PUNKIN_BIN)}'` : "",
     process.env.VERS_AGENT_NAME
-      ? `export VERS_PARENT_AGENT='${process.env.VERS_AGENT_NAME.replace(/'/g, "'\\''")}'`
+      ? `export VERS_PARENT_AGENT='${escapeEnvValue(process.env.VERS_AGENT_NAME)}'`
       : "export VERS_PARENT_AGENT='reef'",
     "export GIT_EDITOR=true",
   ]
@@ -187,35 +89,28 @@ function buildRemoteEnv(opts: RemoteRpcOptions): string {
 }
 
 export async function createVersVmFromCommit(commitId: string): Promise<{ vmId: string }> {
-  const vm = await versApi<{ vm_id: string }>("POST", "/vm/from_commit", { commit_id: commitId });
-  await ensureKeyFile(vm.vm_id);
+  const vm = await versClient.restoreFromCommit(commitId);
+  await versClient.ensureKeyFile(vm.vm_id);
   return { vmId: vm.vm_id };
 }
 
 export async function deleteVersVm(vmId: string): Promise<void> {
-  await versApi("DELETE", `/vm/${encodeURIComponent(vmId)}`);
-  const keyPath = keyCache.get(vmId);
-  if (keyPath) {
-    keyCache.delete(vmId);
-  }
+  await versClient.delete(vmId);
 }
 
 export async function setVersVmState(vmId: string, state: "Paused" | "Running"): Promise<void> {
-  await versApi("PATCH", `/vm/${encodeURIComponent(vmId)}/state`, { state });
+  await versClient.updateState(vmId, state);
 }
 
 export async function getVersVmState(vmId: string): Promise<string> {
-  const result = await versApi<{ state: string }>("GET", `/vm/${encodeURIComponent(vmId)}/status`);
-  return result.state;
+  return await versClient.getState(vmId);
 }
 
 export async function waitForSshReady(vmId: string, attempts = 30, delayMs = 2000): Promise<string> {
-  const keyPath = await ensureKeyFile(vmId);
-
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      const result = await sshExec(keyPath, vmId, "echo ready");
-      if (result.stdout.trim() === "ready") return keyPath;
+      const result = await versClient.exec(vmId, "echo ready");
+      if (result.stdout.trim() === "ready") return await versClient.ensureKeyFile(vmId);
     } catch {
       // VM still booting.
     }
@@ -226,10 +121,9 @@ export async function waitForSshReady(vmId: string, attempts = 30, delayMs = 200
 }
 
 export async function waitForRemoteRpcSession(vmId: string, attempts = 15, delayMs = 2000): Promise<void> {
-  const keyPath = await ensureKeyFile(vmId);
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      const result = await sshExec(keyPath, vmId, "tmux has-session -t pi-rpc 2>/dev/null && echo ok");
+      const result = await versClient.exec(vmId, "tmux has-session -t pi-rpc 2>/dev/null && echo ok");
       if (result.stdout.includes("ok")) return;
     } catch {
       // Session not ready yet.
@@ -240,7 +134,7 @@ export async function waitForRemoteRpcSession(vmId: string, attempts = 15, delay
   throw new Error(`Lieutenant VM ${vmId} resumed but pi-rpc session was not found`);
 }
 
-function createRemoteHandle(vmId: string, keyPath: string, skipExistingOutput: boolean): RpcHandle {
+function createRemoteHandle(vmId: string, sshBaseArgs: string[], skipExistingOutput: boolean): RpcHandle {
   const handlers = createHandlerSet();
   let tailChild: ReturnType<typeof spawn> | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -252,7 +146,7 @@ function createRemoteHandle(vmId: string, keyPath: string, skipExistingOutput: b
     if (killed) return;
 
     const tailArg = linesProcessed < 0 ? "-n 0" : `-n +${Math.max(linesProcessed + 1, 1)}`;
-    tailChild = spawn("ssh", [...sshArgs(keyPath, vmId), `tail -f ${tailArg} ${RPC_OUT}`], {
+    tailChild = spawn("ssh", [...sshBaseArgs, `tail -f ${tailArg} ${RPC_OUT}`], {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -303,7 +197,7 @@ function createRemoteHandle(vmId: string, keyPath: string, skipExistingOutput: b
   return {
     send(cmd: object) {
       if (killed) return;
-      const writer = spawn("ssh", [...sshArgs(keyPath, vmId), `cat > ${RPC_IN}`], {
+      const writer = spawn("ssh", [...sshBaseArgs, `cat > ${RPC_IN}`], {
         stdio: ["pipe", "ignore", "ignore"],
       });
       writer.stdin.write(`${JSON.stringify(cmd)}\n`);
@@ -316,8 +210,7 @@ function createRemoteHandle(vmId: string, keyPath: string, skipExistingOutput: b
       killed = true;
       suspendTail();
       try {
-        await sshExec(
-          keyPath,
+        await versClient.exec(
           vmId,
           `tmux kill-session -t pi-rpc 2>/dev/null || true
 tmux kill-session -t pi-keeper 2>/dev/null || true
@@ -340,14 +233,13 @@ rm -rf ${RPC_DIR}`,
 }
 
 export async function startRemoteRpcAgent(vmId: string, opts: RemoteRpcOptions): Promise<RpcHandle> {
-  const keyPath = await ensureKeyFile(vmId);
+  const sshBaseArgs = await versClient.sshArgs(vmId);
   const envExports = buildRemoteEnv(opts);
 
-  let piCommand = "pi --mode rpc";
+  let piCommand = `${resolveAgentBinary()} --mode rpc`;
   if (opts.systemPrompt) {
-    const escapedPrompt = opts.systemPrompt.replace(/'/g, "'\\''");
-    await sshExec(
-      keyPath,
+    const escapedPrompt = escapeEnvValue(opts.systemPrompt);
+    await versClient.exec(
       vmId,
       `mkdir -p /root/.pi/agent && cat > /root/.pi/agent/system-prompt.md << 'SYSPROMPT_EOF'
 ${escapedPrompt}
@@ -370,12 +262,12 @@ sleep 1
 tmux has-session -t pi-rpc 2>/dev/null && echo daemon_started || echo daemon_failed
 `;
 
-  const result = await sshExec(keyPath, vmId, startScript);
+  const result = await versClient.exec(vmId, startScript);
   if (!result.stdout.includes("daemon_started")) {
     throw new Error(`Failed to start pi RPC on ${vmId}: ${result.stderr || result.stdout}`);
   }
 
-  const handle = createRemoteHandle(vmId, keyPath, false);
+  const handle = createRemoteHandle(vmId, sshBaseArgs, false);
   if (opts.model) {
     handle.send({ type: "set_model", provider: "anthropic", modelId: opts.model });
   }
@@ -383,12 +275,12 @@ tmux has-session -t pi-rpc 2>/dev/null && echo daemon_started || echo daemon_fai
 }
 
 export async function reconnectRemoteRpcAgent(vmId: string): Promise<RpcHandle> {
-  const keyPath = await ensureKeyFile(vmId);
-  const result = await sshExec(keyPath, vmId, "tmux has-session -t pi-rpc 2>/dev/null && echo ok || echo gone");
+  const sshBaseArgs = await versClient.sshArgs(vmId);
+  const result = await versClient.exec(vmId, "tmux has-session -t pi-rpc 2>/dev/null && echo ok || echo gone");
   if (!result.stdout.includes("ok")) {
     throw new Error(`Pi RPC session not found on VM ${vmId}`);
   }
-  return createRemoteHandle(vmId, keyPath, true);
+  return createRemoteHandle(vmId, sshBaseArgs, true);
 }
 
 export async function startLocalRpcAgent(name: string, opts: LocalRpcOptions): Promise<RpcHandle> {
@@ -399,7 +291,7 @@ export async function startLocalRpcAgent(name: string, opts: LocalRpcOptions): P
   if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
   if (!existsSync(homeDir)) mkdirSync(homeDir, { recursive: true });
 
-  const piPath = process.env.PI_PATH ?? "pi";
+  const piPath = resolveAgentBinary();
   const args = ["--mode", "rpc", "--no-session"];
 
   if (opts.systemPrompt) {
@@ -410,6 +302,7 @@ export async function startLocalRpcAgent(name: string, opts: LocalRpcOptions): P
   if (opts.model) env.PI_MODEL = opts.model;
   if (opts.anthropicApiKey) env.ANTHROPIC_API_KEY = opts.anthropicApiKey;
   if (!env.VERS_PARENT_AGENT) env.VERS_PARENT_AGENT = process.env.VERS_AGENT_NAME || "reef";
+  if (!env.PI_PATH) env.PI_PATH = piPath;
   env.HOME = homeDir;
   env.USERPROFILE = homeDir;
 

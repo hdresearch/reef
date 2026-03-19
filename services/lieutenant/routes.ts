@@ -178,7 +178,8 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
   });
 
   // GET /_panel — HTML dashboard
-  routes.get("/_panel", (c) => {
+  routes.get("/_panel", async (c) => {
+    await getRuntime().refreshAll();
     const lts = store.list();
     const rows = lts
       .map((lt) => {

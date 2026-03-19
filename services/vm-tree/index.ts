@@ -245,7 +245,7 @@ const vmTree: ServiceModule = {
         category: "lieutenant",
         reefConfig: {
           organs: ["lieutenant"],
-          capabilities: ["vers-lieutenant"],
+          capabilities: ["punkin", "vers-lieutenant", "vers-vm", "vers-vm-copy", "vers-swarm"],
         },
       });
     });
