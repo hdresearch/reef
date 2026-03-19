@@ -38,18 +38,6 @@
         </div>
       </aside>
 
-      <!-- Feed: the main trunk -->
-      <div id="feed">
-        <div id="feed-scroll">
-          <div id="feed-entries"></div>
-        </div>
-        <div id="feed-input">
-          <textarea id="input" placeholder="Start a conversation… (Enter to send)" rows="1"></textarea>
-          <button id="send">↵</button>
-        </div>
-      </div>
-
-      <!-- Conversation chat panel -->
       <div id="branch">
         <div id="branch-header">
           <div>
@@ -62,14 +50,27 @@
           </div>
         </div>
         <div id="branch-scroll">
-          <div id="branch-empty">Select a conversation to continue the chat, or start a new one from the feed.</div>
+          <div id="branch-empty">Select a conversation to continue the chat, or start a new one from the left sidebar.</div>
           <div id="branch-messages"></div>
         </div>
         <div id="branch-input">
-          <textarea id="branch-text" placeholder="Continue the conversation…" rows="1"></textarea>
+          <textarea id="branch-text" placeholder="Start a new conversation…" rows="1"></textarea>
           <button id="branch-send">↵</button>
         </div>
       </div>
+
+      <!-- Feed: activity scoped to the selected conversation when possible -->
+      <aside id="feed">
+        <div id="feed-header">
+          <div>
+            <div id="feed-label">activity</div>
+            <div id="feed-scope">global reef activity</div>
+          </div>
+        </div>
+        <div id="feed-scroll">
+          <div id="feed-entries"></div>
+        </div>
+      </aside>
     </div>
 
     <!-- Panel views (discovered dynamically, toggled via tabs) -->

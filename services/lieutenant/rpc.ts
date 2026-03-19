@@ -67,7 +67,7 @@ function escapeEnvValue(value: string): string {
   return value.replace(/'/g, "'\\''");
 }
 
-function buildRemoteEnv(opts: RemoteRpcOptions): string {
+export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const exports = [
     `export ANTHROPIC_API_KEY='${escapeEnvValue(opts.anthropicApiKey)}'`,
@@ -75,6 +75,7 @@ function buildRemoteEnv(opts: RemoteRpcOptions): string {
     process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
     process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
     process.env.VERS_AUTH_TOKEN ? `export VERS_AUTH_TOKEN='${escapeEnvValue(process.env.VERS_AUTH_TOKEN)}'` : "",
+    `export VERS_VM_ID='${escapeEnvValue(vmId)}'`,
     process.env.PI_PATH ? `export PI_PATH='${escapeEnvValue(process.env.PI_PATH)}'` : "",
     process.env.PUNKIN_BIN ? `export PUNKIN_BIN='${escapeEnvValue(process.env.PUNKIN_BIN)}'` : "",
     `export PI_VERS_HOME='${escapeEnvValue(process.env.PI_VERS_HOME || "/root/pi-vers")}'`,
@@ -238,7 +239,7 @@ rm -rf ${RPC_DIR}`,
 
 export async function startRemoteRpcAgent(vmId: string, opts: RemoteRpcOptions): Promise<RpcHandle> {
   const sshBaseArgs = await versClient.sshArgs(vmId);
-  const envExports = buildRemoteEnv(opts);
+  const envExports = buildRemoteEnv(vmId, opts);
 
   let piCommand = `${resolveAgentBinary()} --mode rpc`;
   if (opts.systemPrompt) {

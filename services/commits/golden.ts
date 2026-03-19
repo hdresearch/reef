@@ -147,10 +147,8 @@ fi
 exec /root/punkin-pi/packages/coding-agent/dist/cli.js "$@"
 EOF
 fi
-if [ -x /usr/local/bin/punkin ]; then
-  chmod +x /usr/local/bin/punkin
-  ln -sf /usr/local/bin/punkin /usr/local/bin/pi
-fi
+chmod +x /usr/local/bin/punkin 2>/dev/null || true
+ln -sf /usr/local/bin/punkin /usr/local/bin/pi
 
 cat > /etc/profile.d/reef-agent.sh <<ENVEOF
 export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"

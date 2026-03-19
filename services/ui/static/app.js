@@ -52,6 +52,24 @@ function autoScroll(el) {
   });
 }
 
+function updateFeedScope() {
+  const scope = $('feed-scope');
+  const items = feedEl.querySelectorAll('.feed-item');
+  if (!activeConversationId || !conversations.has(activeConversationId)) {
+    scope.textContent = 'global reef activity';
+    for (const item of items) item.classList.remove('hidden');
+    return;
+  }
+
+  const conversation = conversations.get(activeConversationId);
+  scope.textContent = `${conversation.title} activity`;
+
+  for (const item of items) {
+    const conversationId = item.dataset.conversationId || '';
+    item.classList.toggle('hidden', Boolean(conversationId) && conversationId !== activeConversationId);
+  }
+}
+
 function resizeInput(id) {
   const el = $(id);
   el.style.height = '36px';
@@ -71,6 +89,7 @@ function feedAdd(nodeId, parentNodeId, tag, text, opts = {}) {
   item.className = 'feed-item';
   if (nodeId) item.dataset.nodeId = nodeId;
   if (opts.taskId) item.dataset.taskId = opts.taskId;
+  if (opts.taskId) item.dataset.conversationId = opts.taskId;
 
   const row = document.createElement('div');
   row.className = 'feed-row' + (opts.clickable ? ' clickable' : '');
@@ -100,6 +119,7 @@ function feedAdd(nodeId, parentNodeId, tag, text, opts = {}) {
   }
 
   if (nodeId) feedNodes.set(nodeId, item);
+  updateFeedScope();
   autoScroll(feedScroll);
   return item;
 }
@@ -210,9 +230,10 @@ function renderConversationHeader() {
     toggle.hidden = true;
     empty.style.display = '';
     $('branch-messages').innerHTML = '';
-    input.disabled = true;
-    send.disabled = true;
-    input.placeholder = 'Continue the conversation…';
+    input.disabled = false;
+    send.disabled = false;
+    input.placeholder = 'Start a new conversation…';
+    updateFeedScope();
     return;
   }
 
@@ -225,6 +246,7 @@ function renderConversationHeader() {
   input.disabled = conversation.closed;
   send.disabled = conversation.closed;
   input.placeholder = conversation.closed ? 'Reopen this conversation to continue talking.' : 'Continue the conversation…';
+  updateFeedScope();
 }
 
 function renderConversationMessages(conversationId) {
@@ -309,6 +331,7 @@ function deselectConversation() {
   activeConversationId = null;
   renderConversationLists();
   renderConversationHeader();
+  $('branch-text').focus();
 }
 
 function createMessage(role, content) {
@@ -477,18 +500,22 @@ async function submitConversationReply(conversationId, text) {
 }
 
 function feedSend() {
-  const input = $('input');
+  const input = $('branch-text');
   const text = input.value.trim();
   if (!text) return;
   input.value = '';
-  resizeInput('input');
+  resizeInput('branch-text');
   submitNewConversation(text).catch((error) => {
     feedAdd(null, null, 'error', error.message);
   });
 }
 
 function branchSend() {
-  if (!activeConversationId) return;
+  if (!activeConversationId) {
+    feedSend();
+    return;
+  }
+
   const conversation = conversations.get(activeConversationId);
   if (!conversation || conversation.working || conversation.closed) return;
 
@@ -899,15 +926,6 @@ $('tabs').querySelector('[data-view="feed"]').addEventListener('click', () => {
 // Input handlers
 // =============================================================================
 
-$('send').addEventListener('click', feedSend);
-$('input').addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault();
-    feedSend();
-  }
-});
-$('input').addEventListener('input', () => resizeInput('input'));
-
 $('branch-send').addEventListener('click', branchSend);
 $('branch-text').addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) {
@@ -928,7 +946,7 @@ $('branch-toggle').addEventListener('click', () => {
 });
 
 $('new-chat').addEventListener('click', () => {
-  $('input').focus();
+  deselectConversation();
 });
 
 // =============================================================================

@@ -5,6 +5,7 @@ import { createServer } from "../src/core/server.js";
 import { ServiceEventBus } from "../src/core/events.js";
 import lieutenant from "../services/lieutenant/index.js";
 import { createRoutes } from "../services/lieutenant/routes.js";
+import { buildRemoteEnv } from "../services/lieutenant/rpc.js";
 import { LieutenantRuntime } from "../services/lieutenant/runtime.js";
 import { LieutenantStore, ValidationError } from "../services/lieutenant/store.js";
 import registry from "../services/registry/index.js";
@@ -203,6 +204,18 @@ afterEach(() => {
 });
 
 describe("lieutenant routes and runtime", () => {
+  test("remote lieutenant env exports VERS_VM_ID for child reef tools", () => {
+    process.env.VERS_INFRA_URL = "https://root.example:3000";
+    const env = buildRemoteEnv("vm-child-123", {
+      anthropicApiKey: "test-anthropic-key",
+      model: "claude-test",
+    });
+
+    expect(env).toContain("export VERS_VM_ID='vm-child-123'");
+    expect(env).toContain("export VERS_INFRA_URL='https://root.example:3000'");
+    expect(env).toContain("export VERS_AGENT_ROLE='lieutenant'");
+  });
+
   test("defaults create requests to remote mode and fails when no golden commit can be resolved", async () => {
     const store = new LieutenantStore(join(TMP_DIR, "default-mode.sqlite"));
     const runtime = new LieutenantRuntime({

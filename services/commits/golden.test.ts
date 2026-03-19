@@ -16,5 +16,7 @@ describe("golden bootstrap", () => {
     expect(script).toContain("printf '");
     expect(script).toContain('"$PI_PATH" install /root/pi-vers');
     expect(script).toContain('"$PI_PATH" install /root/reef');
+    expect(script).toContain("chmod +x /usr/local/bin/punkin 2>/dev/null || true");
+    expect(script).not.toContain("if [ -x /usr/local/bin/punkin ]");
   });
 });
