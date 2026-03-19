@@ -5,7 +5,7 @@ import { createServer } from "../src/core/server.js";
 import { ServiceEventBus } from "../src/core/events.js";
 import lieutenant from "../services/lieutenant/index.js";
 import { createRoutes } from "../services/lieutenant/routes.js";
-import { buildRemoteEnv } from "../services/lieutenant/rpc.js";
+import { buildPersistVmIdScript, buildRemoteEnv } from "../services/lieutenant/rpc.js";
 import { LieutenantRuntime } from "../services/lieutenant/runtime.js";
 import { LieutenantStore, ValidationError } from "../services/lieutenant/store.js";
 import registry from "../services/registry/index.js";
@@ -214,6 +214,14 @@ describe("lieutenant routes and runtime", () => {
     expect(env).toContain("export VERS_VM_ID='vm-child-123'");
     expect(env).toContain("export VERS_INFRA_URL='https://root.example:3000'");
     expect(env).toContain("export VERS_AGENT_ROLE='lieutenant'");
+  });
+
+  test("post-restore VM identity script persists VERS_VM_ID into reef-agent.sh", () => {
+    const script = buildPersistVmIdScript("vm-child-123");
+    expect(script).toContain("touch /etc/profile.d/reef-agent.sh");
+    expect(script).toContain("export VERS_VM_ID='vm-child-123'");
+    expect(script).toContain("grep -q '^export VERS_VM_ID='");
+    expect(script).toContain("sed -i");
   });
 
   test("defaults create requests to remote mode and fails when no golden commit can be resolved", async () => {

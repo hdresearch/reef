@@ -67,6 +67,17 @@ function escapeEnvValue(value: string): string {
   return value.replace(/'/g, "'\\''");
 }
 
+export function buildPersistVmIdScript(vmId: string): string {
+  const escapedVmId = escapeEnvValue(vmId);
+  return `mkdir -p /etc/profile.d
+touch /etc/profile.d/reef-agent.sh
+if grep -q '^export VERS_VM_ID=' /etc/profile.d/reef-agent.sh 2>/dev/null; then
+  sed -i "s|^export VERS_VM_ID=.*$|export VERS_VM_ID='${escapedVmId}'|" /etc/profile.d/reef-agent.sh
+else
+  printf "\\nexport VERS_VM_ID='${escapedVmId}'\\n" >> /etc/profile.d/reef-agent.sh
+fi`;
+}
+
 export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const exports = [
@@ -240,6 +251,8 @@ rm -rf ${RPC_DIR}`,
 export async function startRemoteRpcAgent(vmId: string, opts: RemoteRpcOptions): Promise<RpcHandle> {
   const sshBaseArgs = await versClient.sshArgs(vmId);
   const envExports = buildRemoteEnv(vmId, opts);
+
+  await versClient.exec(vmId, buildPersistVmIdScript(vmId));
 
   let piCommand = `${resolveAgentBinary()} --mode rpc`;
   if (opts.systemPrompt) {
