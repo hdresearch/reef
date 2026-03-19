@@ -25,7 +25,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     description: [
       "Spawn a persistent agent session (lieutenant).",
       "Lieutenants persist across tasks, accumulate context, and support multi-turn interaction.",
-      "Remote mode is the default and requires a golden commit plus access to Vers.",
+      "Remote mode is the default and uses the explicit commitId, configured env golden, or root Reef golden commit.",
       "Set local=true to run as a local subprocess instead.",
     ].join(" "),
     parameters: Type.Object({
@@ -36,7 +36,9 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       ),
       model: Type.Optional(Type.String({ description: "Model ID (e.g., claude-sonnet-4-20250514)" })),
       commitId: Type.Optional(
-        Type.String({ description: "Golden image commit ID for VM creation (remote mode only)" }),
+        Type.String({
+          description: "Golden image commit ID for VM creation (optional if a default golden is configured)",
+        }),
       ),
       anthropicApiKey: Type.Optional(Type.String({ description: "Anthropic API key override (remote or local)" })),
     }),

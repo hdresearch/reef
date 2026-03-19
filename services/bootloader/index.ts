@@ -89,7 +89,7 @@ const PROFILES: Record<VMType, BootProfile> = {
 // Boot script generation
 // =============================================================================
 
-function generateBootScript(req: BootRequest): string {
+export function generateBootScript(req: BootRequest): string {
   const profile = { ...PROFILES[req.type] };
 
   // Merge extra organs and capabilities

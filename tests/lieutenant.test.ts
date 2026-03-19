@@ -6,7 +6,7 @@ import { ServiceEventBus } from "../src/core/events.js";
 import lieutenant from "../services/lieutenant/index.js";
 import { createRoutes } from "../services/lieutenant/routes.js";
 import { LieutenantRuntime } from "../services/lieutenant/runtime.js";
-import { LieutenantStore } from "../services/lieutenant/store.js";
+import { LieutenantStore, ValidationError } from "../services/lieutenant/store.js";
 import registry from "../services/registry/index.js";
 import vmTree from "../services/vm-tree/index.js";
 
@@ -150,9 +150,15 @@ afterEach(() => {
 });
 
 describe("lieutenant routes and runtime", () => {
-  test("defaults create requests to remote mode and rejects missing commitId", async () => {
+  test("defaults create requests to remote mode and fails when no golden commit can be resolved", async () => {
     const store = new LieutenantStore(join(TMP_DIR, "default-mode.sqlite"));
-    const runtime = new LieutenantRuntime({ events: new ServiceEventBus(), store });
+    const runtime = new LieutenantRuntime({
+      events: new ServiceEventBus(),
+      store,
+      resolveCommitId: async () => {
+        throw new ValidationError("No golden commit available");
+      },
+    });
     const app = createRoutes(store, () => runtime);
 
     const { status, data } = await json(app, "/lieutenants", {
@@ -165,7 +171,7 @@ describe("lieutenant routes and runtime", () => {
     });
 
     expect(status).toBe(400);
-    expect(data.error).toContain("commitId is required");
+    expect(data.error).toContain("No golden commit available");
     expect(store.list()).toEqual([]);
 
     await runtime.shutdown();

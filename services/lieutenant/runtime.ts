@@ -4,6 +4,7 @@
  * Bridges the persistent SQLite store with live RPC handles.
  */
 
+import { type ResolveGoldenCommitResult, resolveGoldenCommit } from "@hdresearch/pi-v/core";
 import type { ServiceEventBus } from "../../src/core/events.js";
 import {
   buildSystemPrompt,
@@ -27,6 +28,7 @@ export interface LieutenantRuntimeOptions {
   store: LieutenantStore;
   fetchImpl?: typeof fetch;
   getVmState?: typeof getVersVmState;
+  resolveCommitId?: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
 }
 
 interface CreateParams {
@@ -44,12 +46,14 @@ export class LieutenantRuntime {
   private readonly store: LieutenantStore;
   private readonly fetchImpl: typeof fetch;
   private readonly getVmState: typeof getVersVmState;
+  private readonly resolveCommitId: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
 
   constructor(opts: LieutenantRuntimeOptions) {
     this.events = opts.events;
     this.store = opts.store;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.getVmState = opts.getVmState ?? getVersVmState;
+    this.resolveCommitId = opts.resolveCommitId ?? ((commitId) => resolveGoldenCommit({ commitId, ensure: true }));
   }
 
   private ensureNameAvailable(name: string): void {
@@ -242,6 +246,8 @@ export class LieutenantRuntime {
       parentAgent: process.env.VERS_AGENT_NAME,
     });
 
+    let resolvedCommit: ResolveGoldenCommitResult | undefined;
+
     try {
       if (isLocal) {
         const handle = await startLocalRpcAgent(name, {
@@ -257,11 +263,8 @@ export class LieutenantRuntime {
         this.store.update(name, { status: "idle", vmId: handle.vmId });
         this.installEventHandler(name);
       } else {
-        if (!commitId) {
-          throw new ValidationError("commitId is required for remote lieutenants");
-        }
-
-        const remote = await createVersVmFromCommit(commitId);
+        resolvedCommit = await this.resolveCommitId(commitId);
+        const remote = await createVersVmFromCommit(resolvedCommit.commitId);
         this.store.update(name, { vmId: remote.vmId });
         await waitForSshReady(remote.vmId);
 
@@ -282,7 +285,12 @@ export class LieutenantRuntime {
       const created = this.store.getByName(name)!;
       this.events.fire(
         "lieutenant:created",
-        this.buildCreateEvent(created, { commitId, model, anthropicApiKeyProvided: !!anthropicApiKey }),
+        this.buildCreateEvent(created, {
+          commitId: resolvedCommit?.commitId,
+          commitIdSource: resolvedCommit?.source,
+          model,
+          anthropicApiKeyProvided: !!anthropicApiKey,
+        }),
       );
       return created;
     } catch (err) {
