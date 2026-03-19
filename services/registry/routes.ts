@@ -127,14 +127,14 @@ export function createRoutes(store: RegistryStore): Hono {
         const statusColor = vm.status === "running" ? "#4f9" : vm.status === "paused" ? "#ff9800" : "#888";
         const lastSeen = vm.lastSeen ? new Date(vm.lastSeen).toLocaleTimeString() : "---";
         const parent = vm.parentVmId ? vm.parentVmId.slice(0, 8) : "---";
-        const organs = vm.reefConfig.organs.join(", ") || "none";
+        const services = vm.reefConfig.services.join(", ") || "none";
         return `<tr>
           <td><span style="color:${statusColor}">&#x25CF;</span> ${vm.id.slice(0, 12)}</td>
           <td>${vm.name}</td>
           <td>${vm.role}</td>
           <td style="color:${statusColor}">${vm.status}</td>
           <td>${parent}</td>
-          <td style="font-size:0.85em">${organs}</td>
+          <td style="font-size:0.85em">${services}</td>
           <td style="color:#888">${lastSeen}</td>
         </tr>`;
       })
@@ -159,7 +159,7 @@ export function createRoutes(store: RegistryStore): Hono {
   <p class="count">${vms.length} VM${vms.length !== 1 ? "s" : ""} registered</p>
   <table>
     <thead>
-      <tr><th>ID</th><th>Name</th><th>Role</th><th>Status</th><th>Parent</th><th>Organs</th><th>Last Seen</th></tr>
+      <tr><th>ID</th><th>Name</th><th>Role</th><th>Status</th><th>Parent</th><th>Services</th><th>Last Seen</th></tr>
     </thead>
     <tbody>
       ${rows || '<tr><td colspan="7"><em>No VMs registered</em></td></tr>'}

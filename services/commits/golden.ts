@@ -9,16 +9,6 @@ const DEFAULT_GOLDEN_VM_CONFIG = {
   fs_size_mib: 8192,
 };
 
-const GOLDEN_CAPABILITIES = [
-  "pi-vers",
-  "punkin",
-  "reef-extension",
-  "vers-lieutenant",
-  "vers-vm",
-  "vers-vm-copy",
-  "vers-swarm",
-];
-
 export interface EnsureGoldenResult {
   commitId: string;
   vmId?: string;
@@ -89,7 +79,7 @@ async function registerGoldenRecord(vmId: string, commitId: string, label: strin
   }
 }
 
-function buildGoldenBootstrapScript(rootBaseUrl: string): string {
+export function buildGoldenBootstrapScript(rootBaseUrl: string): string {
   return `#!/bin/bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -126,26 +116,58 @@ npm run build
 cd /root/reef
 bun install
 
+rm -rf /root/reef/services-active
+mkdir -p /root/reef/services-active
+for dir in /root/reef/services/*/; do
+  svc=$(basename "$dir")
+  ln -s "../services/$svc" "/root/reef/services-active/$svc"
+done
+
 mkdir -p /root/workspace /root/.pi/agent /etc/profile.d
 
 if [ -x /root/punkin-pi/builds/punkin ]; then
-  ln -sf /root/punkin-pi/builds/punkin /usr/local/bin/punkin
+  cat > /usr/local/bin/punkin <<'EOF'
+#!/bin/sh
+if [ -f /etc/profile.d/reef-agent.sh ]; then
+  set -a
+  . /etc/profile.d/reef-agent.sh
+  set +a
+fi
+exec /root/punkin-pi/builds/punkin "$@"
+EOF
 elif [ -x /root/punkin-pi/packages/coding-agent/dist/cli.js ]; then
-  ln -sf /root/punkin-pi/packages/coding-agent/dist/cli.js /usr/local/bin/punkin
   chmod +x /root/punkin-pi/packages/coding-agent/dist/cli.js
+  cat > /usr/local/bin/punkin <<'EOF'
+#!/bin/sh
+if [ -f /etc/profile.d/reef-agent.sh ]; then
+  set -a
+  . /etc/profile.d/reef-agent.sh
+  set +a
+fi
+exec /root/punkin-pi/packages/coding-agent/dist/cli.js "$@"
+EOF
 fi
 if [ -x /usr/local/bin/punkin ]; then
+  chmod +x /usr/local/bin/punkin
   ln -sf /usr/local/bin/punkin /usr/local/bin/pi
 fi
 
 cat > /etc/profile.d/reef-agent.sh <<ENVEOF
+export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 export VERS_INFRA_URL=${shellQuote(rootBaseUrl)}
 export PUNKIN_BIN=punkin
 export PI_PATH=punkin
 export PI_VERS_HOME=/root/pi-vers
-export SERVICES_DIR=/root/reef/services
+export SERVICES_DIR=/root/reef/services-active
 ENVEOF
 chmod 0644 /etc/profile.d/reef-agent.sh
+
+for shell_rc in /root/.profile /root/.bashrc /root/.zshenv; do
+  touch "$shell_rc"
+  if ! grep -q "reef-agent.sh" "$shell_rc"; then
+    printf '\n[ -f /etc/profile.d/reef-agent.sh ] && . /etc/profile.d/reef-agent.sh\n' >> "$shell_rc"
+  fi
+done
 
 set -a
 source /etc/profile.d/reef-agent.sh
@@ -158,7 +180,7 @@ fi
 
 test -x /usr/local/bin/pi
 test -d /root/pi-vers
-test -d /root/reef/services
+test -d /root/reef/services-active
 `;
 }
 

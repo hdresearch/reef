@@ -78,7 +78,7 @@ function buildRemoteEnv(opts: RemoteRpcOptions): string {
     process.env.PI_PATH ? `export PI_PATH='${escapeEnvValue(process.env.PI_PATH)}'` : "",
     process.env.PUNKIN_BIN ? `export PUNKIN_BIN='${escapeEnvValue(process.env.PUNKIN_BIN)}'` : "",
     `export PI_VERS_HOME='${escapeEnvValue(process.env.PI_VERS_HOME || "/root/pi-vers")}'`,
-    `export SERVICES_DIR='${escapeEnvValue(process.env.SERVICES_DIR || "/root/reef/services")}'`,
+    `export SERVICES_DIR='${escapeEnvValue(process.env.SERVICES_DIR || "/root/reef/services-active")}'`,
     process.env.VERS_AGENT_NAME
       ? `export VERS_PARENT_AGENT='${escapeEnvValue(process.env.VERS_AGENT_NAME)}'`
       : "export VERS_PARENT_AGENT='reef'",

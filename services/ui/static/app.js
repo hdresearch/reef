@@ -664,7 +664,7 @@ async function updateStatus() {
 // =============================================================================
 
 const loadedPanels = new Map();
-const LIVE_REFRESH_PANELS = new Set(['registry', 'vm-tree', 'lieutenant']);
+const LIVE_REFRESH_PANELS = new Set(['registry', 'vm-tree', 'lieutenant', 'commits']);
 
 async function fetchPanel(name) {
   const r = await fetch(`${API}/${name}/_panel`);
@@ -795,7 +795,6 @@ loadHistory().then(() => {
   setInterval(refreshActivePanel, 10000);
   setInterval(updateStatus, 10000);
 });
-
 
 
 

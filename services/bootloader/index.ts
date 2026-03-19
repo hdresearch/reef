@@ -26,7 +26,7 @@ export type VMType = "full" | "swarm" | "lightweight" | "infra";
 
 export interface BootProfile {
   type: VMType;
-  organs: string[];
+  services: string[];
   capabilities: string[];
   installPiVers: boolean;
   description: string;
@@ -37,6 +37,7 @@ export interface BootRequest {
   name: string;
   type: VMType;
   parentVmId?: string;
+  extraServices?: string[];
   extraOrgans?: string[];
   extraCapabilities?: string[];
   roofReefUrl?: string;
@@ -57,28 +58,28 @@ export interface BootResult {
 const PROFILES: Record<VMType, BootProfile> = {
   full: {
     type: "full",
-    organs: ["store", "cron", "lieutenant", "registry", "vm-tree", "vers-config", "docs", "installer"],
+    services: ["store", "cron", "lieutenant", "registry", "vm-tree", "vers-config", "docs", "installer"],
     capabilities: ["punkin", "vers-vm", "vers-vm-copy", "vers-swarm", "ssh"],
     installPiVers: true,
     description: "Full agent VM — punkin + pi-vers + root reef extension. Can promote to lieutenant.",
   },
   swarm: {
     type: "swarm",
-    organs: ["store", "cron"],
+    services: ["store", "cron"],
     capabilities: ["punkin", "vers-vm", "vers-vm-copy", "vers-swarm"],
     installPiVers: true,
     description: "Swarm worker — punkin + pi-vers + root reef extension for fleet task execution.",
   },
   lightweight: {
     type: "lightweight",
-    organs: ["store"],
+    services: ["store"],
     capabilities: ["punkin"],
     installPiVers: false,
     description: "Lightweight worker — punkin + root reef extension, no pi-vers. For short-lived sessions.",
   },
   infra: {
     type: "infra",
-    organs: ["store", "cron", "docs"],
+    services: ["store", "cron", "docs"],
     capabilities: [],
     installPiVers: false,
     description: "Infra VM — core reef + specific service. For Gitea, MinIO, persistent services.",
@@ -92,11 +93,9 @@ const PROFILES: Record<VMType, BootProfile> = {
 export function generateBootScript(req: BootRequest): string {
   const profile = { ...PROFILES[req.type] };
 
-  // Merge extra organs and capabilities
-  if (req.extraOrgans) {
-    for (const o of req.extraOrgans) {
-      if (!profile.organs.includes(o)) profile.organs.push(o);
-    }
+  // Merge extra services and capabilities
+  for (const service of [...(req.extraServices || []), ...(req.extraOrgans || [])]) {
+    if (!profile.services.includes(service)) profile.services.push(service);
   }
   if (req.extraCapabilities) {
     for (const c of req.extraCapabilities) {
@@ -182,12 +181,29 @@ if [ -d /root/punkin-pi ]; then
   HUSKY=0 npm install 2>/dev/null || npm install
   npm run build 2>/dev/null || true
   if [ -x /root/punkin-pi/builds/punkin ]; then
-    ln -sf /root/punkin-pi/builds/punkin /usr/local/bin/punkin
+    cat > /usr/local/bin/punkin <<'EOF'
+#!/bin/sh
+if [ -f /etc/profile.d/reef-agent.sh ]; then
+  set -a
+  . /etc/profile.d/reef-agent.sh
+  set +a
+fi
+exec /root/punkin-pi/builds/punkin "$@"
+EOF
   elif [ -x /root/punkin-pi/packages/coding-agent/dist/cli.js ]; then
-    ln -sf /root/punkin-pi/packages/coding-agent/dist/cli.js /usr/local/bin/punkin
     chmod +x /root/punkin-pi/packages/coding-agent/dist/cli.js
+    cat > /usr/local/bin/punkin <<'EOF'
+#!/bin/sh
+if [ -f /etc/profile.d/reef-agent.sh ]; then
+  set -a
+  . /etc/profile.d/reef-agent.sh
+  set +a
+fi
+exec /root/punkin-pi/packages/coding-agent/dist/cli.js "$@"
+EOF
   fi
   if [ -x /usr/local/bin/punkin ]; then
+    chmod +x /usr/local/bin/punkin
     ln -sf /usr/local/bin/punkin /usr/local/bin/pi
   fi
 fi
@@ -197,22 +213,40 @@ cd /root/reef
 # ===== 9. Install dependencies =====
 bun install --frozen-lockfile 2>/dev/null || bun install
 
-# ===== 10. Configure shared agent harness =====
+# ===== 10. Activate the local service set for the harness =====
+rm -rf /root/reef/services-active
+mkdir -p /root/reef/services-active
+ACTIVE_SERVICES="${profile.services.join(" ")}"
+for dir in /root/reef/services/*/; do
+  svc=$(basename "$dir")
+  if echo "$ACTIVE_SERVICES" | grep -qw "$svc"; then
+    ln -s "../services/$svc" "/root/reef/services-active/$svc"
+  fi
+done
+
+# ===== 11. Configure shared agent harness =====
 mkdir -p /root/.pi/agent /root/workspace /etc/profile.d
 cat > /etc/profile.d/reef-agent.sh << 'ENVEOF'
+export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 export VERS_INFRA_URL=${roofUrl}
 export PUNKIN_BIN=punkin
 export PI_PATH=punkin
 export PI_VERS_HOME=/root/pi-vers
-export SERVICES_DIR=/root/reef/services
+export SERVICES_DIR=/root/reef/services-active
 ENVEOF
 chmod 0644 /etc/profile.d/reef-agent.sh
+for shell_rc in /root/.profile /root/.bashrc /root/.zshenv; do
+  touch "$shell_rc"
+  if ! grep -q "reef-agent.sh" "$shell_rc"; then
+    printf '\n[ -f /etc/profile.d/reef-agent.sh ] && . /etc/profile.d/reef-agent.sh\n' >> "$shell_rc"
+  fi
+done
 set -a; source /etc/profile.d/reef-agent.sh; set +a
 
 ${
   profile.installPiVers
     ? `
-# ===== 11. Register harness packages =====
+# ===== 12. Register harness packages =====
 echo "[boot] Registering root reef extension + pi-vers in harness..."
 if command -v "$PI_PATH" >/dev/null 2>&1; then
   "$PI_PATH" install /root/reef
@@ -220,7 +254,7 @@ if command -v "$PI_PATH" >/dev/null 2>&1; then
 fi
 `
     : `
-# ===== 11. Register harness packages =====
+# ===== 12. Register harness packages =====
 echo "[boot] Registering root reef extension in harness..."
 if command -v "$PI_PATH" >/dev/null 2>&1; then
   "$PI_PATH" install /root/reef
@@ -238,7 +272,7 @@ curl -sf -X POST "${roofUrl}/vm-tree/vms" \\
     "name": "${req.name}",
     "category": "${req.type === "full" ? "agent_vm" : req.type === "swarm" ? "swarm_vm" : req.type === "lightweight" ? "swarm_vm" : "infra_vm"}",
     "parentVmId": ${req.parentVmId ? `"${req.parentVmId}"` : "null"},
-    "reefConfig": ${JSON.stringify({ organs: profile.organs, capabilities: profile.capabilities })}
+    "reefConfig": ${JSON.stringify({ services: profile.services, capabilities: profile.capabilities })}
   }' 2>/dev/null || echo "[boot] VM tree registration failed (non-fatal)"
 
 ${
@@ -255,7 +289,7 @@ PUNKIN_BIN=punkin
 PI_PATH=punkin
 PI_VERS_HOME=/root/pi-vers
 REEF_VM_TYPE=${req.type}
-REEF_ORGANS=${profile.organs.join(",")}
+REEF_SERVICES=${profile.services.join(",")}
 REEF_CAPABILITIES=${profile.capabilities.join(",")}
 ${req.parentVmId ? `REEF_PARENT_VM_ID=${req.parentVmId}` : ""}
 ENVEOF
@@ -289,7 +323,7 @@ fi
 # ===== 13. Child agent contract =====
 echo "[boot] Child agent VM configured to use the root reef at ${roofUrl}"
 test -x /usr/local/bin/pi
-test -d /root/reef/services
+test -d /root/reef/services-active
 `
 }
 
@@ -303,7 +337,7 @@ curl -sf -X POST "${roofUrl}/registry/vms" \\
     "role": "${req.type === "infra" ? "infra" : "worker"}",
     "address": "${req.vmId}.vm.vers.sh",
     "registeredBy": "bootloader",
-    "reefConfig": ${JSON.stringify({ organs: profile.organs, capabilities: profile.capabilities })}
+    "reefConfig": ${JSON.stringify({ services: profile.services, capabilities: profile.capabilities })}
   }' 2>/dev/null || true
 
 echo "[boot] Bootstrap complete for ${req.name}"
@@ -333,7 +367,7 @@ routes.get("/profiles/:type", (c) => {
 // POST /generate — generate a boot script for a VM
 routes.post("/generate", async (c) => {
   const body = await c.req.json();
-  const { vmId, name, type, parentVmId, extraOrgans, extraCapabilities, roofReefUrl } = body;
+  const { vmId, name, type, parentVmId, extraServices, extraOrgans, extraCapabilities, roofReefUrl } = body;
 
   if (!vmId || !name || !type) {
     return c.json({ error: "vmId, name, and type are required" }, 400);
@@ -347,16 +381,15 @@ routes.post("/generate", async (c) => {
     name,
     type: type as VMType,
     parentVmId,
+    extraServices,
     extraOrgans,
     extraCapabilities,
     roofReefUrl,
   });
 
   const profile = { ...PROFILES[type as VMType] };
-  if (extraOrgans) {
-    for (const o of extraOrgans) {
-      if (!profile.organs.includes(o)) profile.organs.push(o);
-    }
+  for (const service of [...(extraServices || []), ...(extraOrgans || [])]) {
+    if (!profile.services.includes(service)) profile.services.push(service);
   }
   if (extraCapabilities) {
     for (const c of extraCapabilities) {
@@ -407,7 +440,10 @@ const bootloader: ServiceModule = {
           { description: "VM type profile" },
         ),
         parentVmId: Type.Optional(Type.String({ description: "Parent VM ID" })),
-        extraOrgans: Type.Optional(Type.Array(Type.String(), { description: "Additional service modules" })),
+        extraServices: Type.Optional(Type.Array(Type.String(), { description: "Additional services to include" })),
+        extraOrgans: Type.Optional(
+          Type.Array(Type.String(), { description: "Backward-compatible alias for extraServices" }),
+        ),
       }),
       async execute(_id, params) {
         if (!client.getBaseUrl()) return client.noUrl();
@@ -416,7 +452,7 @@ const bootloader: ServiceModule = {
           return client.ok(
             [
               `Boot script generated for "${result.name}" (${result.type})`,
-              `  Organs: ${result.profile.organs.join(", ")}`,
+              `  Services: ${result.profile.services.join(", ")}`,
               `  Capabilities: ${result.profile.capabilities.join(", ")}`,
               `  Pi-vers: ${result.profile.installPiVers ? "yes" : "no"}`,
               `  Script length: ${result.script.length} chars`,
@@ -448,7 +484,7 @@ const bootloader: ServiceModule = {
               [
                 `${type}:`,
                 `  ${profile.description}`,
-                `  Organs: ${profile.organs.join(", ")}`,
+                `  Services: ${profile.services.join(", ")}`,
                 `  Capabilities: ${profile.capabilities.join(", ") || "none"}`,
                 `  Pi-vers: ${profile.installPiVers ? "yes" : "no"}`,
               ].join("\n"),
@@ -480,7 +516,8 @@ const bootloader: ServiceModule = {
         name: { type: "string", required: true, description: "VM name" },
         type: { type: "string", required: true, description: "VM type: full | swarm | lightweight | infra" },
         parentVmId: { type: "string", description: "Parent VM ID" },
-        extraOrgans: { type: "string[]", description: "Additional modules to include" },
+        extraServices: { type: "string[]", description: "Additional services to include" },
+        extraOrgans: { type: "string[]", description: "Backward-compatible alias for extraServices" },
       },
       response: "{ vmId, name, type, profile, script }",
     },

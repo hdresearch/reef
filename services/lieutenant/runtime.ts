@@ -166,7 +166,9 @@ export class LieutenantRuntime {
     });
 
     await this.syncRemoteLieutenant(lt);
-    return this.store.getByName(name)!;
+    const registered = this.store.getByName(name)!;
+    this.events.fire("lieutenant:created", this.buildCreateEvent(registered, { reconnected: true }));
+    return registered;
   }
 
   async create(params: CreateParams): Promise<Lieutenant> {

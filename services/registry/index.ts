@@ -4,7 +4,7 @@
  * Upgraded from in-memory (examples/services/registry) to SQLite with:
  *   - Persistent storage across restarts
  *   - VM lineage tracking (parent-child relationships)
- *   - Reef config per VM (organs + capabilities = "DNA")
+ *   - Reef config per VM (services + capabilities = "DNA")
  *   - Config diff between VMs
  */
 
@@ -87,7 +87,7 @@ const registry: ServiceModule = {
         role: { type: "string", required: true, description: "Role: infra | lieutenant | worker | golden | custom" },
         address: { type: "string", required: true, description: "Network address" },
         parentVmId: { type: "string", description: "Parent VM ID for lineage" },
-        reefConfig: { type: "object", description: "VM DNA: { organs: [...], capabilities: [...] }" },
+        reefConfig: { type: "object", description: "VM DNA: { services: [...], capabilities: [...] }" },
         registeredBy: { type: "string", required: true, description: "Agent or system that registered" },
       },
       response: "The registered VM object",
@@ -145,7 +145,7 @@ const registry: ServiceModule = {
         idA: { type: "string", required: true, description: "First VM ID" },
         idB: { type: "string", required: true, description: "Second VM ID" },
       },
-      response: "{ added: { organs, capabilities }, removed: { organs, capabilities } }",
+      response: "{ added: { services, capabilities }, removed: { services, capabilities } }",
     },
     "GET /_panel": {
       summary: "HTML dashboard showing registered VMs with lineage",

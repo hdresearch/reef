@@ -31,6 +31,11 @@ describe("bootloader", () => {
     expect(res.data.script).toContain("PI_PATH=punkin");
     expect(res.data.script).toContain('"$PI_PATH" install /root/reef');
     expect(res.data.script).toContain('"$PI_PATH" install /root/pi-vers');
+    expect(res.data.script).toContain("cat > /usr/local/bin/punkin <<'EOF'");
+    expect(res.data.script).toContain(". /etc/profile.d/reef-agent.sh");
+    expect(res.data.script).toContain(
+      'export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
+    );
     expect(res.data.script).toContain("ln -sf /usr/local/bin/punkin /usr/local/bin/pi");
     expect(res.data.script).toContain("Child agent VM configured to use the root reef");
     expect(res.data.script).not.toContain("systemctl start reef");
@@ -55,6 +60,11 @@ describe("bootloader", () => {
     expect(res.data.script).toContain("PI_PATH=punkin");
     expect(res.data.script).toContain('"$PI_PATH" install /root/reef');
     expect(res.data.script).toContain('"$PI_PATH" install /root/pi-vers');
+    expect(res.data.script).toContain("cat > /usr/local/bin/punkin <<'EOF'");
+    expect(res.data.script).toContain(". /etc/profile.d/reef-agent.sh");
+    expect(res.data.script).toContain(
+      'export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
+    );
     expect(res.data.script).toContain("ln -sf /usr/local/bin/punkin /usr/local/bin/pi");
     expect(res.data.script).toContain("Child agent VM configured to use the root reef");
     expect(res.data.script).not.toContain("systemctl start reef");
