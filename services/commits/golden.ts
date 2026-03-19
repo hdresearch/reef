@@ -9,11 +9,10 @@ const DEFAULT_GOLDEN_VM_CONFIG = {
   fs_size_mib: 8192,
 };
 
-const GOLDEN_ORGANS = ["bootloader", "cron", "docs", "installer", "lieutenant", "services", "ui", "vers-config"];
 const GOLDEN_CAPABILITIES = [
   "pi-vers",
   "punkin",
-  "reef-node",
+  "reef-extension",
   "vers-lieutenant",
   "vers-vm",
   "vers-vm-copy",
@@ -90,30 +89,7 @@ async function registerGoldenRecord(vmId: string, commitId: string, label: strin
   }
 }
 
-function buildGoldenBootstrapScript(vmId: string, label: string): string {
-  const envBlock = [
-    `PORT=3000`,
-    `VERS_VM_ID=${vmId}`,
-    `VERS_AGENT_NAME=${label}`,
-    `VERS_AGENT_ROLE=agent_vm`,
-    process.env.VERS_API_KEY ? `VERS_API_KEY=${shellQuote(process.env.VERS_API_KEY)}` : "",
-    process.env.VERS_AUTH_TOKEN ? `VERS_AUTH_TOKEN=${shellQuote(process.env.VERS_AUTH_TOKEN)}` : "",
-    `VERS_INFRA_URL=${shellQuote(deriveRootBaseUrl())}`,
-    process.env.ANTHROPIC_API_KEY ? `ANTHROPIC_API_KEY=${shellQuote(process.env.ANTHROPIC_API_KEY)}` : "",
-    `REEF_ROLE=child`,
-    `REEF_CATEGORY=agent_vm`,
-    process.env.VERS_VM_ID ? `REEF_PARENT_VM_ID=${process.env.VERS_VM_ID}` : "",
-    process.env.VERS_VM_ID ? `REEF_ROOT_VM_ID=${process.env.VERS_VM_ID}` : "",
-    `REEF_SQLITE_AUTHORITY=false`,
-    `REEF_ORGANS=${shellQuote(GOLDEN_ORGANS.join(","))}`,
-    `REEF_CAPABILITIES=${shellQuote(GOLDEN_CAPABILITIES.join(","))}`,
-    `PUNKIN_BIN=${shellQuote("punkin")}`,
-    `PI_PATH=${shellQuote("punkin")}`,
-    `PI_VERS_HOME=${shellQuote("/root/pi-vers")}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-
+function buildGoldenBootstrapScript(rootBaseUrl: string): string {
   return `#!/bin/bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -132,7 +108,14 @@ if ! command -v bun >/dev/null 2>&1; then
   export PATH="/root/.bun/bin:$PATH"
 fi
 
-cd /root/punkin-pi
+if [ -d /root/punkin-pi ]; then
+  cd /root/punkin-pi
+  git fetch --tags --force
+else
+  git clone https://github.com/hdresearch/punkin-pi.git /root/punkin-pi
+  cd /root/punkin-pi
+fi
+git checkout v1rc3
 HUSKY=0 npm install
 npm run build
 
@@ -143,24 +126,7 @@ npm run build
 cd /root/reef
 bun install
 
-cat > /root/reef/.env <<ENVEOF
-${envBlock}
-ENVEOF
-
-set -a
-source /root/reef/.env
-set +a
-
-rm -rf /root/reef/services-active
-mkdir -p /root/reef/services-active
-ACTIVE_ORGANS=${shellQuote(GOLDEN_ORGANS.join(" "))}
-for dir in /root/reef/services/*/; do
-  svc=$(basename "$dir")
-  if echo "$ACTIVE_ORGANS" | grep -qw "$svc"; then
-    ln -s "../services/$svc" "/root/reef/services-active/$svc"
-  fi
-done
-export SERVICES_DIR="/root/reef/services-active"
+mkdir -p /root/workspace /root/.pi/agent /etc/profile.d
 
 if [ -x /root/punkin-pi/builds/punkin ]; then
   ln -sf /root/punkin-pi/builds/punkin /usr/local/bin/punkin
@@ -172,27 +138,27 @@ if [ -x /usr/local/bin/punkin ]; then
   ln -sf /usr/local/bin/punkin /usr/local/bin/pi
 fi
 
-mkdir -p /root/.pi/agent
+cat > /etc/profile.d/reef-agent.sh <<ENVEOF
+export VERS_INFRA_URL=${shellQuote(rootBaseUrl)}
+export PUNKIN_BIN=punkin
+export PI_PATH=punkin
+export PI_VERS_HOME=/root/pi-vers
+export SERVICES_DIR=/root/reef/services
+ENVEOF
+chmod 0644 /etc/profile.d/reef-agent.sh
+
+set -a
+source /etc/profile.d/reef-agent.sh
+set +a
+
 if command -v "$PI_PATH" >/dev/null 2>&1; then
   "$PI_PATH" install /root/pi-vers
   "$PI_PATH" install /root/reef
 fi
 
-cp /root/reef/scripts/reef.service /etc/systemd/system/reef.service
-systemctl daemon-reload
-systemctl enable reef
-systemctl restart reef
-
-for i in $(seq 1 45); do
-  if curl -sf http://localhost:3000/health >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep 1
-done
-
-echo "reef failed to start" >&2
-tail -50 /tmp/reef.log >&2 || true
-exit 1
+test -x /usr/local/bin/pi
+test -d /root/pi-vers
+test -d /root/reef/services
 `;
 }
 
@@ -223,18 +189,13 @@ export async function ensureGoldenCommit(
   }
 
   const client = new VersClient();
-  const label = options.label?.trim() || "reef-child-golden";
+  const label = options.label?.trim() || "reef-agent-golden";
   const reefDir = resolveSourcePath("reef", ["/opt/src/reef", "/opt/reef", process.cwd()]);
   const piVersDir = resolveSourcePath("pi-vers", [
     process.env.PI_VERS_HOME,
     "/opt/src/pi-vers",
     "/opt/pi-vers",
     resolve(process.cwd(), "..", "pi-vers"),
-  ]);
-  const punkinDir = resolveSourcePath("punkin-pi", [
-    "/opt/src/punkin-pi",
-    "/opt/punkin-pi",
-    resolve(process.cwd(), "..", "punkin-pi"),
   ]);
 
   const builder = await client.createRoot(DEFAULT_GOLDEN_VM_CONFIG, true);
@@ -243,18 +204,7 @@ export async function ensureGoldenCommit(
   try {
     await client.uploadDirectory(vmId, reefDir, "/root/reef");
     await client.uploadDirectory(vmId, piVersDir, "/root/pi-vers");
-    await client.uploadDirectory(vmId, punkinDir, "/root/punkin-pi");
-    await client.execScript(vmId, buildGoldenBootstrapScript(vmId, label));
-    await client.execScript(
-      vmId,
-      [
-        "set -e",
-        "tmux kill-server 2>/dev/null || true",
-        "rm -rf /tmp/pi-rpc/*",
-        "pkill -f 'bun run src/main.ts' 2>/dev/null || true",
-        "bash /root/reef/scripts/boot.sh",
-      ].join("\n"),
-    );
+    await client.execScript(vmId, buildGoldenBootstrapScript(deriveRootBaseUrl()));
 
     const committed = await client.commit(vmId, true);
     const record = store.record({

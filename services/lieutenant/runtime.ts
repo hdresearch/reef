@@ -29,6 +29,10 @@ export interface LieutenantRuntimeOptions {
   fetchImpl?: typeof fetch;
   getVmState?: typeof getVersVmState;
   resolveCommitId?: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
+  waitForRemoteVm?: typeof waitForSshReady;
+  waitForRemoteSession?: typeof waitForRemoteRpcSession;
+  startRemoteHandle?: typeof startRemoteRpcAgent;
+  reconnectRemoteHandle?: typeof reconnectRemoteRpcAgent;
 }
 
 interface CreateParams {
@@ -47,6 +51,10 @@ export class LieutenantRuntime {
   private readonly fetchImpl: typeof fetch;
   private readonly getVmState: typeof getVersVmState;
   private readonly resolveCommitId: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
+  private readonly waitForRemoteVm: typeof waitForSshReady;
+  private readonly waitForRemoteSession: typeof waitForRemoteRpcSession;
+  private readonly startRemoteHandle: typeof startRemoteRpcAgent;
+  private readonly reconnectRemoteHandle: typeof reconnectRemoteRpcAgent;
 
   constructor(opts: LieutenantRuntimeOptions) {
     this.events = opts.events;
@@ -54,6 +62,10 @@ export class LieutenantRuntime {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.getVmState = opts.getVmState ?? getVersVmState;
     this.resolveCommitId = opts.resolveCommitId ?? ((commitId) => resolveGoldenCommit({ commitId, ensure: true }));
+    this.waitForRemoteVm = opts.waitForRemoteVm ?? waitForSshReady;
+    this.waitForRemoteSession = opts.waitForRemoteSession ?? waitForRemoteRpcSession;
+    this.startRemoteHandle = opts.startRemoteHandle ?? startRemoteRpcAgent;
+    this.reconnectRemoteHandle = opts.reconnectRemoteHandle ?? reconnectRemoteRpcAgent;
   }
 
   private ensureNameAvailable(name: string): void {
@@ -76,74 +88,33 @@ export class LieutenantRuntime {
     };
   }
 
-  private remoteBaseUrl(lt: Lieutenant): string {
-    return `https://${lt.vmId}.vm.vers.sh:3000`;
-  }
-
-  private remoteTaskId(name: string): string {
-    return `lt-${name}`;
-  }
-
-  private authHeaders(): Record<string, string> {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (process.env.VERS_AUTH_TOKEN) {
-      headers.Authorization = `Bearer ${process.env.VERS_AUTH_TOKEN}`;
-    }
-    return headers;
-  }
-
-  private async remoteRequest<T>(
-    lt: Lieutenant,
-    method: string,
-    path: string,
-    body?: unknown,
-  ): Promise<{ status: number; payload: T | null }> {
-    const response = await this.fetchImpl(`${this.remoteBaseUrl(lt)}${path}`, {
-      method,
-      headers: this.authHeaders(),
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-
-    const text = await response.text();
-    const payload = text ? (JSON.parse(text) as T) : null;
-    return { status: response.status, payload };
-  }
-
-  private extractRemoteOutput(task: any): string {
-    const nodes = Array.isArray(task?.nodes) ? task.nodes : [];
-    for (let index = nodes.length - 1; index >= 0; index -= 1) {
-      const node = nodes[index];
-      if (node?.role === "assistant" && typeof node.content === "string" && node.content.trim()) {
-        return node.content.trim();
-      }
+  private async reconnectLieutenantHandle(name: string, vmId: string): Promise<RpcHandle> {
+    const existing = this.handles.get(name);
+    if (existing?.isAlive()) {
+      return existing;
     }
 
-    if (typeof task?.artifacts?.summary === "string" && task.artifacts.summary.trim()) {
-      return task.artifacts.summary.trim();
-    }
-
-    return "";
+    const handle = await this.reconnectRemoteHandle(vmId);
+    this.handles.set(name, handle);
+    this.installEventHandler(name);
+    return handle;
   }
 
-  private async waitForRemoteReef(lt: Lieutenant, timeoutMs = 60_000): Promise<void> {
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
-      try {
-        const response = await this.fetchImpl(`${this.remoteBaseUrl(lt)}/health`);
-        if (response.ok) return;
-      } catch {
-        // retry until timeout
-      }
-      await Bun.sleep(2_000);
+  private async ensureRemoteHandle(name: string, lt: Lieutenant): Promise<RpcHandle> {
+    if (!lt.vmId) throw new ValidationError(`Lieutenant '${name}' has no VM attached`);
+
+    const existing = this.handles.get(name);
+    if (existing?.isAlive()) {
+      return existing;
     }
 
-    throw new Error(`Timed out waiting for reef health on ${lt.vmId}`);
+    await this.waitForRemoteSession(lt.vmId);
+    return this.reconnectLieutenantHandle(name, lt.vmId);
   }
 
   private async syncRemoteLieutenant(input: string | Lieutenant): Promise<Lieutenant | undefined> {
     const lt = typeof input === "string" ? this.store.getByName(input) : input;
     if (!lt || lt.isLocal) return lt;
-    if (this.handles.get(lt.name)?.isAlive()) return lt;
     if (!lt.vmId) return lt;
 
     try {
@@ -158,42 +129,13 @@ export class LieutenantRuntime {
       return this.store.update(lt.name, { status: "error" });
     }
 
-    let taskPayload: any = null;
     try {
-      const task = await this.remoteRequest<any>(
-        lt,
-        "GET",
-        `/reef/tasks/${encodeURIComponent(this.remoteTaskId(lt.name))}`,
-      );
-      if (task.status === 404) {
-        return this.store.update(lt.name, { status: "idle" });
-      }
-      if (task.status >= 400 || !task.payload) {
-        return this.store.update(lt.name, { status: "error" });
-      }
-      taskPayload = task.payload;
+      await this.ensureRemoteHandle(lt.name, lt);
+      const nextStatus = lt.status === "working" ? "working" : "idle";
+      return this.store.update(lt.name, { status: nextStatus });
     } catch {
       return this.store.update(lt.name, { status: "error" });
     }
-
-    const taskStatus = taskPayload?.status;
-    if (taskStatus === "running") {
-      return this.store.update(lt.name, { status: "working" });
-    }
-
-    const nextStatus = taskStatus === "error" ? "error" : "idle";
-    const output = this.extractRemoteOutput(taskPayload);
-    const current = this.store.getByName(lt.name);
-    const lastHistory = current?.outputHistory.at(-1) || "";
-
-    if (output && output !== lastHistory) {
-      this.store.update(lt.name, { status: nextStatus, lastOutput: output });
-      this.store.rotateOutput(lt.name);
-    } else {
-      this.store.update(lt.name, { status: nextStatus });
-    }
-
-    return this.store.getByName(lt.name);
   }
 
   async refresh(name: string): Promise<Lieutenant | undefined> {
@@ -266,9 +208,9 @@ export class LieutenantRuntime {
         resolvedCommit = await this.resolveCommitId(commitId);
         const remote = await createVersVmFromCommit(resolvedCommit.commitId);
         this.store.update(name, { vmId: remote.vmId });
-        await waitForSshReady(remote.vmId);
+        await this.waitForRemoteVm(remote.vmId);
 
-        const handle = await startRemoteRpcAgent(remote.vmId, {
+        const handle = await this.startRemoteHandle(remote.vmId, {
           anthropicApiKey: apiKey,
           model,
           systemPrompt,
@@ -333,54 +275,12 @@ export class LieutenantRuntime {
     if (!lt || lt.status === "destroyed") throw new NotFoundError(`Lieutenant '${name}' not found`);
     if (lt.status === "paused") throw new ValidationError(`Lieutenant '${name}' is paused. Resume it first.`);
 
-    const handle = this.handles.get(name);
+    let handle = this.handles.get(name);
+    if ((!handle || !handle.isAlive()) && !lt.isLocal) {
+      handle = await this.ensureRemoteHandle(name, lt);
+    }
     if (!handle || !handle.isAlive()) {
-      if (lt.isLocal) {
-        throw new ValidationError(`No active RPC connection for '${name}'`);
-      }
-
-      const current = (await this.syncRemoteLieutenant(name)) || this.store.getByName(name);
-      if (!current) throw new NotFoundError(`Lieutenant '${name}' not found`);
-      if (current.status === "paused") {
-        throw new ValidationError(`Lieutenant '${name}' is paused. Resume it first.`);
-      }
-      if (current.status === "working") {
-        throw new ValidationError(
-          `Lieutenant '${name}' is already working. Remote reef lieutenants do not support queued follow-ups or steer yet.`,
-        );
-      }
-
-      let actualMode = mode || "prompt";
-      let note: string | undefined;
-      if (actualMode === "steer") {
-        actualMode = "followUp";
-        note = "steer is treated as a follow-up continuation for remote reef lieutenants";
-      }
-
-      const existingTask = await this.remoteRequest<any>(
-        current,
-        "GET",
-        `/reef/tasks/${encodeURIComponent(this.remoteTaskId(name))}`,
-      );
-      const body: Record<string, string> = {
-        task: message,
-        taskId: this.remoteTaskId(name),
-      };
-      if (existingTask.status !== 404 && existingTask.payload?.leafId) {
-        body.parentId = existingTask.payload.leafId;
-      }
-
-      const submitted = await this.remoteRequest<any>(current, "POST", "/reef/submit", body);
-      if (submitted.status >= 400) {
-        throw new ValidationError(`Remote reef submit failed for '${name}'`);
-      }
-
-      this.store.update(name, {
-        status: "working",
-        taskCount: current.taskCount + 1,
-        lastOutput: "",
-      });
-      return { sent: true, mode: actualMode, note };
+      throw new ValidationError(`No active RPC connection for '${name}'`);
     }
 
     let actualMode = mode || "prompt";
@@ -433,24 +333,15 @@ export class LieutenantRuntime {
     if (!lt.vmId) throw new ValidationError(`Lieutenant '${name}' has no VM attached`);
 
     await setVersVmState(lt.vmId, "Running");
+    await this.waitForRemoteVm(lt.vmId);
     const existingHandle = this.handles.get(name);
     if (existingHandle?.reconnectTail) {
-      await waitForRemoteRpcSession(lt.vmId);
+      await this.waitForRemoteSession(lt.vmId);
       existingHandle.reconnectTail();
       this.store.update(name, { status: "idle" });
-    } else if (existingHandle) {
-      await waitForRemoteRpcSession(lt.vmId);
-      const handle = await reconnectRemoteRpcAgent(lt.vmId);
-      this.handles.set(name, handle);
-      this.installEventHandler(name);
-      this.store.update(name, { status: "idle" });
     } else {
-      await this.waitForRemoteReef(lt);
-      await this.syncRemoteLieutenant(name);
-      const refreshed = this.store.getByName(name);
-      if (refreshed && refreshed.status === "paused") {
-        this.store.update(name, { status: "idle" });
-      }
+      await this.ensureRemoteHandle(name, lt);
+      this.store.update(name, { status: "idle" });
     }
     this.events.fire("lieutenant:resumed", this.buildCreateEvent(this.store.getByName(name)!));
     return { resumed: true };

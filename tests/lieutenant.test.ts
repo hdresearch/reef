@@ -23,13 +23,6 @@ const ORIGINAL_ENV = {
   VERS_AGENT_NAME: process.env.VERS_AGENT_NAME,
 };
 
-function createJsonResponse(payload: unknown, status = 200) {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
 function restoreEnv() {
   for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
     if (value === undefined) {
@@ -38,6 +31,66 @@ function restoreEnv() {
       process.env[key] = value;
     }
   }
+}
+
+function createFakeRemoteHandle() {
+  const handlers = new Set<(event: any) => void>();
+  let alive = true;
+
+  return {
+    handle: {
+      send(cmd: any) {
+        if (!alive) return;
+
+        if (cmd.type === "get_state") {
+          for (const handler of handlers) {
+            handler({ type: "response", command: "get_state", state: "idle" });
+          }
+          return;
+        }
+
+        if (cmd.type === "set_model") {
+          for (const handler of handlers) {
+            handler({ type: "response", command: "set_model", ok: true, model: cmd.modelId ?? null });
+          }
+          return;
+        }
+
+        if (cmd.type === "prompt" || cmd.type === "follow_up" || cmd.type === "steer") {
+          for (const handler of handlers) {
+            handler({ type: "agent_start" });
+          }
+          setTimeout(() => {
+            for (const handler of handlers) {
+              handler({
+                type: "message_update",
+                assistantMessageEvent: {
+                  type: "text_delta",
+                  delta: `remote:${cmd.message ?? ""}`,
+                },
+              });
+              handler({ type: "agent_end" });
+            }
+          }, 10);
+        }
+      },
+      onEvent(handler: (event: any) => void) {
+        handlers.add(handler);
+        return () => {
+          handlers.delete(handler);
+        };
+      },
+      async kill() {
+        alive = false;
+      },
+      vmId: "vm-remote-1",
+      isAlive() {
+        return alive;
+      },
+      reconnectTail() {},
+      suspendTail() {},
+    },
+  };
 }
 
 function writeFakePi() {
@@ -223,53 +276,24 @@ describe("lieutenant routes and runtime", () => {
     store.close();
   });
 
-  test("registers a remote reef lieutenant and syncs status/output over HTTP", async () => {
+  test("registers a remote agent VM and syncs status/output over RPC", async () => {
     const store = new LieutenantStore(join(TMP_DIR, "remote-runtime.sqlite"));
-    const fetchCalls: Array<{ method: string; url: string; body?: any }> = [];
-    let remoteTaskStatus: "missing" | "running" | "done" = "missing";
-    let leafId = "leaf-1";
+    const remote = createFakeRemoteHandle();
 
     const runtime = new LieutenantRuntime({
       events: new ServiceEventBus(),
       store,
       getVmState: async () => "running",
-      fetchImpl: async (input, init) => {
-        const url = String(input);
-        const method = init?.method || "GET";
-        const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-        fetchCalls.push({ method, url, body });
-
-        if (url.endsWith("/reef/tasks/lt-remote-http")) {
-          if (remoteTaskStatus === "missing") return createJsonResponse({ error: "not found" }, 404);
-          if (remoteTaskStatus === "running") {
-            return createJsonResponse({ name: "lt-remote-http", status: "running", leafId, nodes: [] });
-          }
-          return createJsonResponse({
-            name: "lt-remote-http",
-            status: "done",
-            leafId,
-            nodes: [
-              { id: "u-1", parentId: null, role: "user", content: "hello remote" },
-              { id: "a-1", parentId: "u-1", role: "assistant", content: "remote-output" },
-            ],
-          });
-        }
-
-        if (url.endsWith("/reef/submit")) {
-          remoteTaskStatus = "running";
-          return createJsonResponse({ id: "lt-remote-http", status: "running", nodeId: "u-2" }, 202);
-        }
-
-        return createJsonResponse({ error: "unexpected" }, 500);
-      },
+      reconnectRemoteHandle: async () => remote.handle as any,
+      waitForRemoteSession: async () => {},
     });
     const app = createRoutes(store, () => runtime);
 
     const registered = await json(app, "/lieutenants/register", {
       method: "POST",
       body: {
-        name: "remote-http",
-        role: "remote reef lieutenant",
+        name: "remote-rpc",
+        role: "remote agent lieutenant",
         vmId: "vm-remote-1",
       },
     });
@@ -281,25 +305,24 @@ describe("lieutenant routes and runtime", () => {
     expect(listBeforeSend.status).toBe(200);
     expect(listBeforeSend.data.count).toBe(1);
 
-    const sent = await json(app, "/lieutenants/remote-http/send", {
+    const sent = await json(app, "/lieutenants/remote-rpc/send", {
       method: "POST",
       body: { message: "hello remote" },
     });
     expect(sent.status).toBe(200);
     expect(sent.data.sent).toBe(true);
-    expect(store.getByName("remote-http")?.status).toBe("working");
+    expect(store.getByName("remote-rpc")?.status).toBe("working");
 
-    remoteTaskStatus = "done";
-    leafId = "a-1";
+    await waitFor(() => {
+      const lt = store.getByName("remote-rpc");
+      return lt?.status === "idle" && (lt.outputHistory.length ?? 0) === 1;
+    });
 
-    const read = await json(app, "/lieutenants/remote-http/read");
+    const read = await json(app, "/lieutenants/remote-rpc/read");
     expect(read.status).toBe(200);
     expect(read.data.status).toBe("idle");
-    expect(read.data.output).toContain("remote-output");
-    expect(store.getByName("remote-http")?.outputHistory.at(-1)).toBe("remote-output");
-
-    const submitCall = fetchCalls.find((call) => call.url.endsWith("/reef/submit"));
-    expect(submitCall?.body.taskId).toBe("lt-remote-http");
+    expect(read.data.output).toContain("remote:hello remote");
+    expect(store.getByName("remote-rpc")?.outputHistory.at(-1)).toBe("remote:hello remote");
 
     await runtime.shutdown();
     store.close();

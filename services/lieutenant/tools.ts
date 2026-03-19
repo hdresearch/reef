@@ -26,6 +26,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       "Spawn a persistent agent session (lieutenant).",
       "Lieutenants persist across tasks, accumulate context, and support multi-turn interaction.",
       "Remote mode is the default and uses the explicit commitId, configured env golden, or root Reef golden commit.",
+      "Remote lieutenants are agent VMs running punkin + pi-vers + the root Reef extension, not standalone Reef nodes.",
       "Set local=true to run as a local subprocess instead.",
     ].join(" "),
     parameters: Type.Object({
