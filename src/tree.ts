@@ -58,10 +58,41 @@ export interface TaskArtifacts {
 export interface TaskInfo {
   status: "running" | "done" | "error";
   trigger: string;
+  title: string;
+  closed: boolean;
   createdAt: number;
+  lastActivityAt: number;
   startedAt?: number;
   completedAt?: number;
   artifacts?: TaskArtifacts;
+}
+
+function titleFromTrigger(trigger: string, fallback = "Conversation"): string {
+  const normalized = (trigger || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!normalized) return fallback;
+  return normalized.length > 72 ? `${normalized.slice(0, 72)}…` : normalized;
+}
+
+function normalizeTaskInfo(name: string, info: Partial<TaskInfo> | undefined): TaskInfo {
+  const createdAt = typeof info?.createdAt === "number" ? info.createdAt : Date.now();
+  const completedAt = typeof info?.completedAt === "number" ? info.completedAt : undefined;
+  return {
+    status: info?.status ?? "done",
+    trigger: info?.trigger ?? "",
+    title: info?.title ?? titleFromTrigger(info?.trigger ?? "", name),
+    closed: info?.closed ?? false,
+    createdAt,
+    lastActivityAt:
+      typeof info?.lastActivityAt === "number"
+        ? info.lastActivityAt
+        : (completedAt ?? (typeof info?.startedAt === "number" ? info.startedAt : createdAt)),
+    startedAt: typeof info?.startedAt === "number" ? info.startedAt : undefined,
+    completedAt,
+    artifacts: info?.artifacts,
+  };
 }
 
 // =============================================================================
@@ -114,7 +145,9 @@ export class ConversationTree {
         const data = JSON.parse(readFileSync(path, "utf-8"));
         this.nodes = new Map(Object.entries(data.nodes ?? {}));
         this.refs = new Map(Object.entries(data.refs ?? {}));
-        this.tasks = new Map(Object.entries(data.tasks ?? {}));
+        this.tasks = new Map(
+          Object.entries(data.tasks ?? {}).map(([name, info]) => [name, normalizeTaskInfo(name, info as TaskInfo)]),
+        );
         this.root = data.root ?? null;
         this.archivedTasks = new Set(data.archivedTasks ?? []);
         this.rebuildChildIndex();
@@ -444,13 +477,17 @@ export class ConversationTree {
 
   /** Start a task — creates a ref and task info. */
   startTask(name: string, trigger: string, parentId: string | null): TreeNode {
+    const now = Date.now();
     const userNode = this.add(parentId, "user", trigger);
     this.refs.set(name, userNode.id);
     this.tasks.set(name, {
       status: "running",
       trigger,
-      createdAt: Date.now(),
-      startedAt: Date.now(),
+      title: titleFromTrigger(trigger, name),
+      closed: false,
+      createdAt: now,
+      lastActivityAt: now,
+      startedAt: now,
     });
     this.save();
     return userNode;
@@ -462,6 +499,7 @@ export class ConversationTree {
     if (info) {
       info.status = "done";
       info.completedAt = Date.now();
+      info.lastActivityAt = info.completedAt;
       info.artifacts = artifacts;
     }
     this.save();
@@ -473,6 +511,7 @@ export class ConversationTree {
     if (info) {
       info.status = "error";
       info.completedAt = Date.now();
+      info.lastActivityAt = info.completedAt;
       info.artifacts = { summary: `Failed: ${error}`, filesChanged: [], error };
     }
     this.save();
@@ -483,9 +522,39 @@ export class ConversationTree {
     const info = this.tasks.get(name);
     if (info) {
       info.status = "running";
+      info.closed = false;
+      info.lastActivityAt = Date.now();
       info.completedAt = undefined;
       info.artifacts = undefined;
     }
+    this.save();
+  }
+
+  /** Mark a persisted conversation as closed in the UI. */
+  closeTask(name: string): boolean {
+    const info = this.tasks.get(name);
+    if (!info) return false;
+    info.closed = true;
+    info.lastActivityAt = Date.now();
+    this.save();
+    return true;
+  }
+
+  /** Reopen a persisted conversation in the UI. */
+  openTask(name: string): boolean {
+    const info = this.tasks.get(name);
+    if (!info) return false;
+    info.closed = false;
+    info.lastActivityAt = Date.now();
+    this.save();
+    return true;
+  }
+
+  /** Update only the last activity timestamp for sorting. */
+  touchTask(name: string): void {
+    const info = this.tasks.get(name);
+    if (!info) return;
+    info.lastActivityAt = Date.now();
     this.save();
   }
 
@@ -540,7 +609,9 @@ export class ConversationTree {
     const tree = new ConversationTree();
     tree.nodes = new Map(Object.entries(data.nodes ?? {}));
     tree.refs = new Map(Object.entries(data.refs ?? {}));
-    tree.tasks = new Map(Object.entries(data.tasks ?? {}));
+    tree.tasks = new Map(
+      Object.entries(data.tasks ?? {}).map(([name, info]) => [name, normalizeTaskInfo(name, info as TaskInfo)]),
+    );
     tree.root = data.root ?? null;
     tree.archivedTasks = new Set(data.archivedTasks ?? []);
     tree.rebuildChildIndex();

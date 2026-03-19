@@ -20,7 +20,8 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { resolveAgentBinary } from "@hdresearch/pi-v/core";
 import { Hono } from "hono";
 import { bearerAuth } from "./core/auth.js";
@@ -43,6 +44,19 @@ interface Task {
 }
 
 let taskCounter = 0;
+
+function conversationPayload(tree: ConversationTree, id: string) {
+  const info = tree.getTask(id);
+  if (!info) return null;
+  const leafId = tree.getRef(id);
+  const nodes = leafId ? tree.ancestors(leafId) : [];
+  return {
+    id,
+    ...info,
+    leafId,
+    nodes,
+  };
+}
 
 function spawnTask(
   prompt: string,
@@ -147,6 +161,8 @@ export async function createReef(config: ReefConfig = {}) {
   const tree = new ConversationTree();
   const dataDir = process.env.REEF_DATA_DIR ?? "data";
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+  const conversationLogDir = join(dataDir, "conversations");
+  if (!existsSync(conversationLogDir)) mkdirSync(conversationLogDir, { recursive: true });
   tree.persist(`${dataDir}/tree.json`);
 
   const piProcesses = new Map<string, Task>();
@@ -171,6 +187,15 @@ export async function createReef(config: ReefConfig = {}) {
         sseClients.delete(c);
       }
     }
+  }
+
+  function appendConversationLog(conversationId: string, entry: Record<string, unknown>) {
+    const line = JSON.stringify({
+      ts: Date.now(),
+      conversationId,
+      ...entry,
+    });
+    appendFileSync(join(conversationLogDir, `${conversationId}.jsonl`), `${line}\n`);
   }
 
   // Track event parents — e.g. cron_done is child of cron_start
@@ -215,7 +240,8 @@ export async function createReef(config: ReefConfig = {}) {
     task.error = error;
     task.completedAt = Date.now();
     tree.failTask(taskId, error);
-    broadcast({ taskId, type: "task_error", error });
+    appendConversationLog(taskId, { type: "error", error });
+    broadcast({ taskId, conversationId: taskId, type: "task_error", error });
     tree.pruneToLimit();
   }
 
@@ -234,6 +260,13 @@ export async function createReef(config: ReefConfig = {}) {
               toolName: event.toolName,
               toolParams: event.args,
             });
+            appendConversationLog(taskId, {
+              type: "tool_call",
+              nodeId: toolNode.id,
+              parentId: toolNode.parentId,
+              toolName: event.toolName,
+              args: event.args,
+            });
             lastToolNode = toolNode;
             broadcast({ taskId, ...event, nodeId: toolNode.id, parentId: toolNode.parentId });
             return;
@@ -250,6 +283,14 @@ export async function createReef(config: ReefConfig = {}) {
               toolCallId: event.toolCallId,
               result: event.result,
             });
+            appendConversationLog(taskId, {
+              type: "tool_result",
+              nodeId: resultNode.id,
+              parentId: resultNode.parentId,
+              toolCallId: event.toolCallId,
+              isError: !!event.isError,
+              result: resultText.slice(0, 1000),
+            });
             broadcast({ taskId, ...event, nodeId: resultNode.id, parentId: resultNode.parentId });
             return;
           }
@@ -264,9 +305,16 @@ export async function createReef(config: ReefConfig = {}) {
           const assistantNode = tree.add(userNode.id, "assistant", output.trim());
           tree.setRef(taskId, assistantNode.id);
           tree.completeTask(taskId, { summary: output.trim().slice(0, 500), filesChanged: [] });
+          appendConversationLog(taskId, {
+            type: "assistant",
+            nodeId: assistantNode.id,
+            parentId: assistantNode.parentId,
+            content: output.trim(),
+          });
 
           broadcast({
             taskId,
+            conversationId: taskId,
             type: "task_done",
             summary: output.trim().slice(0, 200),
             nodeId: assistantNode.id,
@@ -292,35 +340,33 @@ export async function createReef(config: ReefConfig = {}) {
   const auth = bearerAuth();
   reef.use("*", async (c, next) => await auth(c, next));
 
-  reef.post("/submit", async (c) => {
-    const body = await c.req.json();
-    const prompt = body.task;
-    if (!prompt || typeof prompt !== "string") {
-      return c.json({ error: "Missing 'task' string in body." }, 400);
-    }
+  async function submitPrompt(opts: { prompt: string; conversationId?: string; parentId?: string | null }) {
+    const taskId = opts.conversationId || `task-${++taskCounter}-${Date.now()}`;
+    const taskExists = !!tree.getTask(taskId);
+    const continuing = taskExists;
+    const parentId = continuing
+      ? (opts.parentId ?? tree.getRef(taskId) ?? tree.getRef("main") ?? null)
+      : (opts.parentId ?? tree.getRef("main") ?? null);
 
-    const taskId = body.taskId || `task-${++taskCounter}-${Date.now()}`;
-    const parentId = body.parentId ?? tree.getRef("main") ?? null;
-    const continuing = !!body.parentId;
-
-    // Create user node in the tree — either forking from main or continuing a conversation
     const userNode = continuing
-      ? tree.add(parentId, "user", prompt) // reply to specific node
-      : tree.startTask(taskId, prompt, parentId); // new task
+      ? tree.add(parentId, "user", opts.prompt)
+      : tree.startTask(taskId, opts.prompt, parentId);
 
-    // If continuing, reopen the task and advance its ref
     if (continuing) {
-      // Find which task owns this parentId
-      const existingTask = body.taskId ? tree.getTask(body.taskId) : undefined;
-      if (existingTask) {
-        tree.reopenTask(taskId);
-        tree.setRef(taskId, userNode.id);
-      }
+      tree.reopenTask(taskId);
+      tree.setRef(taskId, userNode.id);
     }
+    appendConversationLog(taskId, {
+      type: "user",
+      nodeId: userNode.id,
+      parentId: userNode.parentId,
+      content: opts.prompt,
+      continuing,
+    });
 
     const task: Task = {
       id: taskId,
-      prompt,
+      prompt: opts.prompt,
       status: "running",
       output: "",
       events: [],
@@ -328,10 +374,132 @@ export async function createReef(config: ReefConfig = {}) {
     };
     piProcesses.set(taskId, task);
 
-    broadcast({ type: "task_started", taskId, prompt, nodeId: userNode.id, parentId: userNode.parentId, continuing });
+    broadcast({
+      type: "task_started",
+      taskId,
+      conversationId: taskId,
+      prompt: opts.prompt,
+      nodeId: userNode.id,
+      parentId: userNode.parentId,
+      continuing,
+    });
     launchTask(task, taskId, userNode, tree.contextFor(userNode.id));
 
-    return c.json({ id: taskId, status: "running", prompt, nodeId: userNode.id }, 202);
+    return { taskId, userNode, continuing };
+  }
+
+  reef.post("/submit", async (c) => {
+    const body = await c.req.json();
+    const prompt = body.task;
+    if (!prompt || typeof prompt !== "string") {
+      return c.json({ error: "Missing 'task' string in body." }, 400);
+    }
+
+    const taskId =
+      typeof body.taskId === "string"
+        ? body.taskId
+        : typeof body.conversationId === "string"
+          ? body.conversationId
+          : undefined;
+    const result = await submitPrompt({
+      prompt,
+      conversationId: taskId,
+      parentId: typeof body.parentId === "string" ? body.parentId : undefined,
+    });
+
+    return c.json(
+      {
+        id: result.taskId,
+        conversationId: result.taskId,
+        status: "running",
+        prompt,
+        nodeId: result.userNode.id,
+      },
+      202,
+    );
+  });
+
+  reef.get("/conversations", (c) => {
+    const includeClosed = c.req.query("includeClosed") === "true";
+    let list = tree.listTasks();
+    if (!includeClosed) list = list.filter((t) => !t.info.closed);
+    list.sort((a, b) => b.info.lastActivityAt - a.info.lastActivityAt);
+    return c.json({
+      conversations: list.map((t) => ({
+        id: t.name,
+        ...t.info,
+        leafId: t.leafId,
+      })),
+    });
+  });
+
+  reef.get("/conversations/:id", (c) => {
+    const conversation = conversationPayload(tree, c.req.param("id"));
+    if (!conversation) return c.json({ error: "not found" }, 404);
+    return c.json(conversation);
+  });
+
+  reef.post("/conversations", async (c) => {
+    const body = await c.req.json();
+    const prompt = body.task;
+    if (!prompt || typeof prompt !== "string") {
+      return c.json({ error: "Missing 'task' string in body." }, 400);
+    }
+
+    const result = await submitPrompt({ prompt });
+    const conversation = conversationPayload(tree, result.taskId);
+    return c.json(
+      {
+        ...conversation,
+        status: "running",
+        prompt,
+        nodeId: result.userNode.id,
+      },
+      202,
+    );
+  });
+
+  reef.post("/conversations/:id/messages", async (c) => {
+    const id = c.req.param("id");
+    if (!tree.getTask(id)) return c.json({ error: "not found" }, 404);
+
+    const body = await c.req.json();
+    const prompt = body.task;
+    if (!prompt || typeof prompt !== "string") {
+      return c.json({ error: "Missing 'task' string in body." }, 400);
+    }
+
+    const result = await submitPrompt({
+      prompt,
+      conversationId: id,
+      parentId: typeof body.parentId === "string" ? body.parentId : undefined,
+    });
+    return c.json(
+      {
+        id,
+        conversationId: id,
+        status: "running",
+        prompt,
+        nodeId: result.userNode.id,
+      },
+      202,
+    );
+  });
+
+  reef.post("/conversations/:id/close", (c) => {
+    const id = c.req.param("id");
+    if (!tree.closeTask(id)) return c.json({ error: "not found" }, 404);
+    appendConversationLog(id, { type: "conversation_closed" });
+    const conversation = conversationPayload(tree, id);
+    return c.json(conversation);
+  });
+
+  reef.post("/conversations/:id/open", (c) => {
+    const id = c.req.param("id");
+    if (!tree.openTask(id)) return c.json({ error: "not found" }, 404);
+    appendConversationLog(id, { type: "conversation_opened" });
+    const conversation = conversationPayload(tree, id);
+    return c.json(conversation);
   });
 
   reef.get("/tasks", (c) => {
@@ -348,12 +516,9 @@ export async function createReef(config: ReefConfig = {}) {
   });
 
   reef.get("/tasks/:name", (c) => {
-    const name = c.req.param("name");
-    const info = tree.getTask(name);
-    if (!info) return c.json({ error: "not found" }, 404);
-    const leafId = tree.getRef(name);
-    const path = leafId ? tree.ancestors(leafId) : [];
-    return c.json({ name, ...info, leafId, nodes: path });
+    const conversation = conversationPayload(tree, c.req.param("name"));
+    if (!conversation) return c.json({ error: "not found" }, 404);
+    return c.json({ name: conversation.id, ...conversation });
   });
 
   reef.get("/tree", (c) => c.json(tree.toJSON()));

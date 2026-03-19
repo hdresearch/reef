@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createReef } from "./reef.js";
 import type { ConversationTree } from "./tree.js";
 
@@ -63,6 +63,11 @@ describe("reef", () => {
   test("GET /reef/tasks — empty initially", async () => {
     const { data } = await json("/reef/tasks");
     expect(data.tasks).toEqual([]);
+  });
+
+  test("GET /reef/conversations — empty initially", async () => {
+    const { data } = await json("/reef/conversations?includeClosed=true");
+    expect(data.conversations).toEqual([]);
   });
 
   test("GET /reef/tasks/:name — 404 for unknown", async () => {
@@ -138,6 +143,21 @@ describe("reef", () => {
     expect(node!.parentId).toBe(mainId);
   });
 
+  test("POST /reef/conversations — creates persisted conversation metadata", async () => {
+    const { status, data } = await json("/reef/conversations", {
+      method: "POST",
+      body: { task: "persist this chat" },
+    });
+    expect(status).toBe(202);
+    expect(data.id).toBeTruthy();
+    expect(data.title).toBe("persist this chat");
+    expect(data.closed).toBe(false);
+    const logPath = `${TEST_DATA_DIR}/conversations/${data.id}.jsonl`;
+    expect(existsSync(logPath)).toBe(true);
+    const lines = readFileSync(logPath, "utf-8").trim().split("\n");
+    expect(JSON.parse(lines[0]).type).toBe("user");
+  });
+
   // ===========================================================================
   // Continuation
   // ===========================================================================
@@ -170,6 +190,56 @@ describe("reef", () => {
     // Task should be reopened
     const taskInfo = tree.getTask("cont-test");
     expect(taskInfo!.status).toBe("running");
+  });
+
+  test("POST /reef/conversations/:id/messages — continues conversation from current leaf", async () => {
+    const { data: created } = await json("/reef/conversations", {
+      method: "POST",
+      body: { task: "conversation start" },
+    });
+
+    const assistantNode = tree.add(created.nodeId, "assistant", "first response");
+    tree.setRef(created.id, assistantNode.id);
+    tree.completeTask(created.id, { summary: "first response", filesChanged: [] });
+
+    const { status, data } = await json(`/reef/conversations/${created.id}/messages`, {
+      method: "POST",
+      body: { task: "follow up without explicit parent" },
+    });
+    expect(status).toBe(202);
+
+    const contNode = tree.get(data.nodeId);
+    expect(contNode!.parentId).toBe(assistantNode.id);
+    expect(tree.getTask(created.id)?.closed).toBe(false);
+  });
+
+  test("POST /reef/conversations/:id/close and /open — toggle persisted visibility", async () => {
+    await json("/reef/conversations", {
+      method: "POST",
+      body: { task: "close me later" },
+    });
+
+    const { data: list } = await json("/reef/conversations?includeClosed=true");
+    const conversation = list.conversations.find((item: any) => item.title === "close me later");
+    expect(conversation).toBeTruthy();
+
+    const { data: closed } = await json(`/reef/conversations/${conversation.id}/close`, { method: "POST" });
+    expect(closed.closed).toBe(true);
+
+    const { data: hidden } = await json("/reef/conversations");
+    const openIds = hidden.conversations.map((item: any) => item.id);
+    expect(openIds).not.toContain(conversation.id);
+
+    const { data: reopened } = await json(`/reef/conversations/${conversation.id}/open`, { method: "POST" });
+    expect(reopened.closed).toBe(false);
+
+    const logPath = `${TEST_DATA_DIR}/conversations/${conversation.id}.jsonl`;
+    const lines = readFileSync(logPath, "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(lines.some((line) => line.type === "conversation_closed")).toBe(true);
+    expect(lines.some((line) => line.type === "conversation_opened")).toBe(true);
   });
 
   // ===========================================================================
@@ -220,6 +290,16 @@ describe("reef", () => {
     expect(data.name).toBe("test-1");
     expect(data.trigger).toBe("test task");
     expect(data.nodes.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("GET /reef/conversations/:id — returns conversation metadata and nodes", async () => {
+    const { data: list } = await json("/reef/conversations?includeClosed=true");
+    const conversation = list.conversations.find((item: any) => item.title === "persist this chat");
+    const { status, data } = await json(`/reef/conversations/${conversation.id}`);
+    expect(status).toBe(200);
+    expect(data.id).toBe(conversation.id);
+    expect(data.title).toBe("persist this chat");
+    expect(data.nodes.length).toBeGreaterThanOrEqual(1);
   });
 
   // ===========================================================================

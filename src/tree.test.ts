@@ -117,6 +117,8 @@ describe("ConversationTree", () => {
       expect(userNode.parentId).toBe(root.id);
       expect(tree.getRef("task-1")).toBe(userNode.id);
       expect(tree.getTask("task-1")?.status).toBe("running");
+      expect(tree.getTask("task-1")?.title).toBe("Build a service.");
+      expect(tree.getTask("task-1")?.closed).toBe(false);
     });
 
     test("completeTask marks done", () => {
@@ -161,6 +163,18 @@ describe("ConversationTree", () => {
       tree.completeTask("a", { summary: "Done.", filesChanged: [] });
       expect(tree.activeTasks()).toBe(1);
     });
+
+    test("closeTask and openTask persist conversation visibility state", () => {
+      const tree = new ConversationTree();
+      const root = tree.add(null, "system", "Init.");
+      tree.startTask("chat-1", "Hello reef", root.id);
+
+      expect(tree.closeTask("chat-1")).toBe(true);
+      expect(tree.getTask("chat-1")?.closed).toBe(true);
+
+      expect(tree.openTask("chat-1")).toBe(true);
+      expect(tree.getTask("chat-1")?.closed).toBe(false);
+    });
   });
 
   describe("serialization", () => {
@@ -176,6 +190,24 @@ describe("ConversationTree", () => {
       expect(restored.root).toBe(root.id);
       expect(restored.getRef("main")).toBe(root.id);
       expect(restored.getTask("task-1")?.status).toBe("done");
+      expect(restored.getTask("task-1")?.title).toBe("Work.");
+      expect(restored.getTask("task-1")?.closed).toBe(false);
+    });
+
+    test("fromJSON backfills conversation metadata for legacy task data", () => {
+      const restored = ConversationTree.fromJSON({
+        tasks: {
+          legacy: {
+            status: "done",
+            trigger: "Legacy prompt",
+            createdAt: 1,
+          },
+        },
+      });
+
+      expect(restored.getTask("legacy")?.title).toBe("Legacy prompt");
+      expect(restored.getTask("legacy")?.closed).toBe(false);
+      expect(restored.getTask("legacy")?.lastActivityAt).toBe(1);
     });
 
     test("fromJSON handles empty data", () => {

@@ -21,6 +21,23 @@
     </header>
 
     <div id="workspace">
+      <aside id="conversations">
+        <div id="conversations-header">
+          <span>conversations</span>
+          <button id="new-chat" type="button">new</button>
+        </div>
+        <div id="conversations-scroll">
+          <section class="conversation-group">
+            <div class="conversation-group-label">open</div>
+            <div id="conversation-list-open" class="conversation-list"></div>
+          </section>
+          <section class="conversation-group">
+            <div class="conversation-group-label">closed</div>
+            <div id="conversation-list-closed" class="conversation-list"></div>
+          </section>
+        </div>
+      </aside>
+
       <!-- Feed: the main trunk -->
       <div id="feed">
         <div id="feed-scroll">
@@ -32,13 +49,20 @@
         </div>
       </div>
 
-      <!-- Branch chat panel (hidden until opened) -->
-      <div id="branch" class="closed">
+      <!-- Conversation chat panel -->
+      <div id="branch">
         <div id="branch-header">
-          <span id="branch-label">conversation</span>
-          <button id="branch-close">✕</button>
+          <div>
+            <div id="branch-label">select a conversation</div>
+            <div id="branch-meta"></div>
+          </div>
+          <div id="branch-actions">
+            <button id="branch-toggle" type="button" hidden>close</button>
+            <button id="branch-close" type="button">✕</button>
+          </div>
         </div>
         <div id="branch-scroll">
+          <div id="branch-empty">Select a conversation to continue the chat, or start a new one from the feed.</div>
           <div id="branch-messages"></div>
         </div>
         <div id="branch-input">
@@ -56,4 +80,3 @@
   <script src="/ui/static/app.js"></script>
 </body>
 </html>
-
