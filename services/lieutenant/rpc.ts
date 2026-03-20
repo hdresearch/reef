@@ -79,21 +79,24 @@ fi`;
 }
 
 /**
- * Persist runtime secrets (LLM_PROXY_KEY, VERS_API_KEY, VERS_INFRA_URL) into
- * /etc/profile.d/reef-agent.sh so they survive process crashes and VM reboots.
- * These are NOT baked into the golden image — they're injected post-spawn.
+ * Persist runtime config (LLM_PROXY_KEY, VERS_API_KEY, VERS_INFRA_URL,
+ * VERS_GOLDEN_COMMIT_ID) into /etc/profile.d/reef-agent.sh so they survive
+ * process crashes and VM reboots. These are NOT baked into the golden image —
+ * they're injected post-spawn and cascade to all children.
  * Uses upsert logic: replace existing lines or append if missing.
  */
 export function buildPersistKeysScript(opts: RemoteRpcOptions): string {
   const llmKey = opts.llmProxyKey || process.env.LLM_PROXY_KEY || "";
   const versKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const infraUrl = process.env.VERS_INFRA_URL || "";
+  const goldenCommitId = process.env.VERS_GOLDEN_COMMIT_ID || "";
   const lines: string[] = ["mkdir -p /etc/profile.d", "touch /etc/profile.d/reef-agent.sh"];
 
   for (const [envName, value] of [
     ["LLM_PROXY_KEY", llmKey],
     ["VERS_API_KEY", versKey],
     ["VERS_INFRA_URL", infraUrl],
+    ["VERS_GOLDEN_COMMIT_ID", goldenCommitId],
   ] as const) {
     if (!value) continue;
     const escaped = escapeEnvValue(value);
@@ -121,6 +124,9 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
     process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
     process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
     process.env.VERS_AUTH_TOKEN ? `export VERS_AUTH_TOKEN='${escapeEnvValue(process.env.VERS_AUTH_TOKEN)}'` : "",
+    process.env.VERS_GOLDEN_COMMIT_ID
+      ? `export VERS_GOLDEN_COMMIT_ID='${escapeEnvValue(process.env.VERS_GOLDEN_COMMIT_ID)}'`
+      : "",
     `export VERS_VM_ID='${escapeEnvValue(vmId)}'`,
     process.env.PI_PATH ? `export PI_PATH='${escapeEnvValue(process.env.PI_PATH)}'` : "",
     process.env.PUNKIN_BIN ? `export PUNKIN_BIN='${escapeEnvValue(process.env.PUNKIN_BIN)}'` : "",

@@ -20,6 +20,7 @@ const ORIGINAL_ENV = {
   PI_PATH: process.env.PI_PATH,
   VERS_API_KEY: process.env.VERS_API_KEY,
   VERS_AUTH_TOKEN: process.env.VERS_AUTH_TOKEN,
+  VERS_GOLDEN_COMMIT_ID: process.env.VERS_GOLDEN_COMMIT_ID,
   VERS_INFRA_URL: process.env.VERS_INFRA_URL,
   VERS_VM_ID: process.env.VERS_VM_ID,
   VERS_AGENT_NAME: process.env.VERS_AGENT_NAME,
@@ -225,9 +226,10 @@ describe("lieutenant routes and runtime", () => {
     expect(script).toContain("sed -i");
   });
 
-  test("buildPersistKeysScript persists LLM_PROXY_KEY, VERS_API_KEY, and VERS_INFRA_URL into reef-agent.sh", () => {
+  test("buildPersistKeysScript persists all runtime config into reef-agent.sh", () => {
     process.env.VERS_API_KEY = "vers-key-abc";
     process.env.VERS_INFRA_URL = "https://root.example:3000";
+    process.env.VERS_GOLDEN_COMMIT_ID = "golden-xyz";
     const script = buildPersistKeysScript({ llmProxyKey: "sk-vers-test", model: "claude-test" });
     expect(script).toContain("touch /etc/profile.d/reef-agent.sh");
     expect(script).toContain("grep -q '^export LLM_PROXY_KEY='");
@@ -236,6 +238,8 @@ describe("lieutenant routes and runtime", () => {
     expect(script).toContain("export VERS_API_KEY='vers-key-abc'");
     expect(script).toContain("grep -q '^export VERS_INFRA_URL='");
     expect(script).toContain("export VERS_INFRA_URL='https://root.example:3000'");
+    expect(script).toContain("grep -q '^export VERS_GOLDEN_COMMIT_ID='");
+    expect(script).toContain("export VERS_GOLDEN_COMMIT_ID='golden-xyz'");
   });
 
   test("buildPersistKeysScript omits LLM_PROXY_KEY when not provided", () => {
