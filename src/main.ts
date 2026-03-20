@@ -13,13 +13,16 @@
  *   PORT               — server port (default: 3000)
  *   VERS_COMMIT_ID     — golden VM commit to fork branches from
  *   LLM_PROXY_KEY      — Vers LLM proxy key for branch agents
- *   PI_MODEL           — model for branch agents (default: claude-sonnet-4-20250514)
  *   VERS_API_KEY       — Vers platform API key
  *   VERS_BASE_URL      — Vers API base URL
  *   REEF_MAX_CONCURRENT — max concurrent branches (default: 5)
  *   REEF_SYSTEM_PROMPT  — system prompt for the agent
  */
 
-import { startReef } from "./reef.js";
+import { DEFAULT_ROOT_REEF_MODEL, startReef } from "./reef.js";
 
-await startReef();
+await startReef({
+  agent: {
+    model: DEFAULT_ROOT_REEF_MODEL,
+  },
+});

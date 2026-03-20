@@ -77,11 +77,12 @@ GET  /reef/events                     → SSE stream of real-time agent events
 LLM_PROXY_KEY=...       # required (sk-vers-...)
 VERS_AUTH_TOKEN=...     # auth for reef HTTP API
 VERS_API_KEY=...        # for VM management tools
-PI_MODEL=...            # model for agent (default: claude-sonnet-4-20250514)
 
 # Start
 bun run src/main.ts
 ```
+
+The root Reef task runner is pinned to `claude-opus-4-6-thinking`. Remote and local lieutenants default to the same model unless you override `model` at create time. Swarm workers default to `claude-sonnet-4-6`.
 
 ## Vers VM Operations
 

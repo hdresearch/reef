@@ -27,6 +27,7 @@ Root Reef VM:
 - runs the Reef server
 - owns SQLite-backed services like `registry`, `vm-tree`, and `commits`
 - is the only global authority
+- defaults its own task runner to `claude-opus-4-6-thinking`
 
 Child agent VMs:
 
@@ -38,6 +39,7 @@ Child agent VMs:
 - point back to the root Reef via `VERS_INFRA_URL`
 
 Lieutenants are branch managers. Workers are execution nodes. Global control-plane authority stays on the root.
+Lieutenants default to `claude-opus-4-6-thinking`. Swarm workers default to `claude-sonnet-4-6`.
 
 ## Child Tool Surface
 

@@ -91,7 +91,7 @@ const lieutenant: ServiceModule = {
         name: { type: "string", required: true, description: "Lieutenant name" },
         role: { type: "string", required: true, description: "Role description (becomes system prompt context)" },
         local: { type: "boolean", description: "Run locally as subprocess (default: false)" },
-        model: { type: "string", description: "Model ID" },
+        model: { type: "string", description: "Model ID (default: claude-opus-4-6-thinking)" },
         commitId: {
           type: "string",
           description: "Golden image commit ID (optional if a default golden is configured)",

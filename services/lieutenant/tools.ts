@@ -35,7 +35,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       local: Type.Optional(
         Type.Boolean({ description: "Run locally as a subprocess instead of on a VM (default: false)" }),
       ),
-      model: Type.Optional(Type.String({ description: "Model ID (e.g., claude-sonnet-4-20250514)" })),
+      model: Type.Optional(Type.String({ description: "Model ID (default: claude-opus-4-6-thinking)" })),
       commitId: Type.Optional(
         Type.String({
           description: "Golden image commit ID for VM creation (optional if a default golden is configured)",

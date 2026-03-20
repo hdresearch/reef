@@ -44,6 +44,8 @@ interface Task {
 }
 
 let taskCounter = 0;
+export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6-thinking";
+const ROOT_REEF_PROVIDER = "vers";
 
 function conversationPayload(tree: ConversationTree, id: string) {
   const info = tree.getTask(id);
@@ -84,6 +86,8 @@ function spawnTask(
   let lineBuf = "";
   let output = "";
   let prompted = false;
+  let modelConfigured = !opts.model;
+  let modelSelectionRequested = false;
 
   // Poll for pi readiness, then send the prompt
   const readyCheck = setInterval(() => {
@@ -95,10 +99,25 @@ function spawnTask(
   }, 1000);
 
   function handleEvent(event: any) {
-    // Wait for ready response before sending prompt
+    // Wait for ready response before selecting the model and sending the prompt.
     if (!prompted && event.type === "response" && event.command === "get_state") {
+      if (!modelConfigured && !modelSelectionRequested && opts.model) {
+        modelSelectionRequested = true;
+        clearInterval(readyCheck);
+        child.stdin.write(
+          `${JSON.stringify({ id: "set-model", type: "set_model", provider: ROOT_REEF_PROVIDER, modelId: opts.model })}\n`,
+        );
+        return;
+      }
+
       prompted = true;
       clearInterval(readyCheck);
+      child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
+    }
+
+    if (!prompted && event.type === "response" && event.command === "set_model") {
+      modelConfigured = true;
+      prompted = true;
       child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
     }
 
@@ -167,6 +186,7 @@ export async function createReef(config: ReefConfig = {}) {
 
   const piProcesses = new Map<string, Task>();
   const sseClients = new Set<ReadableStreamDefaultController>();
+  const agentModel = config.agent?.model ?? DEFAULT_ROOT_REEF_MODEL;
 
   // Only add system prompt if tree is empty (fresh start)
   if (tree.size() === 0) {
@@ -250,7 +270,7 @@ export async function createReef(config: ReefConfig = {}) {
 
     try {
       spawnTask(task.prompt, treeContext, {
-        model: config.agent?.model,
+        model: agentModel,
         onEvent(event) {
           task.events.push(event);
           if (task.events.length > 500) task.events.shift();

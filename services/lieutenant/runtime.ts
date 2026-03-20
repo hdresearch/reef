@@ -44,6 +44,8 @@ interface CreateParams {
   commitId?: string;
 }
 
+export const DEFAULT_LIEUTENANT_MODEL = "claude-opus-4-6-thinking";
+
 export class LieutenantRuntime {
   private readonly handles = new Map<string, RpcHandle>();
   private readonly events: ServiceEventBus;
@@ -177,6 +179,7 @@ export class LieutenantRuntime {
 
     const systemPrompt = buildSystemPrompt(name, role);
     const resolvedLlmProxyKey = llmProxyKey || process.env.LLM_PROXY_KEY;
+    const resolvedModel = model?.trim() || DEFAULT_LIEUTENANT_MODEL;
     if (!resolvedLlmProxyKey) {
       throw new ValidationError("LLM_PROXY_KEY is required. Set it in the environment or pass an override.");
     }
@@ -186,7 +189,7 @@ export class LieutenantRuntime {
       role,
       isLocal,
       systemPrompt,
-      model,
+      model: resolvedModel,
       parentAgent: process.env.VERS_AGENT_NAME,
     });
 
@@ -196,7 +199,7 @@ export class LieutenantRuntime {
       if (isLocal) {
         const handle = await startLocalRpcAgent(name, {
           llmProxyKey: resolvedLlmProxyKey,
-          model,
+          model: resolvedModel,
           systemPrompt,
         });
         this.handles.set(name, handle);
@@ -214,7 +217,7 @@ export class LieutenantRuntime {
 
         const handle = await this.startRemoteHandle(remote.vmId, {
           llmProxyKey: resolvedLlmProxyKey,
-          model,
+          model: resolvedModel,
           systemPrompt,
         });
         this.handles.set(name, handle);
