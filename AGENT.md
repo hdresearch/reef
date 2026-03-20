@@ -74,7 +74,7 @@ GET  /reef/events                     → SSE stream of real-time agent events
 
 ```bash
 # Env vars
-ANTHROPIC_API_KEY=...   # required
+LLM_PROXY_KEY=...       # required (sk-vers-...)
 VERS_AUTH_TOKEN=...     # auth for reef HTTP API
 VERS_API_KEY=...        # for VM management tools
 PI_MODEL=...            # model for agent (default: claude-sonnet-4-20250514)

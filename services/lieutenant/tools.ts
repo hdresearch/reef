@@ -41,7 +41,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           description: "Golden image commit ID for VM creation (optional if a default golden is configured)",
         }),
       ),
-      anthropicApiKey: Type.Optional(Type.String({ description: "Anthropic API key override (remote or local)" })),
+      llmProxyKey: Type.Optional(Type.String({ description: "Vers LLM proxy key override (sk-vers-...)" })),
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
@@ -52,7 +52,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           local: params.local ?? false,
           model: params.model,
           commitId: params.commitId,
-          anthropicApiKey: params.anthropicApiKey,
+          llmProxyKey: params.llmProxyKey,
         });
         const loc = result.isLocal ? "[local]" : `[VM: ${result.vmId}]`;
         return client.ok(

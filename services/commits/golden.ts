@@ -9,6 +9,8 @@ const DEFAULT_GOLDEN_VM_CONFIG = {
   fs_size_mib: 8192,
 };
 
+const DEFAULT_PUNKIN_RELEASE_TAG = "w/router";
+
 export interface EnsureGoldenResult {
   commitId: string;
   vmId?: string;
@@ -105,7 +107,12 @@ else
   git clone https://github.com/hdresearch/punkin-pi.git /root/punkin-pi
   cd /root/punkin-pi
 fi
-git checkout v1rc3
+PUNKIN_RELEASE_TAG=${shellQuote(DEFAULT_PUNKIN_RELEASE_TAG)}
+if ! git rev-parse --verify -q "refs/tags/$PUNKIN_RELEASE_TAG" >/dev/null; then
+  echo "Missing punkin-pi release tag: $PUNKIN_RELEASE_TAG" >&2
+  exit 1
+fi
+git -c advice.detachedHead=false checkout --detach "refs/tags/$PUNKIN_RELEASE_TAG"
 HUSKY=0 npm install
 npm run build
 
@@ -131,7 +138,7 @@ for dir in /root/reef/services/*/; do
   ln -s "../services/$svc" "/root/reef/services-active/$svc"
 done
 
-mkdir -p /root/workspace /root/.pi/agent /etc/profile.d
+mkdir -p /root/workspace /root/.punkin/agent /root/.pi/agent /etc/profile.d
 
 if [ -x /root/punkin-pi/builds/punkin ]; then
   cat > /usr/local/bin/punkin <<'EOF'
@@ -161,6 +168,8 @@ ln -sf /usr/local/bin/punkin /usr/local/bin/pi
 cat > /etc/profile.d/reef-agent.sh <<ENVEOF
 export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 export VERS_INFRA_URL=${shellQuote(rootBaseUrl)}
+${process.env.LLM_PROXY_KEY ? `export LLM_PROXY_KEY=${shellQuote(process.env.LLM_PROXY_KEY)}` : ""}
+export PUNKIN_RELEASE_TAG=${shellQuote(DEFAULT_PUNKIN_RELEASE_TAG)}
 export PUNKIN_BIN=punkin
 export PI_PATH=punkin
 export PI_VERS_HOME=/root/pi-vers

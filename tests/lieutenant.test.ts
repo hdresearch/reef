@@ -16,7 +16,7 @@ const FAKE_PI_PATH = join(TMP_DIR, "fake-pi.mjs");
 const AUTH_TOKEN = "test-token-12345";
 
 const ORIGINAL_ENV = {
-  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  LLM_PROXY_KEY: process.env.LLM_PROXY_KEY,
   PI_PATH: process.env.PI_PATH,
   VERS_AUTH_TOKEN: process.env.VERS_AUTH_TOKEN,
   VERS_INFRA_URL: process.env.VERS_INFRA_URL,
@@ -189,7 +189,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000) {
 
 beforeEach(() => {
   writeFakePi();
-  process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+  process.env.LLM_PROXY_KEY = "sk-vers-test-key";
   process.env.PI_PATH = FAKE_PI_PATH;
   process.env.VERS_AUTH_TOKEN = AUTH_TOKEN;
   process.env.VERS_AGENT_NAME = "reef-test";
@@ -207,7 +207,7 @@ describe("lieutenant routes and runtime", () => {
   test("remote lieutenant env exports VERS_VM_ID for child reef tools", () => {
     process.env.VERS_INFRA_URL = "https://root.example:3000";
     const env = buildRemoteEnv("vm-child-123", {
-      anthropicApiKey: "test-anthropic-key",
+      llmProxyKey: "sk-vers-test-key",
       model: "claude-test",
     });
 
@@ -240,7 +240,7 @@ describe("lieutenant routes and runtime", () => {
       body: {
         name: "remote-default",
         role: "audit remote default",
-        anthropicApiKey: "test-anthropic-key",
+        llmProxyKey: "sk-vers-test-key",
       },
     });
 
@@ -263,7 +263,7 @@ describe("lieutenant routes and runtime", () => {
         name: "local-alpha",
         role: "local validation",
         local: true,
-        anthropicApiKey: "test-anthropic-key",
+        llmProxyKey: "sk-vers-test-key",
       },
     });
     expect(created.status).toBe(201);

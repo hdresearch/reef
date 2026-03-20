@@ -6,6 +6,8 @@ describe("golden bootstrap", () => {
     const script = buildGoldenBootstrapScript("https://root.example:3000");
 
     expect(script).toContain("cat > /usr/local/bin/punkin <<'EOF'");
+    expect(script).toContain("PUNKIN_RELEASE_TAG='w/router'");
+    expect(script).toContain('git -c advice.detachedHead=false checkout --detach "refs/tags/$PUNKIN_RELEASE_TAG"');
     expect(script).toContain(". /etc/profile.d/reef-agent.sh");
     expect(script).toContain(
       'export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"',
@@ -14,6 +16,7 @@ describe("golden bootstrap", () => {
     expect(script).toContain("export REEF_CHILD_AGENT=true");
     expect(script).toContain('if ! grep -q "reef-agent.sh" "$shell_rc"; then');
     expect(script).toContain("printf '");
+    expect(script).toContain("mkdir -p /root/workspace /root/.punkin/agent /root/.pi/agent /etc/profile.d");
     expect(script).toContain('"$PI_PATH" install /root/pi-vers');
     expect(script).toContain('"$PI_PATH" install /root/reef');
     expect(script).toContain("chmod +x /usr/local/bin/punkin 2>/dev/null || true");

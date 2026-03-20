@@ -1,7 +1,7 @@
 /**
  * Reef entrypoint — an agent with a server.
  *
- * In agent mode (VERS_COMMIT_ID + ANTHROPIC_API_KEY set):
+ * In agent mode (VERS_COMMIT_ID + LLM_PROXY_KEY set):
  *   Tasks submitted via POST /reef/submit fork conversation branches,
  *   execute on Vers VMs, and merge results back to main.
  *
@@ -12,7 +12,7 @@
  *   SERVICES_DIR       — path to services directory (default: ./services)
  *   PORT               — server port (default: 3000)
  *   VERS_COMMIT_ID     — golden VM commit to fork branches from
- *   ANTHROPIC_API_KEY  — API key for branch agents
+ *   LLM_PROXY_KEY      — Vers LLM proxy key for branch agents
  *   PI_MODEL           — model for branch agents (default: claude-sonnet-4-20250514)
  *   VERS_API_KEY       — Vers platform API key
  *   VERS_BASE_URL      — Vers API base URL

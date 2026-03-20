@@ -29,14 +29,14 @@ export interface RpcHandle {
 }
 
 export interface LocalRpcOptions {
-  anthropicApiKey?: string;
+  llmProxyKey?: string;
   systemPrompt?: string;
   model?: string;
   cwd?: string;
 }
 
 export interface RemoteRpcOptions {
-  anthropicApiKey: string;
+  llmProxyKey?: string;
   systemPrompt?: string;
   model?: string;
 }
@@ -81,7 +81,11 @@ fi`;
 export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const exports = [
-    `export ANTHROPIC_API_KEY='${escapeEnvValue(opts.anthropicApiKey)}'`,
+    opts.llmProxyKey
+      ? `export LLM_PROXY_KEY='${escapeEnvValue(opts.llmProxyKey)}'`
+      : process.env.LLM_PROXY_KEY
+        ? `export LLM_PROXY_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
+        : "",
     versApiKey ? `export VERS_API_KEY='${escapeEnvValue(versApiKey)}'` : "",
     process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
     process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
@@ -102,6 +106,10 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
     .join("; ");
 
   return exports;
+}
+
+function resolveModelProvider(): "vers" {
+  return "vers";
 }
 
 export async function createVersVmFromCommit(commitId: string): Promise<{ vmId: string }> {
@@ -287,7 +295,7 @@ tmux has-session -t pi-rpc 2>/dev/null && echo daemon_started || echo daemon_fai
 
   const handle = createRemoteHandle(vmId, sshBaseArgs, false);
   if (opts.model) {
-    handle.send({ type: "set_model", provider: "anthropic", modelId: opts.model });
+    handle.send({ type: "set_model", provider: resolveModelProvider(), modelId: opts.model });
   }
   return handle;
 }
@@ -318,7 +326,7 @@ export async function startLocalRpcAgent(name: string, opts: LocalRpcOptions): P
 
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
   if (opts.model) env.PI_MODEL = opts.model;
-  if (opts.anthropicApiKey) env.ANTHROPIC_API_KEY = opts.anthropicApiKey;
+  if (opts.llmProxyKey) env.LLM_PROXY_KEY = opts.llmProxyKey;
   if (!env.VERS_PARENT_AGENT) env.VERS_PARENT_AGENT = process.env.VERS_AGENT_NAME || "reef";
   if (!env.PI_PATH) env.PI_PATH = piPath;
   env.HOME = homeDir;

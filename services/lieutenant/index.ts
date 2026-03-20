@@ -96,7 +96,7 @@ const lieutenant: ServiceModule = {
           type: "string",
           description: "Golden image commit ID (optional if a default golden is configured)",
         },
-        anthropicApiKey: { type: "string", description: "Anthropic API key override (defaults to server env)" },
+        llmProxyKey: { type: "string", description: "Vers LLM proxy key override (defaults to server env)" },
       },
       response: "The created lieutenant object",
     },

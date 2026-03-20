@@ -39,7 +39,7 @@ interface CreateParams {
   name: string;
   role: string;
   isLocal?: boolean;
-  anthropicApiKey?: string;
+  llmProxyKey?: string;
   model?: string;
   commitId?: string;
 }
@@ -172,13 +172,13 @@ export class LieutenantRuntime {
   }
 
   async create(params: CreateParams): Promise<Lieutenant> {
-    const { name, role, isLocal = false, commitId, anthropicApiKey, model } = params;
+    const { name, role, isLocal = false, commitId, llmProxyKey, model } = params;
     this.ensureNameAvailable(name);
 
     const systemPrompt = buildSystemPrompt(name, role);
-    const apiKey = anthropicApiKey || process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new ValidationError("ANTHROPIC_API_KEY is required. Pass anthropicApiKey or set it in the environment.");
+    const resolvedLlmProxyKey = llmProxyKey || process.env.LLM_PROXY_KEY;
+    if (!resolvedLlmProxyKey) {
+      throw new ValidationError("LLM_PROXY_KEY is required. Set it in the environment or pass an override.");
     }
 
     this.store.create({
@@ -195,7 +195,7 @@ export class LieutenantRuntime {
     try {
       if (isLocal) {
         const handle = await startLocalRpcAgent(name, {
-          anthropicApiKey: apiKey,
+          llmProxyKey: resolvedLlmProxyKey,
           model,
           systemPrompt,
         });
@@ -213,7 +213,7 @@ export class LieutenantRuntime {
         await this.waitForRemoteVm(remote.vmId);
 
         const handle = await this.startRemoteHandle(remote.vmId, {
-          anthropicApiKey: apiKey,
+          llmProxyKey: resolvedLlmProxyKey,
           model,
           systemPrompt,
         });
@@ -233,7 +233,7 @@ export class LieutenantRuntime {
           commitId: resolvedCommit?.commitId,
           commitIdSource: resolvedCommit?.source,
           model,
-          anthropicApiKeyProvided: !!anthropicApiKey,
+          llmProxyKeyProvided: !!llmProxyKey,
         }),
       );
       return created;

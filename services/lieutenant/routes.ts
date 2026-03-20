@@ -14,7 +14,7 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
   routes.post("/lieutenants", async (c) => {
     try {
       const body = await c.req.json();
-      const { name, role, local, model, commitId, anthropicApiKey } = body;
+      const { name, role, local, model, commitId, llmProxyKey } = body;
 
       if (!name || typeof name !== "string") return c.json({ error: "name is required" }, 400);
       if (!role || typeof role !== "string") return c.json({ error: "role is required" }, 400);
@@ -25,7 +25,7 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
         isLocal: !!local,
         model,
         commitId,
-        anthropicApiKey,
+        llmProxyKey,
       });
       return c.json(lt, 201);
     } catch (e) {

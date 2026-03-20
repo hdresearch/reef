@@ -9,7 +9,7 @@ It runs the root Reef server, owns the global registry/vm-tree/commits state, ma
 - `vers-fleets` bootstraps only the root Reef infra VM
 - `reef` owns the runtime control plane
 - `pi-vers` provides the Vers extensions Reef-managed agents load into the `punkin` harness
-- `punkin-pi` `v1rc3` is the harness used on the root and child agent VMs
+- `punkin-pi` `w/router` is the harness used on the root and child agent VMs
 
 After bootstrap, Reef is responsible for:
 
@@ -90,7 +90,7 @@ The `bootloader` now matters only for root/infra bootstrap and related recovery 
 
 The current golden image for child agent VMs is expected to contain:
 
-- `punkin-pi` `v1rc3`
+- `punkin-pi` `w/router`
 - `pi` symlinked to `punkin`
 - local `pi-vers` install
 - Reef client extension install
@@ -118,7 +118,7 @@ bun run start
 Useful env:
 
 - `VERS_AUTH_TOKEN`
-- `ANTHROPIC_API_KEY`
+- `LLM_PROXY_KEY`
 - `VERS_VM_ID`
 - `VERS_INFRA_URL`
 - `SERVICES_DIR`
