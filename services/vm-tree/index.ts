@@ -9,7 +9,7 @@
  * Features:
  *   - Full lineage queries (ancestors, descendants, subtrees)
  *   - Category-based filtering (lieutenant, swarm_vm, agent_vm, infra_vm)
- *   - Reef config (DNA) per VM: which organs (modules) and capabilities (extensions)
+ *   - Reef config (DNA) per VM: which services (modules) and capabilities (extensions)
  *   - Config diff between VMs
  *   - Dashboard: modules/extensions on each VM, lineage position
  *   - Hourly snapshots via cron (data/snapshots/vms-{timestamp}.sqlite, retain last 24)
@@ -30,7 +30,7 @@ let snapshotTimer: ReturnType<typeof setInterval> | null = null;
 function currentReefConfig(ctx: ServiceContext) {
   const modules = ctx.getModules();
   return {
-    organs: modules.map((mod) => mod.name).sort(),
+    services: modules.map((mod) => mod.name).sort(),
     capabilities: Array.from(new Set(modules.flatMap((mod) => mod.capabilities || []))).sort(),
   };
 }
@@ -124,9 +124,15 @@ routes.get("/vms/:a/diff/:b", (c) => {
   return c.json(diff);
 });
 
-// GET /find/organ/:name — find VMs with a specific organ
+// GET /find/service/:name — find VMs with a specific service
+routes.get("/find/service/:name", (c) => {
+  const vms = store.findByService(c.req.param("name"));
+  return c.json({ vms, count: vms.length });
+});
+
+// Backward-compatible alias
 routes.get("/find/organ/:name", (c) => {
-  const vms = store.findByOrgan(c.req.param("name"));
+  const vms = store.findByService(c.req.param("name"));
   return c.json({ vms, count: vms.length });
 });
 
@@ -158,7 +164,7 @@ routes.get("/_panel", (c) => {
       .map((v) => {
         const indent = "&nbsp;".repeat(depth * 4);
         const prefix = depth > 0 ? "&#x2514;&#x2500; " : "";
-        const organs = v.vm.reefConfig.organs.join(", ") || "none";
+        const services = v.vm.reefConfig.services.join(", ") || "none";
         const caps = v.vm.reefConfig.capabilities.join(", ") || "none";
         const catColor =
           v.vm.category === "lieutenant"
@@ -174,7 +180,7 @@ routes.get("/_panel", (c) => {
           <span style="color:${catColor};font-size:0.85em">[${v.vm.category}]</span>
           <span style="color:#888;font-size:0.8em">${v.vm.vmId.slice(0, 12)}</span>
           <br>${indent}&nbsp;&nbsp;&nbsp;&nbsp;
-          <span style="color:#666;font-size:0.8em">organs: ${organs} | caps: ${caps}</span>
+          <span style="color:#666;font-size:0.8em">services: ${services} | caps: ${caps}</span>
         </div>`;
 
         if (v.children.length > 0) {
@@ -244,8 +250,8 @@ const vmTree: ServiceModule = {
         parentVmId: data.parentVmId || undefined,
         category: "lieutenant",
         reefConfig: {
-          organs: ["lieutenant"],
-          capabilities: ["vers-lieutenant"],
+          services: ["lieutenant"],
+          capabilities: ["punkin", "vers-lieutenant", "vers-vm", "vers-vm-copy", "vers-swarm"],
         },
       });
     });
@@ -283,7 +289,7 @@ const vmTree: ServiceModule = {
       name: "vm_tree_view",
       label: "VM Tree: View",
       description:
-        "View the VM lineage tree. Shows which modules (organs) and extensions (capabilities) are on each VM and where it sits in the hierarchy.",
+        "View the VM lineage tree. Shows which services and extensions are on each VM and where it sits in the hierarchy.",
       parameters: Type.Object({
         vmId: Type.Optional(Type.String({ description: "Root VM ID to view subtree from (default: all roots)" })),
       }),
@@ -302,7 +308,7 @@ const vmTree: ServiceModule = {
     pi.registerTool({
       name: "vm_tree_register",
       label: "VM Tree: Register",
-      description: "Register a VM in the lineage tree with its category and DNA (organs + capabilities).",
+      description: "Register a VM in the lineage tree with its category and DNA (services + capabilities).",
       parameters: Type.Object({
         name: Type.String({ description: "VM name" }),
         category: Type.Union(
@@ -314,7 +320,7 @@ const vmTree: ServiceModule = {
         reefConfig: Type.Optional(
           Type.Object(
             {
-              organs: Type.Array(Type.String(), { description: "Service modules loaded" }),
+              services: Type.Array(Type.String(), { description: "Services loaded on this VM" }),
               capabilities: Type.Array(Type.String(), { description: "Extension capabilities" }),
             },
             { description: "VM DNA" },
@@ -337,25 +343,23 @@ const vmTree: ServiceModule = {
     pi.registerTool({
       name: "vm_tree_find",
       label: "VM Tree: Find",
-      description: "Find VMs by organ (module) or capability. Useful for answering 'which VMs have X loaded?'",
+      description: "Find VMs by service or capability. Useful for answering 'which VMs have X loaded?'",
       parameters: Type.Object({
-        type: Type.Union([Type.Literal("organ"), Type.Literal("capability")], {
+        type: Type.Union([Type.Literal("service"), Type.Literal("capability"), Type.Literal("organ")], {
           description: "Search type",
         }),
-        name: Type.String({ description: "Organ or capability name to search for" }),
+        name: Type.String({ description: "Service or capability name to search for" }),
       }),
       async execute(_id, params) {
         if (!client.getBaseUrl()) return client.noUrl();
         try {
-          const result = await client.api<any>(
-            "GET",
-            `/vm-tree/find/${params.type}/${encodeURIComponent(params.name)}`,
-          );
+          const type = params.type === "organ" ? "service" : params.type;
+          const result = await client.api<any>("GET", `/vm-tree/find/${type}/${encodeURIComponent(params.name)}`);
           if (result.count === 0) {
-            return client.ok(`No VMs found with ${params.type} "${params.name}".`);
+            return client.ok(`No VMs found with ${type} "${params.name}".`);
           }
           return client.ok(
-            `${result.count} VM(s) with ${params.type} "${params.name}":\n${JSON.stringify(result.vms, null, 2)}`,
+            `${result.count} VM(s) with ${type} "${params.name}":\n${JSON.stringify(result.vms, null, 2)}`,
             { result },
           );
         } catch (e: any) {
@@ -395,7 +399,7 @@ const vmTree: ServiceModule = {
         name: { type: "string", required: true, description: "VM name" },
         category: { type: "string", required: true, description: "VM category" },
         parentVmId: { type: "string", description: "Parent VM ID" },
-        reefConfig: { type: "object", description: "{ organs: [...], capabilities: [...] }" },
+        reefConfig: { type: "object", description: "{ services: [...], capabilities: [...] }" },
       },
       response: "The created VM node",
     },
@@ -420,7 +424,8 @@ const vmTree: ServiceModule = {
     "GET /vms/:id/descendants": { summary: "All descendants (BFS)" },
     "GET /vms/:id/children": { summary: "Direct children" },
     "GET /vms/:a/diff/:b": { summary: "Config diff between two VMs" },
-    "GET /find/organ/:name": { summary: "Find VMs with a specific organ" },
+    "GET /find/service/:name": { summary: "Find VMs with a specific service" },
+    "GET /find/organ/:name": { summary: "Backward-compatible alias for finding VMs with a specific service" },
     "GET /find/capability/:name": { summary: "Find VMs with a specific capability" },
     "GET /stats": { summary: "Summary statistics" },
     "POST /snapshot": { summary: "Create a DB snapshot and prune old ones" },

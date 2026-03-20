@@ -44,6 +44,9 @@ export interface FleetClient {
   /** This agent's role (from VERS_AGENT_ROLE or "worker") */
   readonly agentRole: string;
 
+  /** Whether this agent is a child VM pointed at a root reef */
+  readonly isChildAgent: boolean;
+
   /** Build a successful tool result */
   ok(text: string, details?: Record<string, unknown>): ToolResult;
 

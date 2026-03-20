@@ -37,7 +37,7 @@ Because each task spawns a fresh pi, **new tools appear immediately**. Deploy a 
 
 ## Services
 
-Services are the agent's organs. They run on the Hono server and provide both HTTP routes and agent tools. The agent can build new services, deploy them, and immediately use their tools in the next task.
+Services run on the Hono server and provide both HTTP routes and agent tools. The agent can build new services, deploy them, and immediately use their tools in the next task.
 
 ```
 services/

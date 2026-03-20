@@ -26,8 +26,12 @@ import type { ServiceModule } from "./types.js";
  * @param servicesDir - Path to the services directory (e.g. "./services")
  * @returns Topologically sorted array of ServiceModules
  */
-export async function discoverServiceModules(servicesDir: string): Promise<ServiceModule[]> {
+export async function discoverServiceModules(
+  servicesDir: string,
+  options: { includeNames?: string[] } = {},
+): Promise<ServiceModule[]> {
   const resolved = resolve(servicesDir);
+  const includeNames = options.includeNames ? new Set(options.includeNames) : null;
 
   if (!existsSync(resolved)) {
     throw new Error(`Services directory not found: ${resolved}`);
@@ -38,6 +42,7 @@ export async function discoverServiceModules(servicesDir: string): Promise<Servi
   const errors: Array<{ dir: string; error: string }> = [];
 
   for (const entry of entries) {
+    if (includeNames && !includeNames.has(entry.name)) continue;
     const entryPath = join(resolved, entry.name);
     const isDirectory = entry.isDirectory();
     const isSymlinkedDirectory = entry.isSymbolicLink() && existsSync(entryPath) && statSync(entryPath).isDirectory();

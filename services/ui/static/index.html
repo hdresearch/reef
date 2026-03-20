@@ -21,31 +21,56 @@
     </header>
 
     <div id="workspace">
-      <!-- Feed: the main trunk -->
-      <div id="feed">
-        <div id="feed-scroll">
-          <div id="feed-entries"></div>
+      <aside id="conversations">
+        <div id="conversations-header">
+          <span>conversations</span>
+          <button id="new-chat" type="button">new</button>
         </div>
-        <div id="feed-input">
-          <textarea id="input" placeholder="Start a conversation… (Enter to send)" rows="1"></textarea>
-          <button id="send">↵</button>
+        <div id="conversations-scroll">
+          <section class="conversation-group">
+            <div class="conversation-group-label">open</div>
+            <div id="conversation-list-open" class="conversation-list"></div>
+          </section>
+          <section class="conversation-group">
+            <div class="conversation-group-label">closed</div>
+            <div id="conversation-list-closed" class="conversation-list"></div>
+          </section>
         </div>
-      </div>
+      </aside>
 
-      <!-- Branch chat panel (hidden until opened) -->
-      <div id="branch" class="closed">
+      <div id="branch">
         <div id="branch-header">
-          <span id="branch-label">conversation</span>
-          <button id="branch-close">✕</button>
+          <div>
+            <div id="branch-label">select a conversation</div>
+            <div id="branch-meta"></div>
+          </div>
+          <div id="branch-actions">
+            <button id="branch-toggle" type="button" hidden>close</button>
+            <button id="branch-close" type="button">✕</button>
+          </div>
         </div>
         <div id="branch-scroll">
+          <div id="branch-empty">Select a conversation to continue the chat, or start a new one from the left sidebar.</div>
           <div id="branch-messages"></div>
         </div>
         <div id="branch-input">
-          <textarea id="branch-text" placeholder="Continue the conversation…" rows="1"></textarea>
+          <textarea id="branch-text" placeholder="Start a new conversation…" rows="1"></textarea>
           <button id="branch-send">↵</button>
         </div>
       </div>
+
+      <!-- Feed: activity scoped to the selected conversation when possible -->
+      <aside id="feed">
+        <div id="feed-header">
+          <div>
+            <div id="feed-label">activity</div>
+            <div id="feed-scope">global reef activity</div>
+          </div>
+        </div>
+        <div id="feed-scroll">
+          <div id="feed-entries"></div>
+        </div>
+      </aside>
     </div>
 
     <!-- Panel views (discovered dynamically, toggled via tabs) -->
@@ -56,4 +81,3 @@
   <script src="/ui/static/app.js"></script>
 </body>
 </html>
-

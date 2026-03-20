@@ -3,7 +3,7 @@
  *
  * Upgraded from in-memory to SQLite with:
  *   - VM lineage tracking (parent-child relationships)
- *   - Reef config per VM (the "DNA" concept — organs + capabilities)
+ *   - Reef config per VM (the "DNA" concept — services + capabilities)
  *   - Heartbeat-based liveness detection
  */
 
@@ -25,7 +25,7 @@ export interface VMService {
 }
 
 export interface ReefConfig {
-  organs: string[];
+  services: string[];
   capabilities: string[];
 }
 
@@ -104,7 +104,18 @@ const VALID_ROLES = new Set<string>(["infra", "lieutenant", "worker", "golden", 
 const VALID_STATUSES = new Set<string>(["running", "paused", "stopped"]);
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
-const DEFAULT_REEF_CONFIG: ReefConfig = { organs: [], capabilities: [] };
+const DEFAULT_REEF_CONFIG: ReefConfig = { services: [], capabilities: [] };
+
+function normalizeReefConfig(value: unknown): ReefConfig {
+  if (!value || typeof value !== "object") return { ...DEFAULT_REEF_CONFIG };
+  const raw = value as Record<string, unknown>;
+  const services = Array.isArray(raw.services) ? raw.services : Array.isArray(raw.organs) ? raw.organs : [];
+  const capabilities = Array.isArray(raw.capabilities) ? raw.capabilities : [];
+  return {
+    services: services.filter((entry): entry is string => typeof entry === "string"),
+    capabilities: capabilities.filter((entry): entry is string => typeof entry === "string"),
+  };
+}
 
 // =============================================================================
 // Store
@@ -132,7 +143,7 @@ export class RegistryStore {
         address TEXT NOT NULL,
         parent_vm_id TEXT REFERENCES vms(id) ON DELETE SET NULL,
         services TEXT NOT NULL DEFAULT '[]',
-        reef_config TEXT NOT NULL DEFAULT '{"organs":[],"capabilities":[]}',
+        reef_config TEXT NOT NULL DEFAULT '{"services":[],"capabilities":[]}',
         registered_by TEXT NOT NULL,
         registered_at TEXT NOT NULL DEFAULT (datetime('now')),
         last_seen TEXT NOT NULL DEFAULT (datetime('now')),
@@ -171,7 +182,7 @@ export class RegistryStore {
           input.address.trim(),
           input.parentVmId || existing.parentVmId || null,
           JSON.stringify(input.services || existing.services),
-          JSON.stringify(input.reefConfig || existing.reefConfig),
+          JSON.stringify(normalizeReefConfig(input.reefConfig || existing.reefConfig)),
           input.registeredBy.trim(),
           now,
           input.metadata
@@ -193,7 +204,7 @@ export class RegistryStore {
           input.address.trim(),
           input.parentVmId || null,
           JSON.stringify(input.services || []),
-          JSON.stringify(input.reefConfig || DEFAULT_REEF_CONFIG),
+          JSON.stringify(normalizeReefConfig(input.reefConfig || DEFAULT_REEF_CONFIG)),
           input.registeredBy.trim(),
           now,
           now,
@@ -273,7 +284,7 @@ export class RegistryStore {
     }
     if (input.reefConfig !== undefined) {
       sets.push("reef_config = ?");
-      params.push(JSON.stringify(input.reefConfig));
+      params.push(JSON.stringify(normalizeReefConfig(input.reefConfig)));
     }
     if (input.metadata !== undefined) {
       sets.push("metadata = ?");
@@ -375,11 +386,11 @@ export class RegistryStore {
 
     return {
       added: {
-        organs: b.reefConfig.organs.filter((o) => !a.reefConfig.organs.includes(o)),
+        services: b.reefConfig.services.filter((service) => !a.reefConfig.services.includes(service)),
         capabilities: b.reefConfig.capabilities.filter((c) => !a.reefConfig.capabilities.includes(c)),
       },
       removed: {
-        organs: a.reefConfig.organs.filter((o) => !b.reefConfig.organs.includes(o)),
+        services: a.reefConfig.services.filter((service) => !b.reefConfig.services.includes(service)),
         capabilities: a.reefConfig.capabilities.filter((c) => !b.reefConfig.capabilities.includes(c)),
       },
     };
@@ -416,7 +427,7 @@ function rowToVM(row: any): VM {
     address: row.address,
     parentVmId: row.parent_vm_id || null,
     services: JSON.parse(row.services || "[]"),
-    reefConfig: JSON.parse(row.reef_config || '{"organs":[],"capabilities":[]}'),
+    reefConfig: normalizeReefConfig(JSON.parse(row.reef_config || '{"services":[],"capabilities":[]}')),
     registeredBy: row.registered_by,
     registeredAt: row.registered_at,
     lastSeen: row.last_seen,

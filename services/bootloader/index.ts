@@ -1,16 +1,9 @@
 /**
- * Bootloader service — manages VM bootstrapping with selective module loading.
+ * Bootloader service — generates bootstrap scripts for infra-style Reef VMs.
  *
- * When a lieutenant spins up agent VMs, this service handles the boot flow:
- *   1. Prepare boot config (VM DNA: which modules + capabilities)
- *   2. Generate boot scripts for different VM types
- *   3. Track boot status and report to the VM tree
- *
- * VM Type Profiles:
- *   Full agent VM  — reef + all core + lieutenant + pi-vers
- *   Swarm worker   — reef + minimal (store, cron) + pi-vers
- *   Lightweight     — reef + minimal, no pi-vers (short-lived haiku sessions)
- *   Infra VM       — reef + core + specific service module
+ * Runtime agent VMs should come from the reusable golden image. The bootloader
+ * remains only for the cases where Reef needs to stand up another infra VM that
+ * runs its own local Reef server with a selected service set.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -22,13 +15,12 @@ import type { FleetClient, ServiceModule } from "../../src/core/types.js";
 // Types
 // =============================================================================
 
-export type VMType = "full" | "swarm" | "lightweight" | "infra";
+export type VMType = "infra";
 
 export interface BootProfile {
   type: VMType;
-  organs: string[];
+  services: string[];
   capabilities: string[];
-  installPiVers: boolean;
   description: string;
 }
 
@@ -37,6 +29,7 @@ export interface BootRequest {
   name: string;
   type: VMType;
   parentVmId?: string;
+  extraServices?: string[];
   extraOrgans?: string[];
   extraCapabilities?: string[];
   roofReefUrl?: string;
@@ -55,32 +48,10 @@ export interface BootResult {
 // =============================================================================
 
 const PROFILES: Record<VMType, BootProfile> = {
-  full: {
-    type: "full",
-    organs: ["store", "cron", "lieutenant", "registry", "vm-tree", "vers-config", "docs", "installer"],
-    capabilities: ["vers-vm", "vers-vm-copy", "vers-swarm", "ssh"],
-    installPiVers: true,
-    description: "Full agent VM — all core modules + pi-vers. Can promote to lieutenant.",
-  },
-  swarm: {
-    type: "swarm",
-    organs: ["store", "cron"],
-    capabilities: ["vers-vm", "vers-vm-copy", "vers-swarm"],
-    installPiVers: true,
-    description: "Swarm worker — minimal reef + pi-vers for fleet task execution.",
-  },
-  lightweight: {
-    type: "lightweight",
-    organs: ["store"],
-    capabilities: [],
-    installPiVers: false,
-    description: "Lightweight worker — minimal reef, no pi-vers. For short-lived sessions.",
-  },
   infra: {
     type: "infra",
-    organs: ["store", "cron", "docs"],
+    services: ["store", "cron", "docs"],
     capabilities: [],
-    installPiVers: false,
     description: "Infra VM — core reef + specific service. For Gitea, MinIO, persistent services.",
   },
 };
@@ -89,14 +60,12 @@ const PROFILES: Record<VMType, BootProfile> = {
 // Boot script generation
 // =============================================================================
 
-function generateBootScript(req: BootRequest): string {
+export function generateBootScript(req: BootRequest): string {
   const profile = { ...PROFILES[req.type] };
 
-  // Merge extra organs and capabilities
-  if (req.extraOrgans) {
-    for (const o of req.extraOrgans) {
-      if (!profile.organs.includes(o)) profile.organs.push(o);
-    }
+  // Merge extra services and capabilities
+  for (const service of [...(req.extraServices || []), ...(req.extraOrgans || [])]) {
+    if (!profile.services.includes(service)) profile.services.push(service);
   }
   if (req.extraCapabilities) {
     for (const c of req.extraCapabilities) {
@@ -121,14 +90,21 @@ echo "nameserver 8.8.8.8" > /etc/resolv.conf
 # ===== 2. Ensure PATH =====
 export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
-# ===== 3. Install bun if not present =====
+# ===== 3. Install node if not present =====
+if ! command -v node &> /dev/null || [ "$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)" -lt 20 ]; then
+  echo "[boot] Installing node..."
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt-get install -y -qq nodejs
+fi
+
+# ===== 4. Install bun if not present =====
 if ! command -v bun &> /dev/null; then
   echo "[boot] Installing bun..."
   curl -fsSL https://bun.sh/install | bash
   export PATH="/root/.bun/bin:$PATH"
 fi
 
-# ===== 4. Clone/update reef =====
+# ===== 5. Clone/update reef =====
 if [ -d /root/reef ]; then
   echo "[boot] Updating existing reef..."
   cd /root/reef && git pull --ff-only 2>/dev/null || true
@@ -148,68 +124,21 @@ fi
 
 cd /root/reef
 
-# ===== 5. Install dependencies =====
+# ===== 6. Install dependencies =====
 bun install --frozen-lockfile 2>/dev/null || bun install
 
-# ===== 6. Configure reef DNA =====
-cat > /root/reef/.env << 'ENVEOF'
-# Auto-generated by reef bootloader
-VERS_VM_ID=${req.vmId}
-VERS_AGENT_NAME=${req.name}
-VERS_AGENT_ROLE=${req.type === "full" ? "agent" : req.type}
-VERS_INFRA_URL=${roofUrl}
-REEF_VM_TYPE=${req.type}
-REEF_ORGANS=${profile.organs.join(",")}
-REEF_CAPABILITIES=${profile.capabilities.join(",")}
-${req.parentVmId ? `REEF_PARENT_VM_ID=${req.parentVmId}` : ""}
-ENVEOF
-
-# Source env
-set -a; source .env; set +a
-
-# ===== 7. Selective module loading =====
-# Reef discovers services from SERVICES_DIR. Build a curated directory so the
-# selected DNA actually controls which service modules load.
-ACTIVE_ORGANS="${profile.organs.join(" ")}"
-echo "[boot] Active organs: $ACTIVE_ORGANS"
-
-${
-  req.type !== "full"
-    ? `
-# Build an active services directory with symlinks to the selected modules
+# ===== 7. Activate the local service set =====
 rm -rf /root/reef/services-active
 mkdir -p /root/reef/services-active
+ACTIVE_SERVICES="${profile.services.join(" ")}"
 for dir in /root/reef/services/*/; do
   svc=$(basename "$dir")
-  if echo "$ACTIVE_ORGANS" | grep -qw "$svc"; then
+  if echo "$ACTIVE_SERVICES" | grep -qw "$svc"; then
     ln -s "../services/$svc" "/root/reef/services-active/$svc"
-    echo "[boot] Enabled: $svc"
   fi
 done
-export SERVICES_DIR=/root/reef/services-active
-`
-    : 'export SERVICES_DIR="/root/reef/services"'
-}
 
-${
-  profile.installPiVers
-    ? `
-# ===== 8. Install pi-vers =====
-echo "[boot] Installing pi-vers..."
-if [ -d /root/.pi/extensions ]; then
-  cd /root/.pi/extensions
-  if [ -d pi-vers ]; then
-    cd pi-vers && git pull --ff-only 2>/dev/null || true
-  else
-    git clone https://github.com/hdresearch/pi-vers.git 2>/dev/null || true
-  fi
-fi
-cd /root/reef
-`
-    : `# Skipping pi-vers (not needed for ${req.type} VMs)`
-}
-
-# ===== 9. Register in roof reef's VM tree =====
+# ===== 8. Register in roof reef's VM tree =====
 echo "[boot] Registering in VM tree..."
 curl -sf -X POST "${roofUrl}/vm-tree/vms" \\
   -H "Content-Type: application/json" \\
@@ -217,51 +146,64 @@ curl -sf -X POST "${roofUrl}/vm-tree/vms" \\
   -d '{
     "vmId": "${req.vmId}",
     "name": "${req.name}",
-    "category": "${req.type === "full" ? "agent_vm" : req.type === "swarm" ? "swarm_vm" : req.type === "lightweight" ? "swarm_vm" : "infra_vm"}",
+    "category": "infra_vm",
     "parentVmId": ${req.parentVmId ? `"${req.parentVmId}"` : "null"},
-    "reefConfig": ${JSON.stringify({ organs: profile.organs, capabilities: profile.capabilities })}
+    "reefConfig": ${JSON.stringify({ services: profile.services, capabilities: profile.capabilities })}
   }' 2>/dev/null || echo "[boot] VM tree registration failed (non-fatal)"
 
-# ===== 10. Start reef via systemd =====
-echo "[boot] Starting reef..."
+# ===== 9. Start reef via systemd =====
+cat > /root/reef/.env << 'ENVEOF'
+# Auto-generated by reef bootloader
+VERS_VM_ID=${req.vmId}
+VERS_AGENT_NAME=${req.name}
+VERS_AGENT_ROLE=infra
+VERS_INFRA_URL=${roofUrl}
+REEF_VM_TYPE=infra
+REEF_SERVICES=${profile.services.join(",")}
+REEF_CAPABILITIES=${profile.capabilities.join(",")}
+${req.parentVmId ? `REEF_PARENT_VM_ID=${req.parentVmId}` : ""}
+ENVEOF
+
+echo "[boot] Starting local reef service..."
 if systemctl is-system-running &>/dev/null; then
   cp /root/reef/scripts/reef.service /etc/systemd/system/reef.service
   systemctl daemon-reload
   systemctl enable reef
   systemctl start reef
 else
-  # No systemd — run directly
   nohup bun run src/main.ts > /tmp/reef.log 2>&1 &
 fi
 
-# ===== 11. Health check =====
 echo "[boot] Waiting for reef..."
 for i in $(seq 1 30); do
   if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
     echo "[boot] Reef up in \${i}s"
-
-    # Register in registry
-    curl -sf -X POST "${roofUrl}/registry/vms" \\
-      -H "Content-Type: application/json" \\
-      -H "Authorization: Bearer \${VERS_AUTH_TOKEN:-}" \\
-      -d '{
-        "id": "${req.vmId}",
-        "name": "${req.name}",
-        "role": "${req.type === "full" ? "worker" : req.type === "infra" ? "infra" : "worker"}",
-        "address": "${req.vmId}.vm.vers.sh",
-        "registeredBy": "bootloader",
-        "reefConfig": ${JSON.stringify({ organs: profile.organs, capabilities: profile.capabilities })}
-      }' 2>/dev/null || true
-
-    echo "[boot] Bootstrap complete for ${req.name}"
-    exit 0
+    break
   fi
   sleep 1
 done
 
-echo "[boot] Reef failed to start"
-tail -20 /tmp/reef.log 2>/dev/null
-exit 1
+if ! curl -sf http://localhost:3000/health > /dev/null 2>&1; then
+  echo "[boot] Reef failed to start"
+  tail -20 /tmp/reef.log 2>/dev/null
+  exit 1
+fi
+
+# ===== 10. Register in root registry =====
+curl -sf -X POST "${roofUrl}/registry/vms" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer \${VERS_AUTH_TOKEN:-}" \\
+  -d '{
+    "id": "${req.vmId}",
+    "name": "${req.name}",
+    "role": "infra",
+    "address": "${req.vmId}.vm.vers.sh",
+    "registeredBy": "bootloader",
+    "reefConfig": ${JSON.stringify({ services: profile.services, capabilities: profile.capabilities })}
+  }' 2>/dev/null || true
+
+echo "[boot] Bootstrap complete for ${req.name}"
+exit 0
 `;
 }
 
@@ -287,13 +229,13 @@ routes.get("/profiles/:type", (c) => {
 // POST /generate — generate a boot script for a VM
 routes.post("/generate", async (c) => {
   const body = await c.req.json();
-  const { vmId, name, type, parentVmId, extraOrgans, extraCapabilities, roofReefUrl } = body;
+  const { vmId, name, type, parentVmId, extraServices, extraOrgans, extraCapabilities, roofReefUrl } = body;
 
   if (!vmId || !name || !type) {
     return c.json({ error: "vmId, name, and type are required" }, 400);
   }
   if (!PROFILES[type as VMType]) {
-    return c.json({ error: `Unknown VM type: ${type}. Valid: full, swarm, lightweight, infra` }, 400);
+    return c.json({ error: `Unknown VM type: ${type}. Valid: infra` }, 400);
   }
 
   const script = generateBootScript({
@@ -301,16 +243,15 @@ routes.post("/generate", async (c) => {
     name,
     type: type as VMType,
     parentVmId,
+    extraServices,
     extraOrgans,
     extraCapabilities,
     roofReefUrl,
   });
 
   const profile = { ...PROFILES[type as VMType] };
-  if (extraOrgans) {
-    for (const o of extraOrgans) {
-      if (!profile.organs.includes(o)) profile.organs.push(o);
-    }
+  for (const service of [...(extraServices || []), ...(extraOrgans || [])]) {
+    if (!profile.services.includes(service)) profile.services.push(service);
   }
   if (extraCapabilities) {
     for (const c of extraCapabilities) {
@@ -352,16 +293,16 @@ const bootloader: ServiceModule = {
       name: "reef_boot_generate",
       label: "Bootloader: Generate Script",
       description:
-        "Generate a boot script to bootstrap reef on a new VM. Configures modules and capabilities based on VM type.",
+        "Generate a boot script to bootstrap an infra Reef VM. Agent VMs should come from the golden image instead.",
       parameters: Type.Object({
         vmId: Type.String({ description: "VM ID to bootstrap" }),
         name: Type.String({ description: "VM name" }),
-        type: Type.Union(
-          [Type.Literal("full"), Type.Literal("swarm"), Type.Literal("lightweight"), Type.Literal("infra")],
-          { description: "VM type profile" },
-        ),
+        type: Type.Literal("infra", { description: "Bootloader only supports infra VMs" }),
         parentVmId: Type.Optional(Type.String({ description: "Parent VM ID" })),
-        extraOrgans: Type.Optional(Type.Array(Type.String(), { description: "Additional service modules" })),
+        extraServices: Type.Optional(Type.Array(Type.String(), { description: "Additional services to include" })),
+        extraOrgans: Type.Optional(
+          Type.Array(Type.String(), { description: "Backward-compatible alias for extraServices" }),
+        ),
       }),
       async execute(_id, params) {
         if (!client.getBaseUrl()) return client.noUrl();
@@ -370,9 +311,8 @@ const bootloader: ServiceModule = {
           return client.ok(
             [
               `Boot script generated for "${result.name}" (${result.type})`,
-              `  Organs: ${result.profile.organs.join(", ")}`,
+              `  Services: ${result.profile.services.join(", ")}`,
               `  Capabilities: ${result.profile.capabilities.join(", ")}`,
-              `  Pi-vers: ${result.profile.installPiVers ? "yes" : "no"}`,
               `  Script length: ${result.script.length} chars`,
               "",
               "Use SCP to copy and execute on the VM:",
@@ -390,7 +330,8 @@ const bootloader: ServiceModule = {
     pi.registerTool({
       name: "reef_boot_profiles",
       label: "Bootloader: List Profiles",
-      description: "List available VM type profiles and their default DNA (modules + capabilities).",
+      description:
+        "List available infra boot profiles. Child agent VMs should be created from the golden image instead.",
       parameters: Type.Object({}),
       async execute() {
         if (!client.getBaseUrl()) return client.noUrl();
@@ -402,9 +343,8 @@ const bootloader: ServiceModule = {
               [
                 `${type}:`,
                 `  ${profile.description}`,
-                `  Organs: ${profile.organs.join(", ")}`,
+                `  Services: ${profile.services.join(", ")}`,
                 `  Capabilities: ${profile.capabilities.join(", ") || "none"}`,
-                `  Pi-vers: ${profile.installPiVers ? "yes" : "no"}`,
               ].join("\n"),
             );
           }
@@ -420,21 +360,22 @@ const bootloader: ServiceModule = {
 
   routeDocs: {
     "GET /profiles": {
-      summary: "List available VM type profiles",
-      response: "{ profiles: { full, swarm, lightweight, infra } }",
+      summary: "List available infra VM boot profiles",
+      response: "{ profiles: { infra } }",
     },
     "GET /profiles/:type": {
       summary: "Get a specific VM profile",
-      params: { type: { type: "string", required: true, description: "full | swarm | lightweight | infra" } },
+      params: { type: { type: "string", required: true, description: "infra" } },
     },
     "POST /generate": {
-      summary: "Generate a boot script for a VM",
+      summary: "Generate a boot script for an infra VM",
       body: {
         vmId: { type: "string", required: true, description: "VM ID" },
         name: { type: "string", required: true, description: "VM name" },
-        type: { type: "string", required: true, description: "VM type: full | swarm | lightweight | infra" },
+        type: { type: "string", required: true, description: "VM type: infra" },
         parentVmId: { type: "string", description: "Parent VM ID" },
-        extraOrgans: { type: "string[]", description: "Additional modules to include" },
+        extraServices: { type: "string[]", description: "Additional services to include" },
+        extraOrgans: { type: "string[]", description: "Backward-compatible alias for extraServices" },
       },
       response: "{ vmId, name, type, profile, script }",
     },

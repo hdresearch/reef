@@ -1,263 +1,131 @@
 # reef
 
-An agent with a server. The minimum kernel agents need to build their own tools.
+Reef is the root control plane for a Vers agent fleet.
 
-Reef is a plugin-based system where every capability is a service module — a folder with an `index.ts`. Everything that happens is an event in a causal tree: user prompts, tool calls, tool results, assistant responses, cron jobs, service deploys. The tree is the agent's memory.
+It runs the root Reef server, owns the global registry/vm-tree/commits state, manages remote lieutenants, serves the `/ui`, and provides the child-safe Reef tools that golden-image child VMs use to talk back to the root.
 
-## Quickstart
+## Current Architecture
 
-```bash
-bun install
+- `vers-fleets` bootstraps only the root Reef infra VM
+- `reef` owns the runtime control plane
+- `pi-vers` provides the Vers extensions Reef-managed agents load into the `punkin` harness
+- `punkin-pi` `v1rc3` is the harness used on the root and child agent VMs
 
-export VERS_AUTH_TOKEN=your-secret-token
-export ANTHROPIC_API_KEY=your-key
+After bootstrap, Reef is responsible for:
 
-bun run start
-```
+- ensuring a golden image exists
+- creating lieutenants from that golden image
+- tracking lineage in `vm-tree`
+- tracking liveness/discovery in `registry`
+- managing golden commits in `commits`
+- serving the root UI and conversation system
 
-Reef starts in agent mode with infrastructure services:
+## VM Roles
 
-```
-  mode: agent
-  services:
-    /docs — Auto-generated API documentation
-    /installer — Install, update, and remove service modules
-    /services — Service module manager
-    /store — Key-value store with TTL
-    /cron — Scheduled jobs (cron expressions + intervals)
-    /agent — Agent task management
-    /reef — Event tree, task submission, SSE stream
+Root Reef VM:
 
-  reef running on :3000
-```
+- runs the Reef server
+- owns SQLite-backed services like `registry`, `vm-tree`, and `commits`
+- is the only global authority
 
-Submit a task:
+Child agent VMs:
 
-```bash
-curl -X POST localhost:3000/reef/submit \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"task": "List the services and tell me what each does."}'
-```
+- are restored from the golden image at runtime
+- do not run their own Reef server
+- use `punkin` as the harness
+- install `pi-vers`
+- install the Reef client extension
+- point back to the root Reef via `VERS_INFRA_URL`
 
-Each task spawns a fresh [pi](https://github.com/badlogic/pi-mono) process with all reef tools available. Concurrent tasks run as concurrent processes.
+Lieutenants are branch managers. Workers are execution nodes. Global control-plane authority stays on the root.
 
-### Agent setup
+## Child Tool Surface
 
-Install pi so reef can spawn agent processes:
+Reef now scopes child tools intentionally.
 
-```bash
-npm install -g @mariozechner/pi-coding-agent
-```
+All child VMs get:
 
-## Event tree
+- `reef_self`
+- `reef_parent`
 
-Every event is a node with a `parentId`. The tree structure emerges naturally:
+Lieutenants additionally get:
 
-```
-[system] You are a reef agent
-├─ [user] What is 2+2?
-│  ├─ [tool] bash(echo $((2+2)))
-│  │  └─ [result] 4
-│  └─ [assistant] 2+2 = 4
-│     └─ [user] Multiply by 10          ← conversation continuation
-│        └─ [assistant] 40
-├─ [cron] heartbeat (exec)
-│  └─ [done] alive 03:02:00
-└─ [event] service deployed: ping
-```
+- `reef_lt_children`
+- `reef_lt_subtree`
+- `reef_lt_worker_capacity`
 
-- **Refs** point to leaf nodes like git branches (`main` → system root, `task-1` → latest response)
-- **`contextFor(nodeId)`** walks ancestors to build conversation history for each task
-- **Persists** to `data/tree.json`, loads on restart
+Child VMs do not expose raw global `registry`, `vm-tree`, `commits`, or lieutenant-lifecycle tools locally.
 
-### Tree API
+## Conversations And UI
 
-```bash
-# Full tree
-curl localhost:3000/reef/tree -H "Authorization: Bearer $TOKEN"
+The `/ui` is a 3-column root control-plane interface:
 
-# Single node + children
-curl localhost:3000/reef/tree/:id -H "Authorization: Bearer $TOKEN"
+- left: conversation list and create-chat flow
+- middle: active conversation
+- right: activity feed
 
-# Ancestor path
-curl localhost:3000/reef/tree/:id/path -H "Authorization: Bearer $TOKEN"
+Conversations are persisted on disk:
 
-# All tasks (filterable by status)
-curl localhost:3000/reef/tasks?status=done -H "Authorization: Bearer $TOKEN"
+- metadata lives in Reef task/tree state
+- message transcripts are appended as JSONL under `REEF_DATA_DIR/conversations/<conversationId>.jsonl`
 
-# SSE event stream (includes nodeId + parentId on every event)
-curl localhost:3000/reef/events -H "Authorization: Bearer $TOKEN"
-```
+Closing a conversation archives it from the active list without deleting it.
 
-### Conversation continuation
+## Important Services
 
-Reply to any node by passing `parentId`:
+Root-only control-plane services include:
 
-```bash
-curl -X POST localhost:3000/reef/submit \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"task": "Now multiply by 10", "taskId": "math", "parentId": "<assistant-node-id>"}'
-```
+- `commits`
+- `registry`
+- `vm-tree`
+- `lieutenant`
+- `services`
+- `ui`
+- `vers-config`
+- `bootloader`
 
-The server walks ancestors from that node to build the full conversation context.
+The `bootloader` now matters only for root/infra bootstrap and related recovery flows. Normal child-agent provisioning should come from Reef golden-image runtime flows, not from bootloader-generated child scripts.
 
-## How it works
+## Golden Image Contract
 
-The server's only job is discovery, dispatch, and lifecycle. Everything else is a plugin.
+The current golden image for child agent VMs is expected to contain:
 
-```
-services/
-  your-service/
-    index.ts    → /your-service/*
-```
+- `punkin-pi` `v1rc3`
+- `pi` symlinked to `punkin`
+- local `pi-vers` install
+- Reef client extension install
+- child env pointing at the root Reef:
+  - `VERS_INFRA_URL`
+  - `PI_VERS_HOME`
+  - `SERVICES_DIR`
+- no local child Reef server
+- RPC-ready runtime for lieutenants and workers
+- source checkouts for inspectability:
+  - `/root/punkin-pi`
+  - `/root/pi-vers`
+  - `/root/reef`
 
-Each module exports a `ServiceModule`:
-
-```ts
-import { Hono } from "hono";
-import type { ServiceModule } from "../../src/core/types.js";
-
-const routes = new Hono();
-routes.get("/", (c) => c.json({ hello: "world" }));
-
-const myService: ServiceModule = {
-  name: "my-service",
-  description: "Does something useful",
-  routes,
-};
-
-export default myService;
-```
-
-Drop that in `services/my-service/index.ts`, reload, and it's live at `/my-service`.
-
-### Events
-
-Any service can emit events that become nodes in the tree:
-
-```ts
-ctx.events.fire("reef:event", {
-  type: "my_event",
-  source: "my-service",
-  content: "something happened",
-});
-```
-
-## Runtime management
-
-```bash
-# Reload all (picks up new, changed, deleted modules)
-curl -X POST localhost:3000/services/reload \
-  -H "Authorization: Bearer $TOKEN"
-
-# Reload one
-curl -X POST localhost:3000/services/reload/my-service \
-  -H "Authorization: Bearer $TOKEN"
-
-# Unload
-curl -X DELETE localhost:3000/services/my-service \
-  -H "Authorization: Bearer $TOKEN"
-
-# Deploy (validate + test + load in one step)
-curl -X POST localhost:3000/services/deploy \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "my-service"}'
-
-# Export as tarball
-curl localhost:3000/services/export/my-service \
-  -H "Authorization: Bearer $TOKEN" > my-service.tar.gz
-
-# Manifest (all services + capabilities)
-curl localhost:3000/services/manifest \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-## Installing services
-
-The installer handles git repos, local paths, and fleet-to-fleet transfer.
-
-```bash
-# From GitHub
-curl -X POST localhost:3000/installer/install \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"source": "user/repo"}'
-
-# From local path (symlink)
-curl -X POST localhost:3000/installer/install \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"source": "/path/to/my-service"}'
-
-# From another reef instance
-curl -X POST localhost:3000/installer/install \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"from": "http://other-reef:3000", "name": "their-service", "token": "their-token"}'
-```
-
-Git source formats: `user/repo`, `user/repo@v1.0`, `https://github.com/user/repo`, `git@github.com:user/repo`, `gitlab.com/team/repo`
-
-## Example services
-
-Fleet coordination services live in `examples/services/`. Copy what you need:
-
-```bash
-cp -r examples/services/board services/
-curl -X POST localhost:3000/services/reload -H "Authorization: Bearer $TOKEN"
-```
-
-| Service | Description |
-|---------|-------------|
-| **ui** | Web dashboard — split-pane feed + branch conversations |
-| **board** | Shared task tracking with status workflow |
-| **feed** | Activity event stream |
-| **log** | Append-only structured work log |
-| **journal** | Personal narrative log per agent |
-| **registry** | VM service discovery and heartbeats |
-| **usage** | Cost and token tracking |
-| **commits** | VM snapshot ledger |
-| **reports** | Markdown report storage |
-| **scaffold** | Generate service module skeletons |
-| **updater** | Auto-update from npm |
-
-## Agent tools
-
-Reef is also a [pi](https://github.com/badlogic/pi-mono) package. When a task runs, the agent automatically gets tools from all loaded services:
-
-- **reef_manifest** — discover available services and capabilities
-- **reef_deploy** — validate, test, and load a service in one step
-- **reef_task_list** / **reef_task_read** — inspect completed tasks
-- **reef_store_get** / **reef_store_put** / **reef_store_list** — key-value storage
-- **vers_vm_create** / **vers_vm_branch** / **vers_vm_commit** — VM management
-- Plus any tools registered by your own service modules
+Golden creation also adds VM-local compatibility aliases for legacy `@mariozechner/*` Pi packages so they can still load under `punkin`.
 
 ## Development
 
 ```bash
-bun run dev       # watch mode
-bun test          # 265 tests
-bun run lint      # biome check
-bun run lint:fix  # auto-fix
+bun install
+bun test
+bun run start
 ```
 
-Pre-commit hook runs biome on staged `.ts` files. Activates automatically on `bun install` via the `prepare` script.
+Useful env:
 
-## Error handling
+- `VERS_AUTH_TOKEN`
+- `ANTHROPIC_API_KEY`
+- `VERS_VM_ID`
+- `VERS_INFRA_URL`
+- `SERVICES_DIR`
+- `REEF_DATA_DIR`
 
-One bad module can't take down the server.
+## Notes
 
-| Failure | What happens |
-|---------|-------------|
-| Import fails | Module skipped, others load normally |
-| `init()` throws | Module rolled back, others keep running |
-| Route handler throws | Returns `500 { error }`, server continues |
-| Runtime load fails | Rolled back — no half-initialized state |
-
-## Requirements
-
-- [Bun](https://bun.sh)
-- [pi](https://github.com/badlogic/pi-mono) (for agent tasks)
+- Root Reef is the only SQLite authority in the fleet.
+- `vers-fleets` is bootstrap-only after the root comes up.
+- Child lieutenants and workers should be created from Reef runtime flows, not pre-bootstrapped externally.

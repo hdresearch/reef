@@ -9,7 +9,7 @@
  * Schema tracks:
  *   - Parent-child relationships (lineage)
  *   - VM category (lieutenant, swarm_vm, agent_vm, infra_vm)
- *   - Reef config per VM (the "DNA" — organs + capabilities)
+ *   - Reef config per VM (the "DNA" — services + capabilities)
  *   - Creation/update timestamps
  *
  * Separate from registry: registry tracks live VM health/heartbeats,
@@ -28,7 +28,7 @@ import { ulid } from "ulid";
 export type VMCategory = "lieutenant" | "swarm_vm" | "agent_vm" | "infra_vm";
 
 export interface ReefConfig {
-  organs: string[];
+  services: string[];
   capabilities: string[];
 }
 
@@ -67,7 +67,18 @@ export interface TreeView {
 // =============================================================================
 
 const VALID_CATEGORIES = new Set<string>(["lieutenant", "swarm_vm", "agent_vm", "infra_vm"]);
-const DEFAULT_CONFIG: ReefConfig = { organs: [], capabilities: [] };
+const DEFAULT_CONFIG: ReefConfig = { services: [], capabilities: [] };
+
+function normalizeReefConfig(value: unknown): ReefConfig {
+  if (!value || typeof value !== "object") return { ...DEFAULT_CONFIG };
+  const raw = value as Record<string, unknown>;
+  const services = Array.isArray(raw.services) ? raw.services : Array.isArray(raw.organs) ? raw.organs : [];
+  const capabilities = Array.isArray(raw.capabilities) ? raw.capabilities : [];
+  return {
+    services: services.filter((entry): entry is string => typeof entry === "string"),
+    capabilities: capabilities.filter((entry): entry is string => typeof entry === "string"),
+  };
+}
 
 // =============================================================================
 // Store
@@ -94,7 +105,7 @@ export class VMTreeStore {
         name         TEXT NOT NULL,
         parent_vm_id TEXT REFERENCES vms(vm_id),
         category     TEXT NOT NULL CHECK(category IN ('lieutenant', 'swarm_vm', 'agent_vm', 'infra_vm')),
-        reef_config  TEXT NOT NULL DEFAULT '{"organs":[],"capabilities":[]}',
+        reef_config  TEXT NOT NULL DEFAULT '{"services":[],"capabilities":[]}',
         created_at   TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
       )
@@ -131,7 +142,7 @@ export class VMTreeStore {
         input.name.trim(),
         input.parentVmId || null,
         input.category,
-        JSON.stringify(input.reefConfig || DEFAULT_CONFIG),
+        JSON.stringify(normalizeReefConfig(input.reefConfig || DEFAULT_CONFIG)),
         now,
         now,
       ],
@@ -174,7 +185,7 @@ export class VMTreeStore {
     }
     if (input.reefConfig !== undefined) {
       sets.push("reef_config = ?");
-      params.push(JSON.stringify(input.reefConfig));
+      params.push(JSON.stringify(normalizeReefConfig(input.reefConfig)));
     }
 
     sets.push("updated_at = ?");
@@ -312,20 +323,20 @@ export class VMTreeStore {
 
     return {
       added: {
-        organs: b.reefConfig.organs.filter((o) => !a.reefConfig.organs.includes(o)),
+        services: b.reefConfig.services.filter((service) => !a.reefConfig.services.includes(service)),
         capabilities: b.reefConfig.capabilities.filter((c) => !a.reefConfig.capabilities.includes(c)),
       },
       removed: {
-        organs: a.reefConfig.organs.filter((o) => !b.reefConfig.organs.includes(o)),
+        services: a.reefConfig.services.filter((service) => !b.reefConfig.services.includes(service)),
         capabilities: a.reefConfig.capabilities.filter((c) => !b.reefConfig.capabilities.includes(c)),
       },
     };
   }
 
-  /** Find VMs that have a specific organ loaded */
-  findByOrgan(organ: string): VMNode[] {
+  /** Find VMs that have a specific service loaded */
+  findByService(service: string): VMNode[] {
     // SQLite JSON — use LIKE for simplicity since json_each requires extension
-    return this.db.query(`SELECT * FROM vms WHERE reef_config LIKE ?`).all(`%"${organ}"%`).map(rowToNode);
+    return this.db.query(`SELECT * FROM vms WHERE reef_config LIKE ?`).all(`%"${service}"%`).map(rowToNode);
   }
 
   /** Find VMs that have a specific capability */
@@ -407,7 +418,7 @@ function rowToNode(row: any): VMNode {
     name: row.name,
     parentVmId: row.parent_vm_id || null,
     category: row.category,
-    reefConfig: JSON.parse(row.reef_config || '{"organs":[],"capabilities":[]}'),
+    reefConfig: normalizeReefConfig(JSON.parse(row.reef_config || '{"services":[],"capabilities":[]}')),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

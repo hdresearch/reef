@@ -23,6 +23,7 @@ describe("FleetClient", () => {
   const origName = process.env.VERS_AGENT_NAME;
   const origVm = process.env.VERS_VM_ID;
   const origRole = process.env.VERS_AGENT_ROLE;
+  const origChild = process.env.REEF_CHILD_AGENT;
 
   afterEach(() => {
     const restore = (key: string, val: string | undefined) => {
@@ -34,6 +35,7 @@ describe("FleetClient", () => {
     restore("VERS_AGENT_NAME", origName);
     restore("VERS_VM_ID", origVm);
     restore("VERS_AGENT_ROLE", origRole);
+    restore("REEF_CHILD_AGENT", origChild);
   });
 
   test("getBaseUrl returns VERS_INFRA_URL", () => {
@@ -82,6 +84,18 @@ describe("FleetClient", () => {
     process.env.VERS_AGENT_ROLE = "orchestrator";
     const client = createFleetClient();
     expect(client.agentRole).toBe("orchestrator");
+  });
+
+  test("isChildAgent defaults to false", () => {
+    delete process.env.REEF_CHILD_AGENT;
+    const client = createFleetClient();
+    expect(client.isChildAgent).toBe(false);
+  });
+
+  test("isChildAgent uses REEF_CHILD_AGENT", () => {
+    process.env.REEF_CHILD_AGENT = "true";
+    const client = createFleetClient();
+    expect(client.isChildAgent).toBe(true);
   });
 
   test("ok() builds a success result", () => {
@@ -181,6 +195,19 @@ describe("discoverServiceModules", () => {
     const modules = await discoverServiceModules(DISCOVER_DIR);
     expect(modules.length).toBe(1);
     expect(modules[0].name).toBe("disco-svc");
+  });
+
+  test("can limit discovery to an allowlist of service names", async () => {
+    const kept = join(DISCOVER_DIR, "kept-svc");
+    mkdirSync(kept);
+    writeFileSync(join(kept, "index.ts"), `export default { name: "kept-svc" };`);
+
+    const skipped = join(DISCOVER_DIR, "skipped-svc");
+    mkdirSync(skipped);
+    writeFileSync(join(skipped, "index.ts"), `export default { name: "skipped-svc" };`);
+
+    const modules = await discoverServiceModules(DISCOVER_DIR, { includeNames: ["kept-svc"] });
+    expect(modules.map((mod) => mod.name)).toEqual(["kept-svc"]);
   });
 
   test("skips directories without index.ts", async () => {

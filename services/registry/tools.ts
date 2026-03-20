@@ -45,7 +45,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       reefConfig: Type.Optional(
         Type.Object(
           {
-            organs: Type.Array(Type.String(), { description: "Service modules loaded" }),
+            services: Type.Array(Type.String(), { description: "Services loaded on this VM" }),
             capabilities: Type.Array(Type.String(), { description: "Extension capabilities" }),
           },
           { description: "VM DNA — modules and capabilities" },

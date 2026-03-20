@@ -15,13 +15,12 @@
   "pi": {
     "extensions": [
       "./src/extension.ts",
-      "./extensions/vers-vm.ts",
-      "./extensions/vers-vm-copy.ts",
       "./extensions/reminders.ts"
     ],
     "skills": ["./skills"]
   },
   "dependencies": {
+    "@hdresearch/pi-v": "github:hdresearch/pi-vers#main",
     "hono": "^4.12.2",
     "ulid": "^3.0.2"
   },
