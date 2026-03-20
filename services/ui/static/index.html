@@ -12,6 +12,7 @@
       <h1>▸ reef</h1>
       <nav id="tabs">
         <button class="tab active" data-view="feed">feed</button>
+        <button class="tab" data-view="mobile">mobile</button>
       </nav>
       <div class="spacer"></div>
       <div class="status" id="status">
@@ -73,11 +74,41 @@
       </aside>
     </div>
 
+    <!-- Mobile QR code panel (always available, not a discovered panel) -->
+    <div id="mobile-panel" class="closed">
+      <div class="mobile-panel-inner">
+        <div class="mobile-header">
+          <h2>📱 Mobile Access</h2>
+          <p class="mobile-desc">Scan this QR code with your phone to get instant access to reef.</p>
+        </div>
+        <div id="qr-container">
+          <div id="qr-loading">Generating QR code…</div>
+          <div id="qr-svg"></div>
+          <div id="qr-countdown"></div>
+        </div>
+        <div class="mobile-info">
+          <div class="mobile-info-item">
+            <span class="mobile-info-label">session</span>
+            <span class="mobile-info-value">30 days (persistent)</span>
+          </div>
+          <div class="mobile-info-item">
+            <span class="mobile-info-label">auto-refresh</span>
+            <span class="mobile-info-value">QR refreshes every 4 minutes</span>
+          </div>
+          <div class="mobile-info-item">
+            <span class="mobile-info-label">reconnect</span>
+            <span class="mobile-info-value">SSE auto-reconnects on wake</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Panel views (discovered dynamically, toggled via tabs) -->
     <div id="panel-area" class="closed"></div>
   </div>
 
   <script>const PANEL_API = '/ui/api';</script>
+  <script src="/ui/static/qrcode.js"></script>
   <script src="/ui/static/app.js"></script>
 </body>
 </html>

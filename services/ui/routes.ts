@@ -1,11 +1,19 @@
 /**
  * UI routes — serves the dashboard, handles magic link auth, proxies API calls.
+ * Now includes QR code generation and persistent mobile sessions.
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { consumeMagicLink, createMagicLink, createSession, validateSession } from "./auth.js";
+import {
+  consumeMagicLink,
+  createMagicLink,
+  createSession,
+  getSessionMaxAge,
+  initAuth,
+  validateSession,
+} from "./auth.js";
 
 const AUTH_TOKEN = process.env.VERS_AUTH_TOKEN || "test-token";
 
@@ -39,22 +47,51 @@ export function createRoutes(): Hono {
     return c.json({ url, expiresAt: link.expiresAt });
   });
 
+  // QR code magic link — generates a fresh magic link and returns its URL
+  // Used by the mobile tab to create auto-refreshing QR codes
+  routes.post("/auth/qr-link", (c) => {
+    // Must be called from an authenticated session (the dashboard itself)
+    const sessionId = getSessionId(c);
+    const hasBearerToken = hasBearerAuth(c);
+    if (!validateSession(sessionId) && !hasBearerToken) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+
+    const link = createMagicLink();
+    const host = c.req.header("host") || "localhost:3000";
+    const proto = c.req.header("x-forwarded-proto") || "https";
+    const url = `${proto}://${host}/ui/login?token=${link.token}&mobile=1`;
+    return c.json({ url, token: link.token, expiresAt: link.expiresAt });
+  });
+
   // Login page / magic link consumer
   routes.get("/ui/login", (c) => {
     const token = c.req.query("token");
+    const isMobile = c.req.query("mobile") === "1";
 
     if (token) {
       const valid = consumeMagicLink(token);
       if (valid) {
-        const session = createSession();
-        return c.html('<html><head><meta http-equiv="refresh" content="0;url=/ui/"></head></html>', 200, {
-          "Set-Cookie": `session=${session.id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+        const userAgent = c.req.header("user-agent") || "";
+        // Mobile links default to persistent (30-day) sessions
+        const session = createSession({
+          persistent: isMobile,
+          userAgent,
         });
+        const maxAge = getSessionMaxAge(session.id);
+        const redirectUrl = isMobile ? "/ui/?mobile=1" : "/ui/";
+        return c.html(
+          `<html><head><meta http-equiv="refresh" content="0;url=${redirectUrl}"></head></html>`,
+          200,
+          {
+            "Set-Cookie": `session=${session.id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`,
+          },
+        );
       }
       return c.html(
         `<html><body style="background:#0a0a0a;color:#f55;font-family:monospace;padding:2em">
           <h2>Invalid or expired link</h2>
-          <p>Request a new magic link from the API.</p>
+          <p>Request a new magic link from the API, or scan a fresh QR code from the dashboard.</p>
         </body></html>`,
         401,
       );
@@ -64,6 +101,7 @@ export function createRoutes(): Hono {
       <h2>reef</h2>
       <p>Access requires a magic link. Generate one via:</p>
       <pre style="color:#4f9">POST /auth/magic-link</pre>
+      <p>Or scan the QR code from the reef dashboard's "mobile" tab.</p>
     </body></html>`);
   });
 
@@ -97,7 +135,8 @@ export function createRoutes(): Hono {
     try {
       const content = readFileSync(join(getStaticDir(), file), "utf-8");
       const ext = file.split(".").pop();
-      const contentType = ext === "css" ? "text/css" : ext === "js" ? "application/javascript" : "text/plain";
+      const contentType =
+        ext === "css" ? "text/css" : ext === "js" ? "application/javascript" : "text/plain";
       return c.body(content, 200, { "Content-Type": contentType });
     } catch {
       return c.text("Not found", 404);

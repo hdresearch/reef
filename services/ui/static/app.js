@@ -881,6 +881,7 @@ async function discoverPanels() {
 }
 
 function togglePanel(name) {
+  closeMobilePanel(); // close mobile panel if open
   if (activePanel === name) {
     $('panel-area').className = 'closed';
     $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === 'feed'));
@@ -916,10 +917,112 @@ function injectPanel(container, html) {
 }
 
 $('tabs').querySelector('[data-view="feed"]').addEventListener('click', () => {
+  closeMobilePanel();
   if (!activePanel) return;
   $('panel-area').className = 'closed';
   $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === 'feed'));
   activePanel = null;
+});
+
+// =============================================================================
+// Mobile QR panel
+// =============================================================================
+
+let mobileOpen = false;
+let qrRefreshTimer = null;
+let qrCountdownTimer = null;
+let qrExpiresAt = null;
+
+function openMobilePanel() {
+  // Close any service panel
+  if (activePanel) {
+    $('panel-area').className = 'closed';
+    activePanel = null;
+  }
+  mobileOpen = true;
+  $('mobile-panel').className = 'open';
+  $('tabs').querySelectorAll('.tab').forEach((tab) =>
+    tab.classList.toggle('active', tab.dataset.view === 'mobile')
+  );
+  refreshQRCode();
+}
+
+function closeMobilePanel() {
+  if (!mobileOpen) return;
+  mobileOpen = false;
+  $('mobile-panel').className = 'closed';
+  if (qrRefreshTimer) { clearTimeout(qrRefreshTimer); qrRefreshTimer = null; }
+  if (qrCountdownTimer) { clearInterval(qrCountdownTimer); qrCountdownTimer = null; }
+}
+
+function toggleMobilePanel() {
+  if (mobileOpen) {
+    closeMobilePanel();
+    $('tabs').querySelectorAll('.tab').forEach((tab) =>
+      tab.classList.toggle('active', tab.dataset.view === 'feed')
+    );
+  } else {
+    openMobilePanel();
+  }
+}
+
+async function refreshQRCode() {
+  const svgEl = $('qr-svg');
+  const loadingEl = $('qr-loading');
+  const countdownEl = $('qr-countdown');
+
+  loadingEl.style.display = '';
+  svgEl.innerHTML = '';
+
+  try {
+    const resp = await fetch(`${API}/auth/qr-link`, { method: 'POST' });
+    if (!resp.ok) {
+      loadingEl.textContent = 'Failed to generate QR code. Are you logged in?';
+      return;
+    }
+    const data = await resp.json();
+    qrExpiresAt = new Date(data.expiresAt).getTime();
+
+    // Generate QR code SVG client-side
+    if (typeof QR !== 'undefined') {
+      const svg = QR.toSVG(data.url, { size: 240, margin: 2, dark: '#000', light: '#fff' });
+      svgEl.innerHTML = svg;
+      loadingEl.style.display = 'none';
+    } else {
+      loadingEl.textContent = 'QR library not loaded';
+      return;
+    }
+
+    // Schedule refresh at 4 minutes (1 min before 5-min expiry)
+    if (qrRefreshTimer) clearTimeout(qrRefreshTimer);
+    qrRefreshTimer = setTimeout(() => {
+      if (mobileOpen) refreshQRCode();
+    }, 4 * 60 * 1000);
+
+    // Countdown display
+    if (qrCountdownTimer) clearInterval(qrCountdownTimer);
+    updateCountdown(countdownEl);
+    qrCountdownTimer = setInterval(() => updateCountdown(countdownEl), 1000);
+
+  } catch (e) {
+    loadingEl.textContent = 'Error generating QR code';
+    console.error('QR generation error:', e);
+  }
+}
+
+function updateCountdown(el) {
+  if (!qrExpiresAt) { el.textContent = ''; return; }
+  const remaining = Math.max(0, Math.floor((qrExpiresAt - Date.now()) / 1000));
+  const min = Math.floor(remaining / 60);
+  const sec = remaining % 60;
+  el.textContent = remaining > 0
+    ? `expires in ${min}:${sec.toString().padStart(2, '0')}`
+    : 'refreshing…';
+}
+
+// Wire up mobile tab button
+$('tabs').querySelector('[data-view="mobile"]').addEventListener('click', () => {
+  toggleMobilePanel();
 });
 
 // =============================================================================
@@ -947,6 +1050,33 @@ $('branch-toggle').addEventListener('click', () => {
 
 $('new-chat').addEventListener('click', () => {
   deselectConversation();
+});
+
+// =============================================================================
+// Mobile SSE reconnection — handle phone sleep/wake
+// =============================================================================
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    // Phone woke up or tab became visible — reconnect if needed
+    if (!sseConnected) {
+      console.log('[reef] Visibility restored, reconnecting SSE…');
+      connectSSE();
+    }
+    updateStatus();
+    // Refresh QR if mobile panel is open (link may have expired while asleep)
+    if (mobileOpen && qrExpiresAt && Date.now() > qrExpiresAt) {
+      refreshQRCode();
+    }
+  }
+});
+
+// Also handle online/offline events for mobile networks
+window.addEventListener('online', () => {
+  if (!sseConnected) {
+    console.log('[reef] Network restored, reconnecting SSE…');
+    setTimeout(connectSSE, 500);
+  }
 });
 
 // =============================================================================
