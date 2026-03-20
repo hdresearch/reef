@@ -953,6 +953,195 @@ $('new-chat').addEventListener('click', () => {
 // Init
 // =============================================================================
 
+// =============================================================================
+// Mobile mode
+// =============================================================================
+
+const MOBILE_BREAKPOINT = 768;
+let isMobile = window.innerWidth <= MOBILE_BREAKPOINT;
+let currentMobileView = 'conversations';
+
+function checkMobile() {
+  const wasMobile = isMobile;
+  isMobile = window.innerWidth <= MOBILE_BREAKPOINT;
+
+  if (isMobile && !wasMobile) initMobileMode();
+  if (!isMobile && wasMobile) exitMobileMode();
+}
+
+function initMobileMode() {
+  // Set initial view classes
+  switchMobileView(currentMobileView);
+  updateMobileBadge();
+
+  // Add back button to branch header if not present
+  if (!$('branch-header').querySelector('.mobile-back')) {
+    const backBtn = document.createElement('button');
+    backBtn.className = 'mobile-back';
+    backBtn.type = 'button';
+    backBtn.textContent = '←';
+    backBtn.title = 'Back to conversations';
+    backBtn.addEventListener('click', () => switchMobileView('conversations'));
+    $('branch-header').prepend(backBtn);
+  }
+}
+
+function exitMobileMode() {
+  // Remove mobile classes, restore desktop layout
+  for (const id of ['conversations', 'branch', 'feed']) {
+    const el = $(id);
+    el.classList.remove('mobile-active', 'mobile-hidden');
+  }
+  $('mobile-more').hidden = true;
+
+  // Remove back button
+  const backBtn = $('branch-header').querySelector('.mobile-back');
+  if (backBtn) backBtn.remove();
+}
+
+function switchMobileView(view) {
+  if (!isMobile) return;
+  currentMobileView = view;
+
+  const views = ['conversations', 'branch', 'feed'];
+  const morePanel = $('mobile-more');
+
+  if (view === 'more') {
+    // Show More panel overlay
+    morePanel.hidden = false;
+    populateMobileMore();
+  } else {
+    morePanel.hidden = true;
+  }
+
+  for (const v of views) {
+    const el = $(v);
+    if (v === view) {
+      el.classList.add('mobile-active');
+      el.classList.remove('mobile-hidden');
+    } else {
+      el.classList.remove('mobile-active');
+      el.classList.add('mobile-hidden');
+    }
+  }
+
+  // Update bottom nav active state
+  document.querySelectorAll('.mobile-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.mobileView === view);
+  });
+}
+
+function populateMobileMore() {
+  const list = $('mobile-panel-list');
+  list.innerHTML = '';
+
+  // Add panel buttons for discovered panels
+  for (const [name] of loadedPanels) {
+    const btn = document.createElement('button');
+    btn.className = 'mobile-panel-btn';
+    btn.textContent = name;
+    btn.addEventListener('click', () => {
+      togglePanel(name);
+      switchMobileView('branch'); // Switch to a base view behind the panel overlay
+    });
+    list.appendChild(btn);
+  }
+
+  if (list.children.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'color: var(--text-dim); font-size: 13px; padding: 12px 4px;';
+    empty.textContent = 'No service panels discovered yet.';
+    list.appendChild(empty);
+  }
+
+  // Sync mobile status with main status
+  const mainStatus = $('status');
+  const mobileStatus = $('mobile-status');
+  if (mobileStatus && mainStatus) {
+    mobileStatus.className = mainStatus.className;
+    mobileStatus.innerHTML = mainStatus.innerHTML;
+  }
+}
+
+function updateMobileBadge() {
+  const badge = $('mobile-badge');
+  if (!badge) return;
+  const activeCount = [...conversations.values()].filter((c) => c.working).length;
+  if (activeCount > 0) {
+    badge.textContent = String(activeCount);
+    badge.hidden = false;
+  } else {
+    badge.hidden = true;
+  }
+}
+
+// Mobile nav click handlers
+document.querySelectorAll('.mobile-tab').forEach((tab) => {
+  tab.addEventListener('click', () => {
+    switchMobileView(tab.dataset.mobileView);
+  });
+});
+
+// Override selectConversation to auto-switch to chat view on mobile
+const _originalSelectConversation = selectConversation;
+selectConversation = async function(conversationId) {
+  await _originalSelectConversation(conversationId);
+  if (isMobile) {
+    switchMobileView('branch');
+    updateMobileBadge();
+  }
+};
+
+// Override handleEvent to update badge on conversation status changes
+const _originalHandleEvent = handleEvent;
+handleEvent = function(event) {
+  _originalHandleEvent(event);
+  if (isMobile) updateMobileBadge();
+};
+
+// Mobile keyboard handling with visualViewport API
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    if (!isMobile) return;
+    // Adjust for virtual keyboard by updating CSS variable
+    const keyboardHeight = window.innerHeight - window.visualViewport.height;
+    const nav = $('mobile-nav');
+    if (nav) {
+      if (keyboardHeight > 100) {
+        // Keyboard is open — hide bottom nav, adjust input
+        nav.style.display = 'none';
+        document.getElementById('workspace').style.marginBottom = '0';
+      } else {
+        nav.style.display = '';
+        document.getElementById('workspace').style.marginBottom = '';
+      }
+    }
+  });
+}
+
+// Reconnect SSE on visibility change (mobile backgrounding)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !sseConnected) {
+    connectSSE();
+    updateStatus();
+  }
+});
+
+// Reconnect on network recovery
+window.addEventListener('online', () => {
+  if (!sseConnected) {
+    connectSSE();
+    updateStatus();
+  }
+});
+
+// Resize handler for mobile detection
+window.addEventListener('resize', checkMobile);
+
+// =============================================================================
+// Init
+// =============================================================================
+
 Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   connectSSE();
   updateStatus();
@@ -960,4 +1149,7 @@ Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   setInterval(discoverPanels, 30000);
   setInterval(refreshActivePanel, 10000);
   setInterval(updateStatus, 10000);
+
+  // Initialize mobile mode if needed
+  if (isMobile) initMobileMode();
 });

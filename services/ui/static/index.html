@@ -75,6 +75,39 @@
 
     <!-- Panel views (discovered dynamically, toggled via tabs) -->
     <div id="panel-area" class="closed"></div>
+
+    <!-- Mobile bottom navigation -->
+    <nav id="mobile-nav">
+      <button class="mobile-tab active" data-mobile-view="conversations">
+        <span class="mobile-tab-icon">💬</span>
+        <span class="mobile-tab-label">Chats</span>
+        <span class="mobile-tab-badge" id="mobile-badge" hidden></span>
+      </button>
+      <button class="mobile-tab" data-mobile-view="branch">
+        <span class="mobile-tab-icon">📝</span>
+        <span class="mobile-tab-label">Chat</span>
+      </button>
+      <button class="mobile-tab" data-mobile-view="feed">
+        <span class="mobile-tab-icon">📊</span>
+        <span class="mobile-tab-label">Feed</span>
+      </button>
+      <button class="mobile-tab" data-mobile-view="more">
+        <span class="mobile-tab-icon">⚙</span>
+        <span class="mobile-tab-label">More</span>
+      </button>
+    </nav>
+
+    <!-- Mobile "More" panel (panels + status) -->
+    <div id="mobile-more" class="mobile-view" hidden>
+      <div id="mobile-more-header">
+        <span>panels & status</span>
+        <div class="status" id="mobile-status">
+          <span class="dot"></span>
+          <span class="label">connecting</span>
+        </div>
+      </div>
+      <div id="mobile-panel-list"></div>
+    </div>
   </div>
 
   <script>const PANEL_API = '/ui/api';</script>

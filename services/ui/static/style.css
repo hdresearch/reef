@@ -413,7 +413,14 @@ header h1 {
 .branch-tool-arrow { font-size: 8px; margin-right: 4px; }
 .branch-tool-arrow.open { transform: rotate(90deg); display: inline-block; }
 
-@media (max-width: 1100px) {
+/* ---- Mobile bottom nav (hidden on desktop) ---- */
+
+#mobile-nav { display: none; }
+#mobile-more { display: none; }
+
+/* ---- Tablet breakpoint ---- */
+
+@media (max-width: 1100px) and (min-width: 769px) {
   #workspace {
     flex-direction: column;
   }
@@ -441,6 +448,390 @@ header h1 {
     max-height: 30vh;
     border-left: none;
     border-top: 1px solid var(--border);
+  }
+}
+
+/* ==========================================================================
+   Mobile mode — full-screen single-view with bottom tab bar
+   ========================================================================== */
+
+@media (max-width: 768px) {
+  /* ---- Base resets ---- */
+
+  html, body { font-size: 14px; }
+
+  #app {
+    height: 100vh;
+    height: 100dvh; /* dynamic viewport height for mobile keyboards */
+  }
+
+  /* ---- Header: simplified ---- */
+
+  header {
+    padding: 10px 12px;
+    min-height: 44px;
+  }
+
+  header h1 { font-size: 14px; }
+
+  /* Hide desktop tabs on mobile — navigation is via bottom bar */
+  #tabs { display: none; }
+
+  /* Status in header — keep compact */
+  .status { font-size: 10px; }
+
+  /* ---- Workspace: single-view mode ---- */
+
+  #workspace {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* All three panels become full-screen, absolutely positioned */
+  #conversations,
+  #branch,
+  #feed {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    flex: none;
+    min-width: 0;
+    width: 100%;
+    height: 100%;
+    border: none;
+    transition: transform 0.2s ease, opacity 0.15s ease;
+    z-index: 1;
+  }
+
+  /* Hidden views slide off-screen */
+  #conversations.mobile-hidden,
+  #branch.mobile-hidden,
+  #feed.mobile-hidden {
+    transform: translateX(-100%);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Active view */
+  #conversations.mobile-active,
+  #branch.mobile-active,
+  #feed.mobile-active {
+    transform: translateX(0);
+    opacity: 1;
+    pointer-events: auto;
+    z-index: 2;
+  }
+
+  /* ---- Conversations panel ---- */
+
+  #conversations {
+    min-width: 0;
+    max-height: none;
+    background: var(--bg);
+  }
+
+  #conversations-header {
+    padding: 12px 16px;
+    font-size: 13px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
+  #new-chat {
+    padding: 8px 16px;
+    font-size: 13px;
+    min-height: 36px;
+    border-radius: 6px;
+  }
+
+  #conversations-scroll {
+    padding: 8px 12px 16px;
+  }
+
+  .conversation-item {
+    padding: 12px;
+    min-height: 48px;
+    border-radius: 8px;
+  }
+
+  .conversation-title { font-size: 14px; }
+  .conversation-meta { font-size: 11px; margin-top: 4px; }
+
+  .conversation-toggle {
+    padding: 6px 12px;
+    font-size: 12px;
+    min-width: 44px;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .conversation-group-label {
+    font-size: 11px;
+    padding: 4px 8px 8px;
+  }
+
+  /* ---- Branch/Chat panel ---- */
+
+  #branch {
+    max-height: none;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #branch-header {
+    padding: 8px 12px;
+    min-height: 44px;
+    gap: 8px;
+  }
+
+  #branch-label { font-size: 14px; }
+  #branch-meta { font-size: 11px; }
+
+  #branch-actions {
+    gap: 4px;
+  }
+
+  #branch-toggle,
+  #branch-close {
+    min-width: 44px;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    padding: 4px 8px;
+  }
+
+  /* Add a back button style for mobile */
+  #branch-header .mobile-back {
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: 18px;
+    padding: 4px 8px;
+    min-width: 44px;
+    min-height: 36px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 4px;
+  }
+
+  #branch-scroll {
+    padding: 12px;
+    flex: 1 1 0;
+  }
+
+  #branch-input {
+    padding: 8px 12px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+    gap: 8px;
+  }
+
+  #branch-text {
+    font-size: 16px; /* prevents iOS zoom on focus */
+    padding: 10px 12px;
+    min-height: 44px;
+    border-radius: 8px;
+  }
+
+  #branch-send {
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+    font-size: 18px;
+  }
+
+  /* Messages */
+  .branch-msg { margin-bottom: 12px; }
+  .branch-msg-role { font-size: 11px; margin-bottom: 4px; }
+  .branch-msg-content { font-size: 14px; line-height: 1.5; }
+  .branch-msg-content code { font-size: 12px; padding: 2px 4px; }
+  .branch-msg-content pre { padding: 8px; font-size: 12px; }
+
+  .branch-tool { margin: 4px 0; padding-left: 8px; }
+  .branch-tool-header { font-size: 12px; min-height: 36px; display: flex; align-items: center; }
+  .branch-tool-body { font-size: 11px; max-height: 120px; }
+
+  /* ---- Feed panel ---- */
+
+  #feed {
+    min-width: 0;
+    max-height: none;
+    background: var(--bg);
+  }
+
+  #feed-header {
+    padding: 12px 16px;
+    min-height: 44px;
+  }
+
+  #feed-label { font-size: 14px; }
+  #feed-scope { font-size: 11px; margin-top: 4px; }
+
+  #feed-scroll { padding: 4px 0; }
+
+  .feed-row {
+    padding: 6px 12px;
+    font-size: 13px;
+    min-height: 36px;
+    align-items: center;
+  }
+
+  .feed-time { font-size: 10px; }
+  .feed-tag { font-size: 9px; padding: 2px 6px; }
+  .feed-text { font-size: 13px; }
+
+  /* Flatten deep nesting on mobile */
+  .feed-children { margin-left: 8px; padding-left: 8px; }
+  .feed-children .feed-children { margin-left: 4px; padding-left: 4px; }
+  .feed-children .feed-children .feed-children { margin-left: 0; padding-left: 0; border-left: none; }
+
+  /* ---- Panel area on mobile ---- */
+
+  #panel-area.open {
+    top: 0;
+    padding: 0;
+    z-index: 20;
+  }
+
+  /* ---- Bottom navigation bar ---- */
+
+  #mobile-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 56px;
+    padding-bottom: env(safe-area-inset-bottom);
+    background: #0d0d0d;
+    border-top: 1px solid var(--border);
+    z-index: 100;
+    flex-shrink: 0;
+  }
+
+  .mobile-tab {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-family: var(--font);
+    cursor: pointer;
+    position: relative;
+    padding: 4px;
+    min-height: 44px;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-tab:active { opacity: 0.7; }
+
+  .mobile-tab.active {
+    color: var(--accent);
+  }
+
+  .mobile-tab-icon {
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .mobile-tab-label {
+    font-size: 10px;
+    letter-spacing: 0.3px;
+  }
+
+  .mobile-tab-badge {
+    position: absolute;
+    top: 4px;
+    right: calc(50% - 16px);
+    background: var(--accent);
+    color: var(--bg);
+    font-size: 9px;
+    font-weight: 700;
+    min-width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+  }
+
+  /* ---- Mobile "More" panel ---- */
+
+  #mobile-more {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--bg);
+    z-index: 15;
+    overflow-y: auto;
+    padding: 0;
+  }
+
+  #mobile-more[hidden] { display: none !important; }
+
+  #mobile-more:not([hidden]) { display: block; }
+
+  #mobile-more-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  #mobile-panel-list {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .mobile-panel-btn {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-bright);
+    font-family: var(--font);
+    font-size: 14px;
+    padding: 14px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+  }
+
+  .mobile-panel-btn:active { background: var(--bg-hover); }
+
+  /* ---- Account for bottom nav spacing ---- */
+
+  /* Workspace needs room for bottom nav */
+  #workspace {
+    margin-bottom: 56px;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Branch empty state on mobile */
+  #branch-empty {
+    font-size: 14px;
+    padding: 20px 16px;
+    text-align: center;
   }
 }
 
