@@ -78,6 +78,37 @@ else
 fi`;
 }
 
+/**
+ * Persist runtime secrets (LLM_PROXY_KEY, VERS_API_KEY, VERS_INFRA_URL) into
+ * /etc/profile.d/reef-agent.sh so they survive process crashes and VM reboots.
+ * These are NOT baked into the golden image — they're injected post-spawn.
+ * Uses upsert logic: replace existing lines or append if missing.
+ */
+export function buildPersistKeysScript(opts: RemoteRpcOptions): string {
+  const llmKey = opts.llmProxyKey || process.env.LLM_PROXY_KEY || "";
+  const versKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
+  const infraUrl = process.env.VERS_INFRA_URL || "";
+  const lines: string[] = ["mkdir -p /etc/profile.d", "touch /etc/profile.d/reef-agent.sh"];
+
+  for (const [envName, value] of [
+    ["LLM_PROXY_KEY", llmKey],
+    ["VERS_API_KEY", versKey],
+    ["VERS_INFRA_URL", infraUrl],
+  ] as const) {
+    if (!value) continue;
+    const escaped = escapeEnvValue(value);
+    lines.push(
+      `if grep -q '^export ${envName}=' /etc/profile.d/reef-agent.sh 2>/dev/null; then`,
+      `  sed -i "s|^export ${envName}=.*$|export ${envName}='${escaped}'|" /etc/profile.d/reef-agent.sh`,
+      `else`,
+      `  printf "\\nexport ${envName}='${escaped}'\\n" >> /etc/profile.d/reef-agent.sh`,
+      `fi`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
 export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const exports = [
@@ -261,6 +292,7 @@ export async function startRemoteRpcAgent(vmId: string, opts: RemoteRpcOptions):
   const envExports = buildRemoteEnv(vmId, opts);
 
   await versClient.exec(vmId, buildPersistVmIdScript(vmId));
+  await versClient.exec(vmId, buildPersistKeysScript(opts));
 
   let piCommand = `${resolveAgentBinary()} --mode rpc`;
   if (opts.systemPrompt) {

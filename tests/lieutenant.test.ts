@@ -5,7 +5,7 @@ import { createServer } from "../src/core/server.js";
 import { ServiceEventBus } from "../src/core/events.js";
 import lieutenant from "../services/lieutenant/index.js";
 import { createRoutes } from "../services/lieutenant/routes.js";
-import { buildPersistVmIdScript, buildRemoteEnv } from "../services/lieutenant/rpc.js";
+import { buildPersistKeysScript, buildPersistVmIdScript, buildRemoteEnv } from "../services/lieutenant/rpc.js";
 import { LieutenantRuntime } from "../services/lieutenant/runtime.js";
 import { LieutenantStore, ValidationError } from "../services/lieutenant/store.js";
 import registry from "../services/registry/index.js";
@@ -18,6 +18,7 @@ const AUTH_TOKEN = "test-token-12345";
 const ORIGINAL_ENV = {
   LLM_PROXY_KEY: process.env.LLM_PROXY_KEY,
   PI_PATH: process.env.PI_PATH,
+  VERS_API_KEY: process.env.VERS_API_KEY,
   VERS_AUTH_TOKEN: process.env.VERS_AUTH_TOKEN,
   VERS_INFRA_URL: process.env.VERS_INFRA_URL,
   VERS_VM_ID: process.env.VERS_VM_ID,
@@ -224,6 +225,26 @@ describe("lieutenant routes and runtime", () => {
     expect(script).toContain("sed -i");
   });
 
+  test("buildPersistKeysScript persists LLM_PROXY_KEY, VERS_API_KEY, and VERS_INFRA_URL into reef-agent.sh", () => {
+    process.env.VERS_API_KEY = "vers-key-abc";
+    process.env.VERS_INFRA_URL = "https://root.example:3000";
+    const script = buildPersistKeysScript({ llmProxyKey: "sk-vers-test", model: "claude-test" });
+    expect(script).toContain("touch /etc/profile.d/reef-agent.sh");
+    expect(script).toContain("grep -q '^export LLM_PROXY_KEY='");
+    expect(script).toContain("export LLM_PROXY_KEY='sk-vers-test'");
+    expect(script).toContain("grep -q '^export VERS_API_KEY='");
+    expect(script).toContain("export VERS_API_KEY='vers-key-abc'");
+    expect(script).toContain("grep -q '^export VERS_INFRA_URL='");
+    expect(script).toContain("export VERS_INFRA_URL='https://root.example:3000'");
+  });
+
+  test("buildPersistKeysScript omits LLM_PROXY_KEY when not provided", () => {
+    delete process.env.VERS_API_KEY;
+    delete process.env.LLM_PROXY_KEY;
+    const script = buildPersistKeysScript({ model: "claude-test" });
+    expect(script).not.toContain("LLM_PROXY_KEY");
+  });
+
   test("defaults create requests to remote mode and fails when no golden commit can be resolved", async () => {
     const store = new LieutenantStore(join(TMP_DIR, "default-mode.sqlite"));
     const runtime = new LieutenantRuntime({
@@ -269,6 +290,7 @@ describe("lieutenant routes and runtime", () => {
     expect(created.status).toBe(201);
     expect(created.data.isLocal).toBe(true);
     expect(created.data.status).toBe("idle");
+    expect(created.data.model).toBe("claude-opus-4-6-thinking");
 
     const sent = await json(app, "/lieutenants/local-alpha/send", {
       method: "POST",

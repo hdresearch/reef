@@ -3,10 +3,10 @@ import { buildGoldenBootstrapScript } from "./golden.js";
 
 describe("golden bootstrap", () => {
   test("builds a child-agent wrapper that sources persisted env", () => {
-    const script = buildGoldenBootstrapScript("https://root.example:3000");
+    const script = buildGoldenBootstrapScript();
 
     expect(script).toContain("cat > /usr/local/bin/punkin <<'EOF'");
-    expect(script).toContain("PUNKIN_RELEASE_TAG='w/router'");
+    expect(script).toContain("PUNKIN_RELEASE_TAG='main'");
     expect(script).toContain('git -c advice.detachedHead=false checkout --detach "refs/tags/$PUNKIN_RELEASE_TAG"');
     expect(script).toContain(". /etc/profile.d/reef-agent.sh");
     expect(script).toContain(
@@ -30,5 +30,17 @@ describe("golden bootstrap", () => {
     expect(script).toContain(
       'ln -sfn /root/punkin-pi/packages/agent "$pkg_root/node_modules/@mariozechner/pi-agent-core"',
     );
+  });
+
+  test("golden image does not bake in secrets or instance-specific URLs", () => {
+    process.env.LLM_PROXY_KEY = "sk-vers-should-not-appear";
+    process.env.VERS_API_KEY = "vers-key-should-not-appear";
+    const script = buildGoldenBootstrapScript();
+    expect(script).not.toContain("sk-vers-should-not-appear");
+    expect(script).not.toContain("vers-key-should-not-appear");
+    expect(script).not.toContain("export VERS_INFRA_URL=");
+    expect(script).toContain("injected post-spawn");
+    delete process.env.LLM_PROXY_KEY;
+    delete process.env.VERS_API_KEY;
   });
 });

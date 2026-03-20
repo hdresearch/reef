@@ -9,7 +9,7 @@ const DEFAULT_GOLDEN_VM_CONFIG = {
   fs_size_mib: 8192,
 };
 
-const DEFAULT_PUNKIN_RELEASE_TAG = "w/router";
+const DEFAULT_PUNKIN_RELEASE_TAG = "main";
 
 export interface EnsureGoldenResult {
   commitId: string;
@@ -81,7 +81,7 @@ async function registerGoldenRecord(vmId: string, commitId: string, label: strin
   }
 }
 
-export function buildGoldenBootstrapScript(rootBaseUrl: string): string {
+export function buildGoldenBootstrapScript(): string {
   return `#!/bin/bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -108,11 +108,11 @@ else
   cd /root/punkin-pi
 fi
 PUNKIN_RELEASE_TAG=${shellQuote(DEFAULT_PUNKIN_RELEASE_TAG)}
-if ! git rev-parse --verify -q "refs/tags/$PUNKIN_RELEASE_TAG" >/dev/null; then
-  echo "Missing punkin-pi release tag: $PUNKIN_RELEASE_TAG" >&2
-  exit 1
+if git rev-parse --verify -q "refs/tags/$PUNKIN_RELEASE_TAG" >/dev/null; then
+  git -c advice.detachedHead=false checkout --detach "refs/tags/$PUNKIN_RELEASE_TAG"
+else
+  git checkout "$PUNKIN_RELEASE_TAG"
 fi
-git -c advice.detachedHead=false checkout --detach "refs/tags/$PUNKIN_RELEASE_TAG"
 HUSKY=0 npm install
 npm run build
 
@@ -167,8 +167,7 @@ ln -sf /usr/local/bin/punkin /usr/local/bin/pi
 
 cat > /etc/profile.d/reef-agent.sh <<ENVEOF
 export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-export VERS_INFRA_URL=${shellQuote(rootBaseUrl)}
-${process.env.LLM_PROXY_KEY ? `export LLM_PROXY_KEY=${shellQuote(process.env.LLM_PROXY_KEY)}` : ""}
+# VERS_INFRA_URL, LLM_PROXY_KEY, and VERS_API_KEY are injected post-spawn, not baked into the image
 export PUNKIN_RELEASE_TAG=${shellQuote(DEFAULT_PUNKIN_RELEASE_TAG)}
 export PUNKIN_BIN=punkin
 export PI_PATH=punkin
@@ -242,7 +241,7 @@ export async function ensureGoldenCommit(
   try {
     await client.uploadDirectory(vmId, reefDir, "/root/reef");
     await client.uploadDirectory(vmId, piVersDir, "/root/pi-vers");
-    await client.execScript(vmId, buildGoldenBootstrapScript(deriveRootBaseUrl()));
+    await client.execScript(vmId, buildGoldenBootstrapScript());
 
     const committed = await client.commit(vmId, true);
     const record = store.record({
