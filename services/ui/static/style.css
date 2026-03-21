@@ -190,6 +190,7 @@ header h1 {
   min-width: 0;
   display: flex; flex-direction: column;
   background: var(--bg-card);
+  overflow: hidden;
 }
 
 #branch-header {
@@ -285,27 +286,12 @@ header h1 {
 
 .feed-row {
   display: flex; align-items: baseline; gap: 8px;
-  padding: 2px 12px; font-size: 12px;
+  padding: 4px 12px; font-size: 12px;
   animation: fadeIn 0.15s ease;
+  flex-wrap: wrap;
 }
 .feed-row:hover { background: var(--bg-hover); }
 .feed-row.clickable { cursor: pointer; }
-
-.feed-children:empty { display: none; }
-
-.feed-children {
-  margin-left: 16px;
-  padding-left: 12px;
-  border-left: 1px solid var(--border);
-}
-
-.feed-children > .feed-item > .feed-row::before {
-  content: '─';
-  color: var(--border);
-  font-size: 10px;
-  margin-right: 2px;
-  margin-left: -12px;
-}
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
@@ -326,8 +312,9 @@ header h1 {
 .feed-tag.result { color: var(--text-dim); background: var(--bg-card); }
 
 .feed-text {
-  color: var(--text); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
+  color: var(--text);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
   min-width: 0;
 }
 .feed-text strong { color: var(--text-bright); font-weight: 600; }

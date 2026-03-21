@@ -105,18 +105,10 @@ function feedAdd(nodeId, parentNodeId, tag, text, opts = {}) {
     ${statusHtml}
   `;
 
-  const children = document.createElement('div');
-  children.className = 'feed-children';
-
   item.appendChild(row);
-  item.appendChild(children);
 
-  const parentEl = parentNodeId ? feedNodes.get(parentNodeId) : null;
-  if (parentEl) {
-    parentEl.querySelector(':scope > .feed-children').appendChild(item);
-  } else {
-    feedEl.appendChild(item);
-  }
+  // Flat chronological list — always append to the root feed
+  feedEl.appendChild(item);
 
   if (nodeId) feedNodes.set(nodeId, item);
   updateFeedScope();
