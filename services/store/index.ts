@@ -87,7 +87,46 @@ app.delete("/:key", async (c) => {
   return c.json({ deleted: key });
 });
 
+// GET /store/_panel — debug view of all keys
+app.get("/_panel", (c) => {
+  const keys = Object.keys(entries);
+  const rows = keys
+    .sort()
+    .map((key) => {
+      const entry = entries[key];
+      const val = JSON.stringify(entry.value);
+      const preview = val.length > 80 ? `${val.slice(0, 80)}…` : val;
+      const age = entry.updatedAt ? new Date(entry.updatedAt).toLocaleString() : "—";
+      return `<tr><td style="color:#4f9;font-weight:600">${esc(key)}</td><td style="color:#888">${esc(preview)}</td><td style="color:#666;font-size:11px">${esc(age)}</td></tr>`;
+    })
+    .join("");
+
+  return c.html(`
+    <div style="font-family:monospace;font-size:13px;color:#ccc">
+      <div style="margin-bottom:8px;color:#888">${keys.length} key${keys.length !== 1 ? "s" : ""} in store</div>
+      ${
+        keys.length === 0
+          ? '<div style="color:#666;font-style:italic">Store is empty</div>'
+          : `<table style="width:100%;border-collapse:collapse">
+            <thead><tr style="color:#666;font-size:11px;text-align:left;border-bottom:1px solid #333">
+              <th style="padding:4px 8px">Key</th><th style="padding:4px 8px">Value</th><th style="padding:4px 8px">Updated</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`
+      }
+    </div>
+  `);
+});
+
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 const routeDocs: Record<string, RouteDocs> = {
+  "GET /_panel": {
+    summary: "HTML debug view of all stored keys and values",
+    response: "text/html",
+  },
   "GET /": {
     summary: "List all keys",
     response: "{ keys: [{ key, createdAt, updatedAt }] }",

@@ -83,6 +83,48 @@ routes.get("/", (c) => {
   return c.json({ modules, count: modules.length });
 });
 
+// GET /_panel — service overview
+routes.get("/_panel", (c) => {
+  const modules = ctx.getModules();
+  const rows = modules
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((m) => {
+      const features = [
+        m.routes ? "routes" : "",
+        m.registerTools ? "tools" : "",
+        m.registerBehaviors ? "behaviors" : "",
+        m.widget ? "widget" : "",
+        m.store ? "store" : "",
+      ]
+        .filter(Boolean)
+        .join(", ");
+      const deps = m.dependencies?.length ? m.dependencies.join(", ") : "—";
+      return `<tr>
+        <td style="color:#4f9;font-weight:600;padding:3px 8px">${esc(m.name)}</td>
+        <td style="color:#888;padding:3px 8px;font-size:12px">${esc(m.description || "")}</td>
+        <td style="color:#5af;padding:3px 8px;font-size:11px">${esc(features)}</td>
+        <td style="color:#666;padding:3px 8px;font-size:11px">${esc(deps)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  return c.html(`
+    <div style="font-family:monospace;font-size:13px;color:#ccc">
+      <div style="margin-bottom:8px;color:#888">${modules.length} modules loaded</div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="color:#666;font-size:11px;text-align:left;border-bottom:1px solid #333">
+          <th style="padding:3px 8px">Name</th><th style="padding:3px 8px">Description</th><th style="padding:3px 8px">Features</th><th style="padding:3px 8px">Deps</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `);
+});
+
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 // Machine-readable manifest — everything agents need to discover reef's capabilities
 routes.get("/manifest", (c) => {
   const modules = ctx.getModules();

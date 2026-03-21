@@ -534,6 +534,50 @@ routes.post("/remove", async (c) => {
   }
 });
 
+routes.get("/_panel", (c) => {
+  const registry = loadRegistry();
+
+  if (registry.length === 0) {
+    return c.html(`
+      <div style="font-family:monospace;font-size:13px;color:#ccc">
+        <div style="color:#888;margin-bottom:8px">0 packages installed</div>
+        <div style="color:#666;font-style:italic">No external packages installed yet.</div>
+      </div>
+    `);
+  }
+
+  const rows = registry
+    .sort((a, b) => a.dirName.localeCompare(b.dirName))
+    .map((entry) => {
+      const typeColor = entry.type === "git" ? "#5af" : entry.type === "local" ? "#4f9" : "#fd0";
+      const age = entry.installedAt ? new Date(entry.installedAt).toLocaleDateString() : "—";
+      const src = entry.source.length > 50 ? `${entry.source.slice(0, 50)}…` : entry.source;
+      return `<tr>
+        <td style="color:#4f9;font-weight:600;padding:3px 8px">${esc(entry.dirName)}</td>
+        <td style="color:${typeColor};padding:3px 8px;font-size:11px">${esc(entry.type)}</td>
+        <td style="color:#888;padding:3px 8px;font-size:12px">${esc(src)}</td>
+        <td style="color:#666;padding:3px 8px;font-size:11px">${esc(age)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  return c.html(`
+    <div style="font-family:monospace;font-size:13px;color:#ccc">
+      <div style="margin-bottom:8px;color:#888">${registry.length} package${registry.length !== 1 ? "s" : ""} installed</div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="color:#666;font-size:11px;text-align:left;border-bottom:1px solid #333">
+          <th style="padding:3px 8px">Name</th><th style="padding:3px 8px">Type</th><th style="padding:3px 8px">Source</th><th style="padding:3px 8px">Installed</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `);
+});
+
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 routes.get("/installed", (c) => {
   const registry = loadRegistry();
   return c.json({ installed: registry, count: registry.length });

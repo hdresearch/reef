@@ -865,7 +865,7 @@ async function updateStatus() {
 // =============================================================================
 
 const loadedPanels = new Map();
-const LIVE_REFRESH_PANELS = new Set(['registry', 'vm-tree', 'lieutenant', 'commits']);
+const LIVE_REFRESH_PANELS = new Set(['registry', 'vm-tree', 'lieutenant', 'commits', 'store', 'installer']);
 let activePanel = null;
 
 async function fetchPanel(name) {

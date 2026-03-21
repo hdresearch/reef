@@ -335,6 +335,38 @@ routes.get("/", (c) => c.json({ services: documentAll() }));
 
 routes.get("/ui", (c) => c.html(renderHTML(documentAll())));
 
+routes.get("/_panel", (c) => {
+  const docs = documentAll();
+  const totalRoutes = docs.reduce((sum, s) => sum + s.routes.length, 0);
+  const documented = docs.reduce((sum, s) => sum + s.routes.filter((r) => r.summary).length, 0);
+
+  const serviceList = docs
+    .map((svc) => {
+      const routeCount = svc.routes.length;
+      const badges = [
+        svc.capabilities.hasTools ? '<span style="color:#5af;font-size:10px">tools</span>' : "",
+        svc.capabilities.hasStore ? '<span style="color:#5cc;font-size:10px">store</span>' : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #1a1a1a">
+        <span><span style="color:#4f9">/${esc(svc.name)}</span> ${badges}</span>
+        <span style="color:#666">${routeCount} route${routeCount !== 1 ? "s" : ""}</span>
+      </div>`;
+    })
+    .join("");
+
+  return c.html(`
+    <div style="font-family:monospace;font-size:13px;color:#ccc">
+      <div style="margin-bottom:8px;color:#888">${docs.length} services · ${totalRoutes} routes · ${documented} documented</div>
+      ${serviceList}
+      <div style="margin-top:12px">
+        <a href="/docs/ui" target="_blank" style="color:#5af;text-decoration:none;font-size:12px">Open full API docs →</a>
+      </div>
+    </div>
+  `);
+});
+
 routes.get("/:service", (c) => {
   const name = c.req.param("service");
   const mod = ctx.getModule(name);
