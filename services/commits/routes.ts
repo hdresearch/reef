@@ -69,9 +69,14 @@ export function createRoutes(
       })
       .join("");
 
+    const rootCommit = process.env.VERS_ROOT_COMMIT_ID || "—";
+    const goldenCommit =
+      currentGolden?.commitId || process.env.VERS_GOLDEN_COMMIT_ID || process.env.VERS_COMMIT_ID || "—";
+
     return c.html(`<div style="font-family:monospace;font-size:13px;color:#ccc;padding:12px">
       <h3 style="margin:0 0 8px;color:#4f9">Commits</h3>
-      <div style="margin-bottom:8px;color:#888">Current golden: ${currentGolden?.commitId || process.env.VERS_GOLDEN_COMMIT_ID || process.env.VERS_COMMIT_ID || "none"}</div>
+      <div style="margin-bottom:4px;color:#888">Root image: <span style="color:#ccc">${rootCommit}</span></div>
+      <div style="margin-bottom:12px;color:#888">Golden image: <span style="color:#ccc">${goldenCommit}</span></div>
       ${rows || '<div style="color:#666">No commits recorded</div>'}
     </div>`);
   });

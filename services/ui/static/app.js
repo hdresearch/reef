@@ -857,12 +857,10 @@ async function updateStatus() {
     if (!stateRes.ok) return;
     const data = await stateRes.json();
 
-    let vmCount = 0;
-    let vmRunning = 0;
+    let vmCount = 1; // root reef VM is always running
     if (vmsRes?.ok) {
       const vmsData = await vmsRes.json();
-      vmCount = vmsData.count || 0;
-      vmRunning = (vmsData.vms || []).filter((vm) => vm.status === 'running').length;
+      vmCount = Math.max(1, vmsData.count || 0);
     }
 
     let ltCount = 0;
@@ -881,7 +879,7 @@ async function updateStatus() {
 
     const chatCount = data.conversations || conversations.size;
     const parts = ['vers.sh'];
-    if (vmCount > 0) parts.push(`${vmRunning}/${vmCount} VMs`);
+    parts.push(`${vmCount} VM${vmCount !== 1 ? 's' : ''}`);
     if (ltCount > 0) parts.push(`${ltCount} lt`);
     parts.push(`${chatCount} chats`);
     if (data.activeTasks > 0) parts.push(`${data.activeTasks} active`);
