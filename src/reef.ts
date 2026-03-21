@@ -564,6 +564,7 @@ export async function createReef(config: ReefConfig = {}) {
       activeTasks: tree.activeTasks(),
       totalTasks: tree.tasks.size,
       totalNodes: tree.size(),
+      conversations: tree.tasks.size,
       services: Array.from(liveModules.keys()),
     });
   });

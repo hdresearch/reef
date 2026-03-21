@@ -486,9 +486,12 @@ async function submitNewConversation(text) {
     leafId: data.nodeId,
   });
   await selectConversation(data.id);
+  // Sync conversation list from server after mutation
+  syncConversationList();
 }
 
 async function submitConversationReply(conversationId, text) {
+  addConversationMessage(conversationId, 'user', text);
   const response = await fetch(`${API}/reef/conversations/${conversationId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -497,6 +500,8 @@ async function submitConversationReply(conversationId, text) {
   const data = await response.json();
   if (!response.ok || data.error) throw new Error(data.error || `Failed to send reply`);
   ensureConversation(conversationId, { status: 'running', closed: false, lastActivityAt: Date.now(), leafId: data.nodeId });
+  renderConversationLists();
+  renderConversationHeader();
 }
 
 function feedSend() {
@@ -548,8 +553,18 @@ function connectSSE() {
     .catch(() => {
       sseConnected = false;
       setStatus('err', 'disconnected');
-      setTimeout(connectSSE, 3000);
+      setTimeout(reconnectSSE, 3000);
     });
+}
+
+function reconnectSSE() {
+  // Catch up on any state changes that happened while disconnected
+  syncConversationList();
+  updateStatus();
+  if (activePanel && LIVE_REFRESH_PANELS.has(activePanel)) {
+    refreshPanel(activePanel).catch(() => {});
+  }
+  connectSSE();
 }
 
 async function readSSE(reader) {
@@ -573,7 +588,7 @@ async function readSSE(reader) {
 
   sseConnected = false;
   setStatus('err', 'disconnected');
-  setTimeout(connectSSE, 3000);
+  setTimeout(reconnectSSE, 3000);
 }
 
 function handleEvent(event) {
@@ -675,6 +690,7 @@ function handleEvent(event) {
     case 'service_unload':
     case 'service_deploy':
       feedAdd(nodeId, parentId, 'system', `${event.type.replace('service_', '')} ${event.name || ''}`);
+      discoverPanels();
       break;
 
     case 'cron_start':
@@ -709,6 +725,20 @@ async function loadConversationList() {
   } catch (error) {
     console.error('loadConversationList:', error);
   }
+}
+
+// Lightweight sync — refetch conversation list from server without changing selection
+async function syncConversationList() {
+  try {
+    const response = await fetch(`${API}/reef/conversations?includeClosed=true`);
+    if (!response.ok) return;
+    const data = await response.json();
+    for (const conversation of data.conversations || []) {
+      ensureConversation(conversation.id, conversation);
+    }
+    renderConversationLists();
+    renderConversationHeader();
+  } catch {}
 }
 
 async function loadFeedHistory() {
@@ -822,7 +852,9 @@ async function updateStatus() {
     const response = await fetch(`${API}/reef/state`);
     if (!response.ok) return;
     const data = await response.json();
-    const parts = [`${data.services?.length || 0} svc`, `${conversations.size} chats`];
+    const svcCount = data.services?.length || 0;
+    const chatCount = data.conversations || conversations.size;
+    const parts = [`${svcCount} svc`, `${chatCount} chats`];
     if (data.activeTasks > 0) parts.push(`${data.activeTasks} active`);
     setStatus('ok', parts.join(' · '));
   } catch {}
@@ -891,6 +923,7 @@ function togglePanel(name) {
   $('panel-area').className = 'open';
   document.querySelectorAll('.panel-view').forEach((view) => view.classList.toggle('active', view.id === `panel-${name}`));
   $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === name));
+  // Always refresh immediately when switching to a live panel
   if (LIVE_REFRESH_PANELS.has(name)) refreshPanel(name).catch(() => {});
 }
 
@@ -960,4 +993,6 @@ Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   setInterval(discoverPanels, 30000);
   setInterval(refreshActivePanel, 10000);
   setInterval(updateStatus, 10000);
+  // Periodically sync conversation list to catch changes from other clients
+  setInterval(syncConversationList, 15000);
 });
