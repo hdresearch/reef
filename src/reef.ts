@@ -44,7 +44,7 @@ interface Task {
 }
 
 let taskCounter = 0;
-export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6-thinking";
+export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6";
 const ROOT_REEF_PROVIDER = "vers";
 
 function conversationPayload(tree: ConversationTree, id: string) {

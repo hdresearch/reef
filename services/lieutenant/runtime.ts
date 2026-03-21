@@ -44,7 +44,7 @@ interface CreateParams {
   commitId?: string;
 }
 
-export const DEFAULT_LIEUTENANT_MODEL = "claude-opus-4-6-thinking";
+export const DEFAULT_LIEUTENANT_MODEL = "claude-opus-4-6";
 
 export class LieutenantRuntime {
   private readonly handles = new Map<string, RpcHandle>();

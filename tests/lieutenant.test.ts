@@ -294,7 +294,7 @@ describe("lieutenant routes and runtime", () => {
     expect(created.status).toBe(201);
     expect(created.data.isLocal).toBe(true);
     expect(created.data.status).toBe("idle");
-    expect(created.data.model).toBe("claude-opus-4-6-thinking");
+    expect(created.data.model).toBe("claude-opus-4-6");
 
     const sent = await json(app, "/lieutenants/local-alpha/send", {
       method: "POST",
