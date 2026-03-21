@@ -690,6 +690,69 @@ export async function createReef(config: ReefConfig = {}) {
     return c.json(updated);
   });
 
+  // =========================================================================
+  // File uploads
+  // =========================================================================
+
+  reef.get("/disk", async (c) => {
+    try {
+      const { execSync } = await import("node:child_process");
+      const output = execSync("df -m / | tail -1", { encoding: "utf-8" });
+      const parts = output.trim().split(/\s+/);
+      const totalMib = parseInt(parts[1], 10) || 0;
+      const usedMib = parseInt(parts[2], 10) || 0;
+      const availMib = parseInt(parts[3], 10) || 0;
+      return c.json({ totalMib, usedMib, availMib });
+    } catch {
+      return c.json({ error: "Could not read disk info" }, 500);
+    }
+  });
+
+  reef.post("/disk/resize", async (c) => {
+    const vmId = process.env.VERS_VM_ID;
+    if (!vmId) return c.json({ error: "VERS_VM_ID not set" }, 400);
+
+    const body = await c.req.json();
+    const newSizeMib = body.fs_size_mib;
+    if (!newSizeMib || typeof newSizeMib !== "number" || newSizeMib <= 0) {
+      return c.json({ error: "fs_size_mib (positive integer) is required" }, 400);
+    }
+
+    try {
+      const { VersClient } = await import("@hdresearch/pi-v/core");
+      const client = new VersClient();
+      await client.resizeDisk(vmId, newSizeMib);
+      return c.json({ resized: true, vmId, fs_size_mib: newSizeMib });
+    } catch (err: any) {
+      return c.json({ error: err.message || "Resize failed" }, 500);
+    }
+  });
+
+  reef.post("/upload", async (c) => {
+    const uploadsDir = join(process.env.REEF_DATA_DIR ?? "data", "uploads");
+    if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true });
+
+    const contentType = c.req.header("content-type") || "";
+
+    if (contentType.includes("multipart/form-data")) {
+      const formData = await c.req.formData();
+      const results: Array<{ name: string; path: string; size: number }> = [];
+
+      for (const [, value] of formData.entries()) {
+        if (!(value instanceof File)) continue;
+        const safeName = value.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const filePath = join(uploadsDir, `${Date.now()}-${safeName}`);
+        const buffer = Buffer.from(await value.arrayBuffer());
+        writeFileSync(filePath, buffer);
+        results.push({ name: value.name, path: filePath, size: buffer.length });
+      }
+
+      return c.json({ files: results });
+    }
+
+    return c.json({ error: "Expected multipart/form-data" }, 400);
+  });
+
   reef.get("/state", (c) => {
     return c.json({
       mode: "agent",

@@ -496,18 +496,21 @@ async function submitConversationReply(conversationId, text) {
   renderConversationHeader();
 }
 
-function feedSend() {
+async function feedSend() {
   const input = $('branch-text');
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && pendingFiles.length === 0) return;
   input.value = '';
   resizeInput('branch-text');
-  submitNewConversation(text).catch((error) => {
+  try {
+    const prompt = await uploadAndBuildPrompt(text);
+    await submitNewConversation(prompt);
+  } catch (error) {
     feedAdd(null, null, 'error', error.message);
-  });
+  }
 }
 
-function branchSend() {
+async function branchSend() {
   if (!activeConversationId) {
     feedSend();
     return;
@@ -518,12 +521,15 @@ function branchSend() {
 
   const input = $('branch-text');
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && pendingFiles.length === 0) return;
   input.value = '';
   resizeInput('branch-text');
-  submitConversationReply(activeConversationId, text).catch((error) => {
+  try {
+    const prompt = await uploadAndBuildPrompt(text);
+    await submitConversationReply(activeConversationId, prompt);
+  } catch (error) {
     feedAdd(null, null, 'error', error.message, { taskId: activeConversationId });
-  });
+  }
 }
 
 // =============================================================================
@@ -841,12 +847,34 @@ function setStatus(state, text) {
 
 async function updateStatus() {
   try {
-    const response = await fetch(`${API}/reef/state`);
-    if (!response.ok) return;
-    const data = await response.json();
-    const svcCount = data.services?.length || 0;
+    const [stateRes, vmsRes, ltsRes] = await Promise.all([
+      fetch(`${API}/reef/state`),
+      fetch(`${API}/registry/vms`).catch(() => null),
+      fetch(`${API}/lieutenant/lieutenants`).catch(() => null),
+    ]);
+
+    if (!stateRes.ok) return;
+    const data = await stateRes.json();
+
+    let vmCount = 0;
+    let vmRunning = 0;
+    if (vmsRes?.ok) {
+      const vmsData = await vmsRes.json();
+      vmCount = vmsData.count || 0;
+      vmRunning = (vmsData.vms || []).filter((vm) => vm.status === 'running').length;
+    }
+
+    let ltCount = 0;
+    if (ltsRes?.ok) {
+      const ltsData = await ltsRes.json();
+      ltCount = (ltsData.lieutenants || ltsData.data || []).length;
+    }
+
     const chatCount = data.conversations || conversations.size;
-    const parts = [`${svcCount} svc`, `${chatCount} chats`];
+    const parts = ['vers.sh'];
+    if (vmCount > 0) parts.push(`${vmRunning}/${vmCount} VMs`);
+    if (ltCount > 0) parts.push(`${ltCount} lt`);
+    parts.push(`${chatCount} chats`);
     if (data.activeTasks > 0) parts.push(`${data.activeTasks} active`);
     setStatus('ok', parts.join(' · '));
   } catch {}
@@ -970,6 +998,236 @@ $('tabs').querySelector('[data-view="feed"]').addEventListener('click', () => {
   $('panel-area').className = 'closed';
   $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === 'feed'));
   activePanel = null;
+});
+
+// =============================================================================
+// File attachments
+// =============================================================================
+
+const pendingFiles = [];
+
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
+}
+
+function renderAttachments() {
+  const el = $('branch-attachments');
+  el.innerHTML = '';
+  for (let i = 0; i < pendingFiles.length; i++) {
+    const file = pendingFiles[i];
+    const chip = document.createElement('div');
+    chip.className = 'attachment-chip';
+    chip.innerHTML = `
+      <span>${esc(file.name)}</span>
+      <span class="size">${formatSize(file.size)}</span>
+      <button class="attachment-remove" data-index="${i}" type="button">✕</button>
+    `;
+    chip.querySelector('.attachment-remove').addEventListener('click', () => {
+      pendingFiles.splice(i, 1);
+      renderAttachments();
+    });
+    el.appendChild(chip);
+  }
+}
+
+async function addFiles(fileList) {
+  const totalNewBytes = Array.from(fileList).reduce((sum, f) => sum + f.size, 0);
+  const totalNewMib = Math.ceil(totalNewBytes / (1024 * 1024));
+
+  // Check available disk space
+  try {
+    const res = await fetch(`${API}/reef/disk`);
+    if (res.ok) {
+      const disk = await res.json();
+      if (totalNewMib >= disk.availMib) {
+        showResizeDialog(disk, totalNewMib, fileList);
+        return;
+      }
+    }
+  } catch {}
+
+  for (const file of fileList) {
+    pendingFiles.push(file);
+  }
+  renderAttachments();
+}
+
+function showResizeDialog(disk, neededMib, fileList) {
+  const currentTotal = disk.totalMib;
+  const minNeeded = currentTotal + neededMib + 100; // 100 MiB buffer
+  const options = [
+    Math.ceil(minNeeded / 1024) * 1024,                    // round up to nearest GB
+    Math.ceil(minNeeded / 1024) * 1024 + 2048,             // +2 GB extra
+    Math.ceil(minNeeded / 1024) * 1024 + 5120,             // +5 GB extra
+  ];
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:100;display:flex;align-items:center;justify-content:center';
+
+  const dialog = document.createElement('div');
+  dialog.style.cssText = 'background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:20px;max-width:420px;font-family:monospace;font-size:13px;color:#ccc';
+
+  dialog.innerHTML = `
+    <div style="color:#f55;font-weight:600;margin-bottom:12px">Not enough disk space</div>
+    <div style="margin-bottom:8px">
+      File${fileList.length > 1 ? 's' : ''} need ~${neededMib} MiB but only ${disk.availMib} MiB available
+      (${disk.usedMib} / ${disk.totalMib} MiB used).
+    </div>
+    <div style="color:#888;margin-bottom:12px;font-size:11px">
+      Resizing the disk will increase your Vers billing.
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+      ${options.map((size, i) => `
+        <button class="resize-option" data-size="${size}" style="
+          background:#111;border:1px solid #333;color:#ccc;padding:8px 12px;
+          border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;text-align:left;
+        ">
+          ${(size / 1024).toFixed(1)} GB (${size} MiB)
+          ${i === 0 ? ' — minimum' : i === 1 ? ' — comfortable' : ' — generous'}
+        </button>
+      `).join('')}
+    </div>
+    <button id="resize-cancel" style="
+      background:none;border:1px solid #333;color:#888;padding:6px 12px;
+      border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;
+    ">Cancel</button>
+    <div id="resize-status" style="color:#4f9;font-size:11px;margin-top:8px;min-height:16px"></div>
+  `;
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  dialog.querySelector('#resize-cancel').addEventListener('click', () => {
+    document.body.removeChild(overlay);
+  });
+
+  dialog.querySelectorAll('.resize-option').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const size = parseInt(btn.dataset.size, 10);
+      const statusEl = dialog.querySelector('#resize-status');
+      statusEl.textContent = 'Resizing disk...';
+      statusEl.style.color = '#4f9';
+
+      // Disable all buttons
+      dialog.querySelectorAll('button').forEach((b) => { b.disabled = true; b.style.opacity = '0.5'; });
+
+      try {
+        const res = await fetch(`${API}/reef/disk/resize`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fs_size_mib: size }),
+        });
+
+        if (res.ok) {
+          statusEl.textContent = `Resized to ${(size / 1024).toFixed(1)} GB. Adding files...`;
+          setTimeout(() => {
+            document.body.removeChild(overlay);
+            for (const file of fileList) {
+              pendingFiles.push(file);
+            }
+            renderAttachments();
+          }, 1000);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          statusEl.textContent = err.error || 'Resize failed';
+          statusEl.style.color = '#f55';
+          dialog.querySelectorAll('button').forEach((b) => { b.disabled = false; b.style.opacity = '1'; });
+        }
+      } catch (err) {
+        statusEl.textContent = 'Error: ' + err.message;
+        statusEl.style.color = '#f55';
+        dialog.querySelectorAll('button').forEach((b) => { b.disabled = false; b.style.opacity = '1'; });
+      }
+    });
+  });
+}
+
+async function uploadAndBuildPrompt(text) {
+  if (pendingFiles.length === 0) return text;
+
+  // Upload files to the reef VM
+  const formData = new FormData();
+  for (const file of pendingFiles) {
+    formData.append('file', file);
+  }
+
+  let uploaded = [];
+  try {
+    const res = await fetch(`${API}/reef/upload`, { method: 'POST', body: formData });
+    if (res.ok) {
+      const data = await res.json();
+      uploaded = data.files || [];
+    }
+  } catch {}
+
+  // Read text files and include content in prompt
+  const parts = [text];
+  for (let i = 0; i < pendingFiles.length; i++) {
+    const file = pendingFiles[i];
+    const uploadInfo = uploaded[i];
+    const path = uploadInfo?.path || file.name;
+
+    if (file.type.startsWith('text/') || /\.(txt|md|json|js|ts|py|sh|css|html|yaml|yml|toml|csv|xml|sql|rs|go|rb|java|c|cpp|h)$/i.test(file.name)) {
+      try {
+        const content = await file.text();
+        parts.push(`\n\n--- File: ${file.name} (saved to ${path}) ---\n${content}`);
+      } catch {
+        parts.push(`\n\n--- File: ${file.name} (saved to ${path}, ${formatSize(file.size)}) ---`);
+      }
+    } else {
+      parts.push(`\n\n--- File: ${file.name} (saved to ${path}, ${formatSize(file.size)}) ---`);
+    }
+  }
+
+  pendingFiles.length = 0;
+  renderAttachments();
+  return parts.join('');
+}
+
+// Drag and drop
+const branchEl = $('branch');
+let dragCounter = 0;
+
+branchEl.addEventListener('dragenter', (e) => {
+  e.preventDefault();
+  dragCounter++;
+  branchEl.classList.add('drag-over');
+});
+
+branchEl.addEventListener('dragleave', (e) => {
+  e.preventDefault();
+  dragCounter--;
+  if (dragCounter <= 0) {
+    dragCounter = 0;
+    branchEl.classList.remove('drag-over');
+  }
+});
+
+branchEl.addEventListener('dragover', (e) => {
+  e.preventDefault();
+});
+
+branchEl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragCounter = 0;
+  branchEl.classList.remove('drag-over');
+  if (e.dataTransfer?.files?.length) {
+    addFiles(e.dataTransfer.files);
+  }
+});
+
+// Attach button
+$('branch-attach').addEventListener('click', () => {
+  $('branch-file').click();
+});
+
+$('branch-file').addEventListener('change', (e) => {
+  if (e.target.files?.length) {
+    addFiles(e.target.files);
+    e.target.value = '';
+  }
 });
 
 // =============================================================================
