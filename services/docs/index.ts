@@ -84,12 +84,70 @@ function documentService(mod: ServiceModule): ServiceDoc {
   };
 }
 
+const reefDoc: ServiceDoc = {
+  name: "reef",
+  description: "Agent conversation engine — task submission, branching conversations, user profile",
+  auth: true,
+  routes: [
+    { method: "POST", path: "/reef/submit", summary: "Start a task (legacy)" },
+    {
+      method: "GET",
+      path: "/reef/conversations",
+      summary: "List conversations",
+      query: { includeClosed: { type: "boolean", description: "Include closed" } },
+    },
+    { method: "GET", path: "/reef/conversations/:id", summary: "Get conversation with messages" },
+    {
+      method: "POST",
+      path: "/reef/conversations",
+      summary: "Create a conversation and start a task",
+      body: { task: { type: "string", required: true, description: "The prompt" } },
+    },
+    {
+      method: "POST",
+      path: "/reef/conversations/:id/messages",
+      summary: "Send a follow-up message",
+      body: { task: { type: "string", required: true, description: "The prompt" } },
+    },
+    { method: "POST", path: "/reef/conversations/:id/close", summary: "Close a conversation" },
+    { method: "POST", path: "/reef/conversations/:id/open", summary: "Reopen a conversation" },
+    {
+      method: "GET",
+      path: "/reef/tasks",
+      summary: "List tasks",
+      query: { status: { type: "string", description: "Filter: running, done, error" } },
+    },
+    { method: "GET", path: "/reef/tasks/:name", summary: "Get full task conversation" },
+    { method: "GET", path: "/reef/tree", summary: "Full conversation tree" },
+    { method: "GET", path: "/reef/tree/:id", summary: "Get a node and its children" },
+    { method: "GET", path: "/reef/tree/:id/path", summary: "Get ancestors of a node" },
+    { method: "GET", path: "/reef/profile", summary: "Get user profile" },
+    {
+      method: "PUT",
+      path: "/reef/profile",
+      summary: "Update user profile — injected into agent prompts",
+      body: {
+        name: { type: "string", description: "User name" },
+        timezone: { type: "string", description: "IANA timezone" },
+        location: { type: "string", description: "User location" },
+        preferences: { type: "string", description: "Free-text context for agents" },
+      },
+    },
+    { method: "GET", path: "/reef/state", summary: "Status and counts" },
+    { method: "GET", path: "/reef/events", summary: "SSE event stream" },
+    { method: "POST", path: "/auth/magic-link", summary: "Generate a login link" },
+  ],
+  capabilities: { hasTools: false, hasBehaviors: false, hasWidget: false, hasStore: false },
+  dependencies: [],
+};
+
 function documentAll(): ServiceDoc[] {
-  return ctx
+  const services = ctx
     .getModules()
     .filter((m) => m.name !== "docs")
-    .map(documentService)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .map(documentService);
+  services.push(reefDoc);
+  return services.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // =============================================================================
