@@ -165,6 +165,14 @@ fi
 chmod +x /usr/local/bin/punkin 2>/dev/null || true
 ln -sf /usr/local/bin/punkin /usr/local/bin/pi
 
+# Patch punkin shebang to use bun instead of node.
+# Reef services use bun:sqlite which requires the bun runtime.
+for f in /root/punkin-pi/packages/coding-agent/dist/cli.js /root/punkin-pi/builds/punkin; do
+  if [ -f "$f" ] && head -1 "$f" | grep -q "#!/usr/bin/env node"; then
+    sed -i '1s|#!/usr/bin/env node|#!/usr/bin/env bun|' "$f"
+  fi
+done
+
 cat > /etc/profile.d/reef-agent.sh <<ENVEOF
 export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 # VERS_INFRA_URL, LLM_PROXY_KEY, and VERS_API_KEY are injected post-spawn, not baked into the image
