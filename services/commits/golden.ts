@@ -9,7 +9,7 @@ const DEFAULT_GOLDEN_VM_CONFIG = {
   fs_size_mib: 8192,
 };
 
-const DEFAULT_PUNKIN_RELEASE_TAG = "main";
+const DEFAULT_PUNKIN_RELEASE_TAG = "carter/punkin/v1_rc5";
 
 export interface EnsureGoldenResult {
   commitId: string;

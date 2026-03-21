@@ -6,7 +6,7 @@ describe("golden bootstrap", () => {
     const script = buildGoldenBootstrapScript();
 
     expect(script).toContain("cat > /usr/local/bin/punkin <<'EOF'");
-    expect(script).toContain("PUNKIN_RELEASE_TAG='main'");
+    expect(script).toContain("PUNKIN_RELEASE_TAG='carter/punkin/v1_rc5'");
     expect(script).toContain('git -c advice.detachedHead=false checkout --detach "refs/tags/$PUNKIN_RELEASE_TAG"');
     expect(script).toContain(". /etc/profile.d/reef-agent.sh");
     expect(script).toContain(
