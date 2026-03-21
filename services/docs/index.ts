@@ -133,6 +133,23 @@ const reefDoc: ServiceDoc = {
         preferences: { type: "string", description: "Free-text context for agents" },
       },
     },
+    { method: "GET", path: "/reef/disk", summary: "Get disk usage (totalMib, usedMib, availMib)" },
+    {
+      method: "POST",
+      path: "/reef/disk/resize",
+      summary: "Resize VM disk via Vers API",
+      body: {
+        fs_size_mib: { type: "integer", required: true, description: "New disk size in MiB (must be > current)" },
+      },
+    },
+    {
+      method: "POST",
+      path: "/reef/upload",
+      summary: "Upload files to the reef VM (multipart/form-data)",
+      body: {
+        file: { type: "File", required: true, description: "One or more files to upload" },
+      },
+    },
     { method: "GET", path: "/reef/state", summary: "Status and counts" },
     { method: "GET", path: "/reef/events", summary: "SSE event stream" },
     { method: "POST", path: "/auth/magic-link", summary: "Generate a login link" },
