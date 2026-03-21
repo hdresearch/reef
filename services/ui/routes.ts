@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { consumeMagicLink, createMagicLink, createSession, validateSession } from "./auth.js";
+import { consumeMagicLink, createMagicLink, createSession, getSessionInfo, validateSession } from "./auth.js";
 
 const AUTH_TOKEN = process.env.VERS_AUTH_TOKEN || "test-token";
 
@@ -48,7 +48,7 @@ export function createRoutes(): Hono {
       if (valid) {
         const session = createSession();
         return c.html('<html><head><meta http-equiv="refresh" content="0;url=/ui/"></head></html>', 200, {
-          "Set-Cookie": `session=${session.id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+          "Set-Cookie": `session=${session.id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`,
         });
       }
       return c.html(
@@ -65,6 +65,14 @@ export function createRoutes(): Hono {
       <p>Access requires a magic link. Generate one via:</p>
       <pre style="color:#4f9">POST /auth/magic-link</pre>
     </body></html>`);
+  });
+
+  // Session info (for the UI to show expiry countdown)
+  routes.get("/ui/session", (c) => {
+    const sessionId = getSessionId(c);
+    const info = getSessionInfo(sessionId);
+    if (!info) return c.json({ authenticated: false }, 401);
+    return c.json({ authenticated: true, ...info });
   });
 
   // --- Session-protected UI routes ---

@@ -847,10 +847,11 @@ function setStatus(state, text) {
 
 async function updateStatus() {
   try {
-    const [stateRes, vmsRes, ltsRes] = await Promise.all([
+    const [stateRes, vmsRes, ltsRes, sessionRes] = await Promise.all([
       fetch(`${API}/reef/state`),
       fetch(`${API}/registry/vms`).catch(() => null),
       fetch(`${API}/lieutenant/lieutenants`).catch(() => null),
+      fetch('/ui/session').catch(() => null),
     ]);
 
     if (!stateRes.ok) return;
@@ -870,12 +871,31 @@ async function updateStatus() {
       ltCount = (ltsData.lieutenants || ltsData.data || []).length;
     }
 
+    let sessionExpiry = null;
+    if (sessionRes?.ok) {
+      const sessionData = await sessionRes.json().catch(() => null);
+      if (sessionData?.authenticated && sessionData.expiresAt) {
+        sessionExpiry = sessionData.expiresAt;
+      }
+    }
+
     const chatCount = data.conversations || conversations.size;
     const parts = ['vers.sh'];
     if (vmCount > 0) parts.push(`${vmRunning}/${vmCount} VMs`);
     if (ltCount > 0) parts.push(`${ltCount} lt`);
     parts.push(`${chatCount} chats`);
     if (data.activeTasks > 0) parts.push(`${data.activeTasks} active`);
+    if (sessionExpiry) {
+      const ms = new Date(sessionExpiry).getTime() - Date.now();
+      const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+      const hrs = Math.floor((ms % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+      const mins = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+      const timeParts = [];
+      if (days > 0) timeParts.push(`${days}d`);
+      if (hrs > 0) timeParts.push(`${hrs}h`);
+      timeParts.push(`${mins}m`);
+      parts.push(`${timeParts.join(' ')} left`);
+    }
     setStatus('ok', parts.join(' · '));
   } catch {}
 }
