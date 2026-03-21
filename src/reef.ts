@@ -20,7 +20,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAgentBinary } from "@hdresearch/pi-v/core";
 import { Hono } from "hono";
@@ -41,6 +41,60 @@ interface Task {
   startedAt: number;
   completedAt?: number;
   error?: string;
+}
+
+// =============================================================================
+// User profile — persisted in the store, injected into all agent prompts
+// =============================================================================
+
+const PROFILE_KEY = "reef:profile";
+const STORE_PATH = "data/store.json";
+
+interface UserProfile {
+  name?: string;
+  timezone?: string;
+  location?: string;
+  preferences?: string;
+}
+
+function readProfile(): UserProfile {
+  try {
+    if (!existsSync(STORE_PATH)) return {};
+    const store = JSON.parse(readFileSync(STORE_PATH, "utf-8"));
+    return store[PROFILE_KEY]?.value ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function writeProfile(profile: UserProfile): void {
+  let store: Record<string, any> = {};
+  try {
+    if (existsSync(STORE_PATH)) {
+      store = JSON.parse(readFileSync(STORE_PATH, "utf-8"));
+    }
+  } catch {}
+
+  const now = Date.now();
+  store[PROFILE_KEY] = {
+    value: profile,
+    createdAt: store[PROFILE_KEY]?.createdAt ?? now,
+    updatedAt: now,
+  };
+
+  if (!existsSync("data")) mkdirSync("data", { recursive: true });
+  writeFileSync(STORE_PATH, JSON.stringify(store, null, 2));
+}
+
+function profileContext(): string {
+  const profile = readProfile();
+  const parts: string[] = [];
+  if (profile.name) parts.push(`User name: ${profile.name}`);
+  if (profile.timezone) parts.push(`Timezone: ${profile.timezone}`);
+  if (profile.location) parts.push(`Location: ${profile.location}`);
+  if (profile.preferences) parts.push(`Preferences: ${profile.preferences}`);
+  if (parts.length === 0) return "";
+  return `[user profile]\n${parts.join("\n")}`;
 }
 
 let taskCounter = 0;
@@ -403,7 +457,9 @@ export async function createReef(config: ReefConfig = {}) {
       parentId: userNode.parentId,
       continuing,
     });
-    launchTask(task, taskId, userNode, tree.contextFor(userNode.id));
+    const profile = profileContext();
+    const context = profile ? `${profile}\n\n${tree.contextFor(userNode.id)}` : tree.contextFor(userNode.id);
+    launchTask(task, taskId, userNode, context);
 
     return { taskId, userNode, continuing };
   }
@@ -556,6 +612,82 @@ export async function createReef(config: ReefConfig = {}) {
     const node = tree.get(c.req.param("id"));
     if (!node) return c.json({ error: "not found" }, 404);
     return c.json({ path: tree.ancestors(node.id) });
+  });
+
+  // =========================================================================
+  // User profile
+  // =========================================================================
+
+  reef.get("/profile", (c) => {
+    return c.json(readProfile());
+  });
+
+  reef.get("/profile/_panel", (c) => {
+    const p = readProfile();
+    const val = (v?: string) => (v ? v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;") : "");
+    return c.html(`
+      <div style="font-family:monospace;font-size:13px;color:#ccc">
+        <div style="margin-bottom:12px;color:#888">User profile — injected into all agent system prompts</div>
+        <form id="profile-form" style="display:flex;flex-direction:column;gap:8px;max-width:400px">
+          <label style="color:#888;font-size:11px">Name
+            <input name="name" value="${val(p.name)}" style="display:block;width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:6px 8px;border-radius:4px;font-family:inherit;font-size:13px;margin-top:2px" />
+          </label>
+          <label style="color:#888;font-size:11px">Timezone
+            <input name="timezone" value="${val(p.timezone)}" placeholder="e.g. America/New_York" style="display:block;width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:6px 8px;border-radius:4px;font-family:inherit;font-size:13px;margin-top:2px" />
+          </label>
+          <label style="color:#888;font-size:11px">Location
+            <input name="location" value="${val(p.location)}" placeholder="e.g. New York, NY" style="display:block;width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:6px 8px;border-radius:4px;font-family:inherit;font-size:13px;margin-top:2px" />
+          </label>
+          <label style="color:#888;font-size:11px">Preferences
+            <textarea name="preferences" rows="3" placeholder="Any context for your agents..." style="display:block;width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:6px 8px;border-radius:4px;font-family:inherit;font-size:13px;margin-top:2px;resize:vertical">${val(p.preferences)}</textarea>
+          </label>
+          <button type="submit" style="align-self:flex-start;background:#4f9;color:#000;border:none;padding:6px 16px;border-radius:4px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer">Save</button>
+          <div id="profile-status" style="color:#4f9;font-size:11px;min-height:16px"></div>
+        </form>
+        <script>
+          document.getElementById('profile-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const data = Object.fromEntries(new FormData(form));
+            const api = form.closest('[data-api]')?.dataset?.api || '';
+            try {
+              const res = await fetch(api + '/reef/profile', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+              });
+              if (res.ok) {
+                document.getElementById('profile-status').textContent = 'Saved — agents will see this on next task.';
+                setTimeout(() => { document.getElementById('profile-status').textContent = ''; }, 3000);
+              } else {
+                document.getElementById('profile-status').style.color = '#f55';
+                document.getElementById('profile-status').textContent = 'Failed to save.';
+              }
+            } catch (err) {
+              document.getElementById('profile-status').style.color = '#f55';
+              document.getElementById('profile-status').textContent = 'Error: ' + err.message;
+            }
+          });
+        </script>
+      </div>
+    `);
+  });
+
+  reef.put("/profile", async (c) => {
+    const body = await c.req.json();
+    const current = readProfile();
+    const updated: UserProfile = {
+      name: typeof body.name === "string" ? body.name : current.name,
+      timezone: typeof body.timezone === "string" ? body.timezone : current.timezone,
+      location: typeof body.location === "string" ? body.location : current.location,
+      preferences: typeof body.preferences === "string" ? body.preferences : current.preferences,
+    };
+    // Remove empty strings
+    for (const key of Object.keys(updated) as Array<keyof UserProfile>) {
+      if (updated[key] === "") delete updated[key];
+    }
+    writeProfile(updated);
+    return c.json(updated);
   });
 
   reef.get("/state", (c) => {

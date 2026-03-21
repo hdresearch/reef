@@ -882,6 +882,31 @@ async function refreshPanel(name) {
   injectPanel(loadedPanels.get(name), panel.html);
 }
 
+async function loadProfilePanel() {
+  if (loadedPanels.has('profile')) return;
+  try {
+    const response = await fetch(`${API}/reef/profile/_panel`);
+    if (!response.ok) return;
+    if (!(response.headers.get('content-type') || '').includes('html')) return;
+    const html = await response.text();
+
+    const button = document.createElement('button');
+    button.className = 'tab';
+    button.dataset.view = 'profile';
+    button.textContent = 'profile';
+    button.addEventListener('click', () => togglePanel('profile'));
+    $('tabs').appendChild(button);
+
+    const container = document.createElement('div');
+    container.className = 'panel-view';
+    container.id = 'panel-profile';
+    container.dataset.api = API;
+    $('panel-area').appendChild(container);
+    injectPanel(container, html);
+    loadedPanels.set('profile', container);
+  } catch {}
+}
+
 async function discoverPanels() {
   try {
     const response = await fetch(`${API}/services`);
@@ -989,6 +1014,7 @@ $('new-chat').addEventListener('click', () => {
 Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   connectSSE();
   updateStatus();
+  loadProfilePanel();
   discoverPanels();
   setInterval(discoverPanels, 30000);
   setInterval(refreshActivePanel, 10000);

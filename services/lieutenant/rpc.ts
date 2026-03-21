@@ -488,8 +488,8 @@ export function waitForRpcReady(handle: RpcHandle, timeoutMs = 30000): Promise<b
   });
 }
 
-export function buildSystemPrompt(name: string, role: string): string {
-  return [
+export function buildSystemPrompt(name: string, role: string, profileCtx?: string): string {
+  const lines = [
     `You are a lieutenant agent named "${name}".`,
     `Your role: ${role}`,
     "",
@@ -502,5 +502,11 @@ export function buildSystemPrompt(name: string, role: string): string {
     "",
     "When you complete a task, end with a clear summary of what was done",
     "and any open questions or next steps.",
-  ].join("\n");
+  ];
+
+  if (profileCtx) {
+    lines.push("", profileCtx);
+  }
+
+  return lines.join("\n");
 }

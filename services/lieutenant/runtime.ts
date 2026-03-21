@@ -4,6 +4,7 @@
  * Bridges the persistent SQLite store with live RPC handles.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { type ResolveGoldenCommitResult, resolveGoldenCommit } from "@hdresearch/pi-v/core";
 import type { ServiceEventBus } from "../../src/core/events.js";
 import {
@@ -45,6 +46,24 @@ interface CreateParams {
 }
 
 export const DEFAULT_LIEUTENANT_MODEL = "claude-opus-4-6";
+
+function readProfileContext(): string {
+  try {
+    const storePath = "data/store.json";
+    if (!existsSync(storePath)) return "";
+    const store = JSON.parse(readFileSync(storePath, "utf-8"));
+    const profile = store["reef:profile"]?.value;
+    if (!profile) return "";
+    const parts: string[] = [];
+    if (profile.name) parts.push(`User name: ${profile.name}`);
+    if (profile.timezone) parts.push(`Timezone: ${profile.timezone}`);
+    if (profile.location) parts.push(`Location: ${profile.location}`);
+    if (profile.preferences) parts.push(`Preferences: ${profile.preferences}`);
+    return parts.length > 0 ? `[user profile]\n${parts.join("\n")}` : "";
+  } catch {
+    return "";
+  }
+}
 
 export class LieutenantRuntime {
   private readonly handles = new Map<string, RpcHandle>();
@@ -177,7 +196,7 @@ export class LieutenantRuntime {
     const { name, role, isLocal = false, commitId, llmProxyKey, model } = params;
     this.ensureNameAvailable(name);
 
-    const systemPrompt = buildSystemPrompt(name, role);
+    const systemPrompt = buildSystemPrompt(name, role, readProfileContext());
     const resolvedLlmProxyKey = llmProxyKey || process.env.LLM_PROXY_KEY;
     const resolvedModel = model?.trim() || DEFAULT_LIEUTENANT_MODEL;
     if (!resolvedLlmProxyKey) {
