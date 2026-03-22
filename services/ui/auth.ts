@@ -93,6 +93,10 @@ export function validateSession(sessionId: string | undefined): boolean {
   return true;
 }
 
+export function createQrLink(): MagicLink {
+  return createMagicLink();
+}
+
 export function getSessionInfo(sessionId: string | undefined): { expiresAt: string; daysLeft: number } | null {
   if (!sessionId) return null;
   const session = sessions.get(sessionId);
