@@ -9,7 +9,7 @@ It runs the root Reef server, owns the global registry/vm-tree/commits state, ma
 - `vers-fleets` bootstraps only the root Reef infra VM
 - `reef` owns the runtime control plane
 - `pi-vers` provides the Vers extensions Reef-managed agents load into the `punkin` harness
-- `punkin-pi` `v1rc3` is the harness used on the root and child agent VMs
+- `punkin-pi` `w/router` is the harness used on the root and child agent VMs
 
 After bootstrap, Reef is responsible for:
 
@@ -27,6 +27,7 @@ Root Reef VM:
 - runs the Reef server
 - owns SQLite-backed services like `registry`, `vm-tree`, and `commits`
 - is the only global authority
+- defaults its own task runner to `claude-opus-4-6-thinking`
 
 Child agent VMs:
 
@@ -38,6 +39,7 @@ Child agent VMs:
 - point back to the root Reef via `VERS_INFRA_URL`
 
 Lieutenants are branch managers. Workers are execution nodes. Global control-plane authority stays on the root.
+Lieutenants default to `claude-opus-4-6-thinking`. Swarm workers default to `claude-sonnet-4-6`.
 
 ## Child Tool Surface
 
@@ -90,7 +92,7 @@ The `bootloader` now matters only for root/infra bootstrap and related recovery 
 
 The current golden image for child agent VMs is expected to contain:
 
-- `punkin-pi` `v1rc3`
+- `punkin-pi` `w/router`
 - `pi` symlinked to `punkin`
 - local `pi-vers` install
 - Reef client extension install
@@ -118,7 +120,7 @@ bun run start
 Useful env:
 
 - `VERS_AUTH_TOKEN`
-- `ANTHROPIC_API_KEY`
+- `LLM_PROXY_KEY`
 - `VERS_VM_ID`
 - `VERS_INFRA_URL`
 - `SERVICES_DIR`

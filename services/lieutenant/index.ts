@@ -3,10 +3,10 @@
  *
  * Unlike ephemeral tasks (one pi process per prompt), lieutenants are
  * long-lived agent sessions that persist across tasks, accumulate context,
- * and support multi-turn interaction. They can run locally or on Vers VMs.
+ * and support multi-turn interaction. Each runs on its own Vers VM.
  *
  * Tools (8):
- *   reef_lt_create   — Spawn a lieutenant (local or remote)
+ *   reef_lt_create   — Spawn a lieutenant on a Vers VM
  *   reef_lt_send     — Send a message (prompt, steer, followUp)
  *   reef_lt_read     — Read current/historical output
  *   reef_lt_status   — Overview of all lieutenants
@@ -90,13 +90,12 @@ const lieutenant: ServiceModule = {
       body: {
         name: { type: "string", required: true, description: "Lieutenant name" },
         role: { type: "string", required: true, description: "Role description (becomes system prompt context)" },
-        local: { type: "boolean", description: "Run locally as subprocess (default: false)" },
-        model: { type: "string", description: "Model ID" },
+        model: { type: "string", description: "Model ID (default: claude-opus-4-6-thinking)" },
         commitId: {
           type: "string",
           description: "Golden image commit ID (optional if a default golden is configured)",
         },
-        anthropicApiKey: { type: "string", description: "Anthropic API key override (defaults to server env)" },
+        llmProxyKey: { type: "string", description: "Vers LLM proxy key override (defaults to server env)" },
       },
       response: "The created lieutenant object",
     },

@@ -53,7 +53,10 @@
           <div id="branch-empty">Select a conversation to continue the chat, or start a new one from the left sidebar.</div>
           <div id="branch-messages"></div>
         </div>
+        <div id="branch-attachments"></div>
         <div id="branch-input">
+          <input type="file" id="branch-file" multiple style="position:absolute;width:0;height:0;overflow:hidden;opacity:0" />
+          <button id="branch-attach" type="button" title="Attach files">📎</button>
           <textarea id="branch-text" placeholder="Start a new conversation…" rows="1"></textarea>
           <button id="branch-send">↵</button>
         </div>

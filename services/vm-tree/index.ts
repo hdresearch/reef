@@ -243,7 +243,7 @@ const vmTree: ServiceModule = {
     }
 
     ctx.events.on("lieutenant:created", (data: any) => {
-      if (!data?.vmId || data.isLocal) return;
+      if (!data?.vmId) return;
       store.upsert({
         vmId: data.vmId,
         name: data.name,
@@ -251,9 +251,28 @@ const vmTree: ServiceModule = {
         category: "lieutenant",
         reefConfig: {
           services: ["lieutenant"],
-          capabilities: ["punkin", "vers-lieutenant", "vers-vm", "vers-vm-copy", "vers-swarm"],
+          capabilities: ["punkin", "vers-lieutenant", "vers-vm", "vers-vm-copy", "reef-swarm"],
         },
       });
+    });
+
+    ctx.events.on("swarm:agent_spawned", (data: any) => {
+      if (!data?.vmId) return;
+      store.upsert({
+        vmId: data.vmId,
+        name: data.label,
+        parentVmId: process.env.VERS_VM_ID || undefined,
+        category: "swarm_vm",
+        reefConfig: {
+          services: ["swarm"],
+          capabilities: ["punkin", "reef-swarm"],
+        },
+      });
+    });
+
+    ctx.events.on("swarm:agent_destroyed", (data: any) => {
+      if (!data?.vmId) return;
+      store.remove(data.vmId);
     });
 
     if (!snapshotTimer) {

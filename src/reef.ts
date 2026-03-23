@@ -20,7 +20,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAgentBinary } from "@hdresearch/pi-v/core";
 import { Hono } from "hono";
@@ -41,9 +41,66 @@ interface Task {
   startedAt: number;
   completedAt?: number;
   error?: string;
+  child?: ChildProcess;
+}
+
+// =============================================================================
+// User profile — persisted in the store, injected into all agent prompts
+// =============================================================================
+
+const PROFILE_KEY = "reef:profile";
+const STORE_PATH = "data/store.json";
+
+interface UserProfile {
+  name?: string;
+  timezone?: string;
+  location?: string;
+  preferences?: string;
+}
+
+function readProfile(): UserProfile {
+  try {
+    if (!existsSync(STORE_PATH)) return {};
+    const store = JSON.parse(readFileSync(STORE_PATH, "utf-8"));
+    return store[PROFILE_KEY]?.value ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function writeProfile(profile: UserProfile): void {
+  let store: Record<string, any> = {};
+  try {
+    if (existsSync(STORE_PATH)) {
+      store = JSON.parse(readFileSync(STORE_PATH, "utf-8"));
+    }
+  } catch {}
+
+  const now = Date.now();
+  store[PROFILE_KEY] = {
+    value: profile,
+    createdAt: store[PROFILE_KEY]?.createdAt ?? now,
+    updatedAt: now,
+  };
+
+  if (!existsSync("data")) mkdirSync("data", { recursive: true });
+  writeFileSync(STORE_PATH, JSON.stringify(store, null, 2));
+}
+
+function profileContext(): string {
+  const profile = readProfile();
+  const parts: string[] = [];
+  if (profile.name) parts.push(`User name: ${profile.name}`);
+  if (profile.timezone) parts.push(`Timezone: ${profile.timezone}`);
+  if (profile.location) parts.push(`Location: ${profile.location}`);
+  if (profile.preferences) parts.push(`Preferences: ${profile.preferences}`);
+  if (parts.length === 0) return "";
+  return `[user profile]\n${parts.join("\n")}`;
 }
 
 let taskCounter = 0;
+export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6";
+const ROOT_REEF_PROVIDER = "vers";
 
 function conversationPayload(tree: ConversationTree, id: string) {
   const info = tree.getTask(id);
@@ -58,11 +115,38 @@ function conversationPayload(tree: ConversationTree, id: string) {
   };
 }
 
+interface Attachment {
+  path: string;
+  name: string;
+  mimeType?: string;
+}
+
+function buildRpcMessage(prompt: string, attachments?: Attachment[]): string {
+  const imageAttachments = (attachments || []).filter(
+    (a) => (a.mimeType || "").startsWith("image/") || /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(a.name),
+  );
+
+  if (imageAttachments.length === 0) return prompt;
+
+  // Punkin v1_rc5 RPC only accepts string messages (no multimodal content blocks).
+  // Instruct the agent to use the Read tool to view attached images.
+  const cwd = process.env.REEF_DIR ?? process.cwd();
+  const imageInstructions = imageAttachments
+    .map((a) => {
+      const absPath = a.path.startsWith("/") ? a.path : join(cwd, a.path);
+      return `[Attached image: ${a.name} — Use the Read tool on "${absPath}" to view it]`;
+    })
+    .join("\n");
+
+  return `${imageInstructions}\n\n${prompt}`;
+}
+
 function spawnTask(
   prompt: string,
   treeContext: string,
   opts: {
     model?: string;
+    attachments?: Attachment[];
     onEvent: (event: any) => void;
     onDone: (output: string) => void;
     onError: (err: string) => void;
@@ -84,6 +168,8 @@ function spawnTask(
   let lineBuf = "";
   let output = "";
   let prompted = false;
+  let modelConfigured = !opts.model;
+  let modelSelectionRequested = false;
 
   // Poll for pi readiness, then send the prompt
   const readyCheck = setInterval(() => {
@@ -95,11 +181,28 @@ function spawnTask(
   }, 1000);
 
   function handleEvent(event: any) {
-    // Wait for ready response before sending prompt
+    // Wait for ready response before selecting the model and sending the prompt.
     if (!prompted && event.type === "response" && event.command === "get_state") {
+      if (!modelConfigured && !modelSelectionRequested && opts.model) {
+        modelSelectionRequested = true;
+        clearInterval(readyCheck);
+        child.stdin.write(
+          `${JSON.stringify({ id: "set-model", type: "set_model", provider: ROOT_REEF_PROVIDER, modelId: opts.model })}\n`,
+        );
+        return;
+      }
+
       prompted = true;
       clearInterval(readyCheck);
-      child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
+      const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+      child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
+    }
+
+    if (!prompted && event.type === "response" && event.command === "set_model") {
+      modelConfigured = true;
+      prompted = true;
+      const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+      child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
     }
 
     opts.onEvent(event);
@@ -167,6 +270,7 @@ export async function createReef(config: ReefConfig = {}) {
 
   const piProcesses = new Map<string, Task>();
   const sseClients = new Set<ReadableStreamDefaultController>();
+  const agentModel = config.agent?.model ?? DEFAULT_ROOT_REEF_MODEL;
 
   // Only add system prompt if tree is empty (fresh start)
   if (tree.size() === 0) {
@@ -245,12 +349,19 @@ export async function createReef(config: ReefConfig = {}) {
     tree.pruneToLimit();
   }
 
-  function launchTask(task: Task, taskId: string, userNode: import("./tree.js").TreeNode, treeContext: string) {
+  function launchTask(
+    task: Task,
+    taskId: string,
+    userNode: import("./tree.js").TreeNode,
+    treeContext: string,
+    attachments?: Attachment[],
+  ) {
     let lastToolNode: import("./tree.js").TreeNode | null = null;
 
     try {
-      spawnTask(task.prompt, treeContext, {
-        model: config.agent?.model,
+      task.child = spawnTask(task.prompt, treeContext, {
+        model: agentModel,
+        attachments,
         onEvent(event) {
           task.events.push(event);
           if (task.events.length > 500) task.events.shift();
@@ -340,7 +451,12 @@ export async function createReef(config: ReefConfig = {}) {
   const auth = bearerAuth();
   reef.use("*", async (c, next) => await auth(c, next));
 
-  async function submitPrompt(opts: { prompt: string; conversationId?: string; parentId?: string | null }) {
+  async function submitPrompt(opts: {
+    prompt: string;
+    attachments?: Attachment[];
+    conversationId?: string;
+    parentId?: string | null;
+  }) {
     const taskId = opts.conversationId || `task-${++taskCounter}-${Date.now()}`;
     const taskExists = !!tree.getTask(taskId);
     const continuing = taskExists;
@@ -383,7 +499,9 @@ export async function createReef(config: ReefConfig = {}) {
       parentId: userNode.parentId,
       continuing,
     });
-    launchTask(task, taskId, userNode, tree.contextFor(userNode.id));
+    const profile = profileContext();
+    const context = profile ? `${profile}\n\n${tree.contextFor(userNode.id)}` : tree.contextFor(userNode.id);
+    launchTask(task, taskId, userNode, context, opts.attachments);
 
     return { taskId, userNode, continuing };
   }
@@ -401,8 +519,13 @@ export async function createReef(config: ReefConfig = {}) {
         : typeof body.conversationId === "string"
           ? body.conversationId
           : undefined;
+    const attachments: Attachment[] = Array.isArray(body.attachments)
+      ? body.attachments.filter((a: any) => a?.path && a?.name)
+      : [];
+
     const result = await submitPrompt({
       prompt,
+      attachments: attachments.length > 0 ? attachments : undefined,
       conversationId: taskId,
       parentId: typeof body.parentId === "string" ? body.parentId : undefined,
     });
@@ -446,7 +569,11 @@ export async function createReef(config: ReefConfig = {}) {
       return c.json({ error: "Missing 'task' string in body." }, 400);
     }
 
-    const result = await submitPrompt({ prompt });
+    const attachments: Attachment[] = Array.isArray(body.attachments)
+      ? body.attachments.filter((a: any) => a?.path && a?.name)
+      : [];
+
+    const result = await submitPrompt({ prompt, attachments: attachments.length > 0 ? attachments : undefined });
     const conversation = conversationPayload(tree, result.taskId);
     return c.json(
       {
@@ -469,8 +596,13 @@ export async function createReef(config: ReefConfig = {}) {
       return c.json({ error: "Missing 'task' string in body." }, 400);
     }
 
+    const msgAttachments: Attachment[] = Array.isArray(body.attachments)
+      ? body.attachments.filter((a: any) => a?.path && a?.name)
+      : [];
+
     const result = await submitPrompt({
       prompt,
+      attachments: msgAttachments.length > 0 ? msgAttachments : undefined,
       conversationId: id,
       parentId: typeof body.parentId === "string" ? body.parentId : undefined,
     });
@@ -484,6 +616,28 @@ export async function createReef(config: ReefConfig = {}) {
       },
       202,
     );
+  });
+
+  reef.post("/conversations/:id/stop", (c) => {
+    const id = c.req.param("id");
+    const task = piProcesses.get(id);
+    if (!task) return c.json({ error: "not found" }, 404);
+    if (task.status !== "running") return c.json({ error: "not running" }, 400);
+
+    if (task.child && task.child.exitCode === null) {
+      task.child.kill("SIGTERM");
+    }
+    task.status = "done";
+    task.completedAt = Date.now();
+    task.output += "\n\n[Stopped by user]";
+
+    const assistantNode = tree.add(tree.getRef(id) ?? null, "assistant", task.output);
+    tree.setRef(id, assistantNode.id);
+    tree.completeTask(id, task.output);
+    appendConversationLog(id, { type: "task_stopped", nodeId: assistantNode.id });
+    broadcast({ taskId: id, conversationId: id, type: "task_done", output: task.output, stopped: true });
+
+    return c.json({ stopped: true, taskId: id });
   });
 
   reef.post("/conversations/:id/close", (c) => {
@@ -538,12 +692,209 @@ export async function createReef(config: ReefConfig = {}) {
     return c.json({ path: tree.ancestors(node.id) });
   });
 
+  // =========================================================================
+  // User profile
+  // =========================================================================
+
+  reef.get("/profile", (c) => {
+    return c.json(readProfile());
+  });
+
+  reef.get("/profile/_panel", (c) => {
+    const p = readProfile();
+    const val = (v?: string) => (v ? v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;") : "");
+    return c.html(`
+      <div style="font-family:monospace;font-size:13px;color:#ccc">
+        <div style="margin-bottom:12px;color:#888">User profile — injected into all agent system prompts</div>
+        <form id="profile-form" style="display:flex;flex-direction:column;gap:8px;max-width:400px">
+          <label style="color:#888;font-size:11px">Name
+            <input name="name" value="${val(p.name)}" style="display:block;width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:6px 8px;border-radius:4px;font-family:inherit;font-size:13px;margin-top:2px" />
+          </label>
+          <label style="color:#888;font-size:11px">Timezone
+            <input name="timezone" value="${val(p.timezone)}" placeholder="e.g. America/New_York" style="display:block;width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:6px 8px;border-radius:4px;font-family:inherit;font-size:13px;margin-top:2px" />
+          </label>
+          <label style="color:#888;font-size:11px">Location
+            <input name="location" value="${val(p.location)}" placeholder="e.g. New York, NY" style="display:block;width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:6px 8px;border-radius:4px;font-family:inherit;font-size:13px;margin-top:2px" />
+          </label>
+          <label style="color:#888;font-size:11px">Preferences
+            <textarea name="preferences" rows="3" placeholder="Any context for your agents..." style="display:block;width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:6px 8px;border-radius:4px;font-family:inherit;font-size:13px;margin-top:2px;resize:vertical">${val(p.preferences)}</textarea>
+          </label>
+          <button type="submit" style="align-self:flex-start;background:#4f9;color:#000;border:none;padding:6px 16px;border-radius:4px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer">Save</button>
+          <div id="profile-status" style="color:#4f9;font-size:11px;min-height:16px"></div>
+        </form>
+        <script>
+          document.getElementById('profile-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const data = Object.fromEntries(new FormData(form));
+            const api = form.closest('[data-api]')?.dataset?.api || '';
+            try {
+              const res = await fetch(api + '/reef/profile', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+              });
+              if (res.ok) {
+                document.getElementById('profile-status').textContent = 'Saved — agents will see this on next task.';
+                setTimeout(() => { document.getElementById('profile-status').textContent = ''; }, 3000);
+              } else {
+                document.getElementById('profile-status').style.color = '#f55';
+                document.getElementById('profile-status').textContent = 'Failed to save.';
+              }
+            } catch (err) {
+              document.getElementById('profile-status').style.color = '#f55';
+              document.getElementById('profile-status').textContent = 'Error: ' + err.message;
+            }
+          });
+        </script>
+      </div>
+    `);
+  });
+
+  reef.put("/profile", async (c) => {
+    const body = await c.req.json();
+    const current = readProfile();
+    const updated: UserProfile = {
+      name: typeof body.name === "string" ? body.name : current.name,
+      timezone: typeof body.timezone === "string" ? body.timezone : current.timezone,
+      location: typeof body.location === "string" ? body.location : current.location,
+      preferences: typeof body.preferences === "string" ? body.preferences : current.preferences,
+    };
+    // Remove empty strings
+    for (const key of Object.keys(updated) as Array<keyof UserProfile>) {
+      if (updated[key] === "") delete updated[key];
+    }
+    writeProfile(updated);
+    return c.json(updated);
+  });
+
+  // =========================================================================
+  // File uploads
+  // =========================================================================
+
+  reef.get("/disk", async (c) => {
+    try {
+      const { execSync } = await import("node:child_process");
+      const output = execSync("df -m / | tail -1", { encoding: "utf-8" });
+      const parts = output.trim().split(/\s+/);
+      const totalMib = parseInt(parts[1], 10) || 0;
+      const usedMib = parseInt(parts[2], 10) || 0;
+      const availMib = parseInt(parts[3], 10) || 0;
+      return c.json({ totalMib, usedMib, availMib });
+    } catch {
+      return c.json({ error: "Could not read disk info" }, 500);
+    }
+  });
+
+  reef.post("/disk/resize", async (c) => {
+    const vmId = process.env.VERS_VM_ID;
+    if (!vmId) return c.json({ error: "VERS_VM_ID not set" }, 400);
+
+    const body = await c.req.json();
+    const newSizeMib = body.fs_size_mib;
+    if (!newSizeMib || typeof newSizeMib !== "number" || newSizeMib <= 0) {
+      return c.json({ error: "fs_size_mib (positive integer) is required" }, 400);
+    }
+
+    try {
+      const { VersClient } = await import("@hdresearch/pi-v/core");
+      const client = new VersClient();
+      await client.resizeDisk(vmId, newSizeMib);
+      return c.json({ resized: true, vmId, fs_size_mib: newSizeMib });
+    } catch (err: any) {
+      return c.json({ error: err.message || "Resize failed" }, 500);
+    }
+  });
+
+  reef.post("/upload", async (c) => {
+    const uploadsDir = join(process.env.REEF_DATA_DIR ?? "data", "uploads");
+    if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true });
+
+    const contentType = c.req.header("content-type") || "";
+
+    if (contentType.includes("multipart/form-data")) {
+      const formData = await c.req.formData();
+      const results: Array<{ name: string; path: string; url: string; size: number }> = [];
+
+      for (const [, value] of formData.entries()) {
+        if (!(value instanceof File)) continue;
+        const safeName = value.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const storedName = `${Date.now()}-${safeName}`;
+        const filePath = join(uploadsDir, storedName);
+        const buffer = Buffer.from(await value.arrayBuffer());
+        writeFileSync(filePath, buffer);
+        results.push({ name: value.name, path: filePath, url: `/reef/files/${storedName}`, size: buffer.length });
+      }
+
+      return c.json({ files: results });
+    }
+
+    return c.json({ error: "Expected multipart/form-data" }, 400);
+  });
+
+  // File serving — list and download uploaded files
+  reef.get("/files", (c) => {
+    const uploadsDir = join(process.env.REEF_DATA_DIR ?? "data", "uploads");
+    if (!existsSync(uploadsDir)) return c.json({ files: [], count: 0 });
+
+    const entries = readdirSync(uploadsDir);
+    const files = entries.map((name) => {
+      const filePath = join(uploadsDir, name);
+      const stats = statSync(filePath);
+      return { name, url: `/reef/files/${name}`, size: stats.size, uploadedAt: stats.mtimeMs };
+    });
+
+    return c.json({ files, count: files.length });
+  });
+
+  reef.get("/files/:filename", (c) => {
+    const uploadsDir = join(process.env.REEF_DATA_DIR ?? "data", "uploads");
+    const filename = c.req.param("filename");
+
+    if (!filename || filename.includes("/") || filename.includes("..")) {
+      return c.json({ error: "Invalid filename" }, 400);
+    }
+
+    const filePath = join(uploadsDir, filename);
+    if (!existsSync(filePath)) {
+      return c.json({ error: "File not found" }, 404);
+    }
+
+    const fileBuffer = readFileSync(filePath);
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
+    const mimeMap: Record<string, string> = {
+      txt: "text/plain",
+      md: "text/markdown",
+      json: "application/json",
+      js: "text/javascript",
+      ts: "text/typescript",
+      py: "text/x-python",
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      webp: "image/webp",
+      svg: "image/svg+xml",
+      pdf: "application/pdf",
+      csv: "text/csv",
+      html: "text/html",
+      xml: "application/xml",
+      zip: "application/zip",
+    };
+    const contentType = mimeMap[ext] || "application/octet-stream";
+
+    return new Response(fileBuffer, {
+      headers: { "Content-Type": contentType },
+    });
+  });
+
   reef.get("/state", (c) => {
     return c.json({
       mode: "agent",
       activeTasks: tree.activeTasks(),
       totalTasks: tree.tasks.size,
       totalNodes: tree.size(),
+      conversations: tree.tasks.size,
       services: Array.from(liveModules.keys()),
     });
   });

@@ -4,6 +4,7 @@
  * Bridges the persistent SQLite store with live RPC handles.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { type ResolveGoldenCommitResult, resolveGoldenCommit } from "@hdresearch/pi-v/core";
 import type { ServiceEventBus } from "../../src/core/events.js";
 import {
@@ -14,7 +15,6 @@ import {
   type RpcHandle,
   reconnectRemoteRpcAgent,
   setVersVmState,
-  startLocalRpcAgent,
   startRemoteRpcAgent,
   waitForRemoteRpcSession,
   waitForRpcReady,
@@ -38,10 +38,29 @@ export interface LieutenantRuntimeOptions {
 interface CreateParams {
   name: string;
   role: string;
-  isLocal?: boolean;
-  anthropicApiKey?: string;
+  llmProxyKey?: string;
   model?: string;
   commitId?: string;
+}
+
+export const DEFAULT_LIEUTENANT_MODEL = "claude-opus-4-6";
+
+function readProfileContext(): string {
+  try {
+    const storePath = "data/store.json";
+    if (!existsSync(storePath)) return "";
+    const store = JSON.parse(readFileSync(storePath, "utf-8"));
+    const profile = store["reef:profile"]?.value;
+    if (!profile) return "";
+    const parts: string[] = [];
+    if (profile.name) parts.push(`User name: ${profile.name}`);
+    if (profile.timezone) parts.push(`Timezone: ${profile.timezone}`);
+    if (profile.location) parts.push(`Location: ${profile.location}`);
+    if (profile.preferences) parts.push(`Preferences: ${profile.preferences}`);
+    return parts.length > 0 ? `[user profile]\n${parts.join("\n")}` : "";
+  } catch {
+    return "";
+  }
 }
 
 export class LieutenantRuntime {
@@ -80,8 +99,7 @@ export class LieutenantRuntime {
       name: lt.name,
       vmId: lt.vmId,
       role: lt.role,
-      isLocal: lt.isLocal,
-      address: lt.isLocal ? null : `${lt.vmId}.vm.vers.sh`,
+      address: `${lt.vmId}.vm.vers.sh`,
       createdAt: lt.createdAt,
       parentVmId: process.env.VERS_VM_ID || null,
       ...extra,
@@ -114,8 +132,7 @@ export class LieutenantRuntime {
 
   private async syncRemoteLieutenant(input: string | Lieutenant): Promise<Lieutenant | undefined> {
     const lt = typeof input === "string" ? this.store.getByName(input) : input;
-    if (!lt || lt.isLocal) return lt;
-    if (!lt.vmId) return lt;
+    if (!lt || !lt.vmId) return lt;
 
     try {
       const vmState = await this.getVmState(lt.vmId);
@@ -161,7 +178,6 @@ export class LieutenantRuntime {
       name,
       role,
       vmId,
-      isLocal: false,
       parentAgent,
     });
 
@@ -172,68 +188,51 @@ export class LieutenantRuntime {
   }
 
   async create(params: CreateParams): Promise<Lieutenant> {
-    const { name, role, isLocal = false, commitId, anthropicApiKey, model } = params;
+    const { name, role, commitId, llmProxyKey, model } = params;
     this.ensureNameAvailable(name);
 
-    const systemPrompt = buildSystemPrompt(name, role);
-    const apiKey = anthropicApiKey || process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new ValidationError("ANTHROPIC_API_KEY is required. Pass anthropicApiKey or set it in the environment.");
+    const systemPrompt = buildSystemPrompt(name, role, readProfileContext());
+    const resolvedLlmProxyKey = llmProxyKey || process.env.LLM_PROXY_KEY;
+    const resolvedModel = model?.trim() || DEFAULT_LIEUTENANT_MODEL;
+    if (!resolvedLlmProxyKey) {
+      throw new ValidationError("LLM_PROXY_KEY is required. Set it in the environment or pass an override.");
     }
 
     this.store.create({
       name,
       role,
-      isLocal,
       systemPrompt,
-      model,
+      model: resolvedModel,
       parentAgent: process.env.VERS_AGENT_NAME,
     });
 
-    let resolvedCommit: ResolveGoldenCommitResult | undefined;
-
     try {
-      if (isLocal) {
-        const handle = await startLocalRpcAgent(name, {
-          anthropicApiKey: apiKey,
-          model,
-          systemPrompt,
-        });
-        this.handles.set(name, handle);
+      const resolvedCommit = await this.resolveCommitId(commitId);
+      const remote = await createVersVmFromCommit(resolvedCommit.commitId);
+      this.store.update(name, { vmId: remote.vmId });
+      await this.waitForRemoteVm(remote.vmId);
 
-        const ready = await waitForRpcReady(handle);
-        if (!ready) throw new Error(`Local pi RPC failed to start for "${name}"`);
+      const handle = await this.startRemoteHandle(remote.vmId, {
+        llmProxyKey: resolvedLlmProxyKey,
+        model: resolvedModel,
+        systemPrompt,
+      });
+      this.handles.set(name, handle);
 
-        this.store.update(name, { status: "idle", vmId: handle.vmId });
-        this.installEventHandler(name);
-      } else {
-        resolvedCommit = await this.resolveCommitId(commitId);
-        const remote = await createVersVmFromCommit(resolvedCommit.commitId);
-        this.store.update(name, { vmId: remote.vmId });
-        await this.waitForRemoteVm(remote.vmId);
+      const ready = await waitForRpcReady(handle, 45_000);
+      if (!ready) throw new Error(`Pi RPC failed to start on ${remote.vmId}`);
 
-        const handle = await this.startRemoteHandle(remote.vmId, {
-          anthropicApiKey: apiKey,
-          model,
-          systemPrompt,
-        });
-        this.handles.set(name, handle);
-
-        const ready = await waitForRpcReady(handle, 45_000);
-        if (!ready) throw new Error(`Pi RPC failed to start on ${remote.vmId}`);
-
-        this.store.update(name, { status: "idle" });
-        this.installEventHandler(name);
-      }
+      this.store.update(name, { status: "idle" });
+      this.installEventHandler(name);
 
       const created = this.store.getByName(name)!;
       this.events.fire(
         "lieutenant:created",
         this.buildCreateEvent(created, {
-          commitId: resolvedCommit?.commitId,
-          commitIdSource: resolvedCommit?.source,
+          commitId: resolvedCommit.commitId,
+          commitIdSource: resolvedCommit.source,
           model,
-          anthropicApiKeyProvided: !!anthropicApiKey,
+          llmProxyKeyProvided: !!llmProxyKey,
         }),
       );
       return created;
@@ -255,7 +254,7 @@ export class LieutenantRuntime {
       this.handles.delete(name);
     }
 
-    if (lt?.vmId && !lt.isLocal) {
+    if (lt?.vmId) {
       try {
         await deleteVersVm(lt.vmId);
       } catch {
@@ -278,7 +277,7 @@ export class LieutenantRuntime {
     if (lt.status === "paused") throw new ValidationError(`Lieutenant '${name}' is paused. Resume it first.`);
 
     let handle = this.handles.get(name);
-    if ((!handle || !handle.isAlive()) && !lt.isLocal) {
+    if (!handle || !handle.isAlive()) {
       handle = await this.ensureRemoteHandle(name, lt);
     }
     if (!handle || !handle.isAlive()) {
@@ -309,7 +308,6 @@ export class LieutenantRuntime {
   async pause(name: string): Promise<{ paused: boolean }> {
     const lt = this.store.getByName(name);
     if (!lt || lt.status === "destroyed") throw new NotFoundError(`Lieutenant '${name}' not found`);
-    if (lt.isLocal) throw new ValidationError(`Lieutenant '${name}' is local — pause/resume requires a VM`);
     if (lt.status === "paused") return { paused: true };
     if (lt.status === "working") {
       throw new ValidationError(`Lieutenant '${name}' is working. Wait for it to finish or steer it first.`);
@@ -328,7 +326,6 @@ export class LieutenantRuntime {
   async resume(name: string): Promise<{ resumed: boolean }> {
     const lt = this.store.getByName(name);
     if (!lt || lt.status === "destroyed") throw new NotFoundError(`Lieutenant '${name}' not found`);
-    if (lt.isLocal) throw new ValidationError(`Lieutenant '${name}' is local — pause/resume requires a VM`);
     if (lt.status !== "paused") {
       throw new ValidationError(`Lieutenant '${name}' is not paused (status: ${lt.status})`);
     }
@@ -363,7 +360,7 @@ export class LieutenantRuntime {
       this.handles.delete(name);
     }
 
-    if (!lt.isLocal && lt.vmId) {
+    if (lt.vmId) {
       try {
         if (lt.status === "paused") {
           await setVersVmState(lt.vmId, "Running");
@@ -378,9 +375,7 @@ export class LieutenantRuntime {
     this.store.destroy(name);
     this.events.fire("lieutenant:destroyed", this.buildCreateEvent(lt));
 
-    const detail = lt.isLocal
-      ? `${name}: destroyed (local, ${lt.taskCount} tasks completed)`
-      : `${name}: destroyed (VM ${lt.vmId.slice(0, 12)}, ${lt.taskCount} tasks completed)`;
+    const detail = `${name}: destroyed (VM ${lt.vmId.slice(0, 12)}, ${lt.taskCount} tasks completed)`;
 
     return { destroyed: true, detail };
   }
@@ -403,7 +398,7 @@ export class LieutenantRuntime {
     const candidates = new Map<string, Lieutenant>();
 
     for (const lt of this.store.list()) {
-      if (!lt.isLocal && lt.vmId) candidates.set(lt.name, lt);
+      if (lt.vmId) candidates.set(lt.name, lt);
     }
 
     const infraUrl = process.env.VERS_INFRA_URL;
@@ -422,7 +417,6 @@ export class LieutenantRuntime {
               name,
               role: vm.metadata?.role || "recovered lieutenant",
               vmId: vm.id,
-              isLocal: false,
             });
             candidates.set(name, lt);
           }
@@ -446,12 +440,6 @@ export class LieutenantRuntime {
   }
 
   async rehydrate(): Promise<void> {
-    for (const lt of this.store.list()) {
-      if (lt.isLocal) {
-        this.store.destroy(lt.name);
-      }
-    }
-
     const reconnectResults = await this.discover();
     const meaningfulResults = reconnectResults.filter((line) => !line.startsWith("No lieutenants"));
     if (meaningfulResults.length > 0) {

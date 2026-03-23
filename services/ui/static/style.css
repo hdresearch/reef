@@ -190,6 +190,7 @@ header h1 {
   min-width: 0;
   display: flex; flex-direction: column;
   background: var(--bg-card);
+  overflow: hidden;
 }
 
 #branch-header {
@@ -285,27 +286,12 @@ header h1 {
 
 .feed-row {
   display: flex; align-items: baseline; gap: 8px;
-  padding: 2px 12px; font-size: 12px;
+  padding: 4px 12px; font-size: 12px;
   animation: fadeIn 0.15s ease;
+  flex-wrap: wrap;
 }
 .feed-row:hover { background: var(--bg-hover); }
 .feed-row.clickable { cursor: pointer; }
-
-.feed-children:empty { display: none; }
-
-.feed-children {
-  margin-left: 16px;
-  padding-left: 12px;
-  border-left: 1px solid var(--border);
-}
-
-.feed-children > .feed-item > .feed-row::before {
-  content: '─';
-  color: var(--border);
-  font-size: 10px;
-  margin-right: 2px;
-  margin-left: -12px;
-}
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
@@ -326,8 +312,9 @@ header h1 {
 .feed-tag.result { color: var(--text-dim); background: var(--bg-card); }
 
 .feed-text {
-  color: var(--text); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
+  color: var(--text);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
   min-width: 0;
 }
 .feed-text strong { color: var(--text-bright); font-weight: 600; }
@@ -358,14 +345,57 @@ header h1 {
 #branch-text { background: var(--bg); }
 #branch-text:focus { border-color: var(--border-light); }
 
+/* Attach button */
+#branch-attach {
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  width: 36px; height: 36px; border-radius: 4px;
+  font-size: 16px; cursor: pointer; align-self: flex-end;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+#branch-attach:hover { border-color: var(--border-light); color: var(--text-bright); }
+
+/* File attachment chips */
+#branch-attachments:empty { display: none; }
+#branch-attachments {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 6px 16px 0;
+}
+.attachment-chip {
+  display: flex; align-items: center; gap: 4px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 8px;
+  font-size: 11px; color: var(--text);
+}
+.attachment-chip .size { color: var(--text-dim); font-size: 10px; }
+.attachment-remove {
+  background: none; border: none; color: var(--text-dim);
+  cursor: pointer; font-size: 12px; padding: 0 2px;
+}
+.attachment-remove:hover { color: var(--error); }
+
+/* Drop zone overlay */
+#branch.drag-over::after {
+  content: 'Drop files here';
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  color: var(--accent); font-size: 16px; font-weight: 600;
+  border: 2px dashed var(--accent);
+  z-index: 5; pointer-events: none;
+}
+#branch { position: relative; }
+
 #branch-send {
   background: var(--accent); color: var(--bg); border: none;
   width: 36px; height: 36px; border-radius: 4px;
   font-size: 16px; cursor: pointer; align-self: flex-end;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
+  transition: background 0.2s;
 }
 #branch-send:hover { opacity: 0.8; }
+#branch-send.working { background: #d4a017; }
 
 /* ---- Branch messages ---- */
 

@@ -9,6 +9,8 @@ const DEFAULT_GOLDEN_VM_CONFIG = {
   fs_size_mib: 8192,
 };
 
+const DEFAULT_PUNKIN_RELEASE_TAG = "carter/punkin/v1_rc5";
+
 export interface EnsureGoldenResult {
   commitId: string;
   vmId?: string;
@@ -79,7 +81,7 @@ async function registerGoldenRecord(vmId: string, commitId: string, label: strin
   }
 }
 
-export function buildGoldenBootstrapScript(rootBaseUrl: string): string {
+export function buildGoldenBootstrapScript(): string {
   return `#!/bin/bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -105,7 +107,12 @@ else
   git clone https://github.com/hdresearch/punkin-pi.git /root/punkin-pi
   cd /root/punkin-pi
 fi
-git checkout v1rc3
+PUNKIN_RELEASE_TAG=${shellQuote(DEFAULT_PUNKIN_RELEASE_TAG)}
+if git rev-parse --verify -q "refs/tags/$PUNKIN_RELEASE_TAG" >/dev/null; then
+  git -c advice.detachedHead=false checkout --detach "refs/tags/$PUNKIN_RELEASE_TAG"
+else
+  git checkout "$PUNKIN_RELEASE_TAG"
+fi
 HUSKY=0 npm install
 npm run build
 
@@ -131,7 +138,7 @@ for dir in /root/reef/services/*/; do
   ln -s "../services/$svc" "/root/reef/services-active/$svc"
 done
 
-mkdir -p /root/workspace /root/.pi/agent /etc/profile.d
+mkdir -p /root/workspace /root/.punkin/agent /root/.pi/agent /etc/profile.d
 
 if [ -x /root/punkin-pi/builds/punkin ]; then
   cat > /usr/local/bin/punkin <<'EOF'
@@ -158,9 +165,18 @@ fi
 chmod +x /usr/local/bin/punkin 2>/dev/null || true
 ln -sf /usr/local/bin/punkin /usr/local/bin/pi
 
+# Patch punkin shebang to use bun instead of node.
+# Reef services use bun:sqlite which requires the bun runtime.
+for f in /root/punkin-pi/packages/coding-agent/dist/cli.js /root/punkin-pi/builds/punkin; do
+  if [ -f "$f" ] && head -1 "$f" | grep -q "#!/usr/bin/env node"; then
+    sed -i '1s|#!/usr/bin/env node|#!/usr/bin/env bun|' "$f"
+  fi
+done
+
 cat > /etc/profile.d/reef-agent.sh <<ENVEOF
 export PATH="/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-export VERS_INFRA_URL=${shellQuote(rootBaseUrl)}
+# VERS_INFRA_URL, LLM_PROXY_KEY, and VERS_API_KEY are injected post-spawn, not baked into the image
+export PUNKIN_RELEASE_TAG=${shellQuote(DEFAULT_PUNKIN_RELEASE_TAG)}
 export PUNKIN_BIN=punkin
 export PI_PATH=punkin
 export PI_VERS_HOME=/root/pi-vers
@@ -233,7 +249,7 @@ export async function ensureGoldenCommit(
   try {
     await client.uploadDirectory(vmId, reefDir, "/root/reef");
     await client.uploadDirectory(vmId, piVersDir, "/root/pi-vers");
-    await client.execScript(vmId, buildGoldenBootstrapScript(deriveRootBaseUrl()));
+    await client.execScript(vmId, buildGoldenBootstrapScript());
 
     const committed = await client.commit(vmId, true);
     const record = store.record({

@@ -1,24 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "../src/core/server.js";
 import { ServiceEventBus } from "../src/core/events.js";
 import lieutenant from "../services/lieutenant/index.js";
 import { createRoutes } from "../services/lieutenant/routes.js";
-import { buildPersistVmIdScript, buildRemoteEnv } from "../services/lieutenant/rpc.js";
+import { buildPersistKeysScript, buildPersistVmIdScript, buildRemoteEnv } from "../services/lieutenant/rpc.js";
 import { LieutenantRuntime } from "../services/lieutenant/runtime.js";
 import { LieutenantStore, ValidationError } from "../services/lieutenant/store.js";
 import registry from "../services/registry/index.js";
 import vmTree from "../services/vm-tree/index.js";
 
 const TMP_DIR = join(import.meta.dir, ".tmp-lieutenant");
-const FAKE_PI_PATH = join(TMP_DIR, "fake-pi.mjs");
 const AUTH_TOKEN = "test-token-12345";
 
 const ORIGINAL_ENV = {
-  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-  PI_PATH: process.env.PI_PATH,
+  LLM_PROXY_KEY: process.env.LLM_PROXY_KEY,
+  VERS_API_KEY: process.env.VERS_API_KEY,
   VERS_AUTH_TOKEN: process.env.VERS_AUTH_TOKEN,
+  VERS_GOLDEN_COMMIT_ID: process.env.VERS_GOLDEN_COMMIT_ID,
   VERS_INFRA_URL: process.env.VERS_INFRA_URL,
   VERS_VM_ID: process.env.VERS_VM_ID,
   VERS_AGENT_NAME: process.env.VERS_AGENT_NAME,
@@ -94,59 +94,6 @@ function createFakeRemoteHandle() {
   };
 }
 
-function writeFakePi() {
-  rmSync(TMP_DIR, { recursive: true, force: true });
-  mkdirSync(TMP_DIR, { recursive: true });
-  writeFileSync(
-    FAKE_PI_PATH,
-    `#!/usr/bin/env node
-import readline from "node:readline";
-
-const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-
-function emit(event) {
-  process.stdout.write(JSON.stringify(event) + "\\n");
-}
-
-rl.on("line", (line) => {
-  let cmd;
-  try {
-    cmd = JSON.parse(line);
-  } catch {
-    return;
-  }
-
-  if (cmd.type === "get_state") {
-    emit({ type: "response", command: "get_state", state: "idle" });
-    return;
-  }
-
-  if (cmd.type === "set_model") {
-    emit({ type: "response", command: "set_model", ok: true, model: cmd.modelId ?? null });
-    return;
-  }
-
-  if (cmd.type === "prompt" || cmd.type === "follow_up" || cmd.type === "steer") {
-    emit({ type: "agent_start" });
-    setTimeout(() => {
-      emit({
-        type: "message_update",
-        assistantMessageEvent: {
-          type: "text_delta",
-          delta: "handled:" + (cmd.message ?? ""),
-        },
-      });
-      emit({ type: "agent_end" });
-    }, 10);
-  }
-});
-
-process.stdin.resume();
-`,
-  );
-  chmodSync(FAKE_PI_PATH, 0o755);
-}
-
 function request(
   app: { fetch: (req: Request) => Promise<Response> },
   path: string,
@@ -188,9 +135,9 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000) {
 }
 
 beforeEach(() => {
-  writeFakePi();
-  process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
-  process.env.PI_PATH = FAKE_PI_PATH;
+  rmSync(TMP_DIR, { recursive: true, force: true });
+  mkdirSync(TMP_DIR, { recursive: true });
+  process.env.LLM_PROXY_KEY = "sk-vers-test-key";
   process.env.VERS_AUTH_TOKEN = AUTH_TOKEN;
   process.env.VERS_AGENT_NAME = "reef-test";
   delete process.env.VERS_INFRA_URL;
@@ -207,7 +154,7 @@ describe("lieutenant routes and runtime", () => {
   test("remote lieutenant env exports VERS_VM_ID for child reef tools", () => {
     process.env.VERS_INFRA_URL = "https://root.example:3000";
     const env = buildRemoteEnv("vm-child-123", {
-      anthropicApiKey: "test-anthropic-key",
+      llmProxyKey: "sk-vers-test-key",
       model: "claude-test",
     });
 
@@ -222,6 +169,29 @@ describe("lieutenant routes and runtime", () => {
     expect(script).toContain("export VERS_VM_ID='vm-child-123'");
     expect(script).toContain("grep -q '^export VERS_VM_ID='");
     expect(script).toContain("sed -i");
+  });
+
+  test("buildPersistKeysScript persists all runtime config into reef-agent.sh", () => {
+    process.env.VERS_API_KEY = "vers-key-abc";
+    process.env.VERS_INFRA_URL = "https://root.example:3000";
+    process.env.VERS_GOLDEN_COMMIT_ID = "golden-xyz";
+    const script = buildPersistKeysScript({ llmProxyKey: "sk-vers-test", model: "claude-test" });
+    expect(script).toContain("touch /etc/profile.d/reef-agent.sh");
+    expect(script).toContain("grep -q '^export LLM_PROXY_KEY='");
+    expect(script).toContain("export LLM_PROXY_KEY='sk-vers-test'");
+    expect(script).toContain("grep -q '^export VERS_API_KEY='");
+    expect(script).toContain("export VERS_API_KEY='vers-key-abc'");
+    expect(script).toContain("grep -q '^export VERS_INFRA_URL='");
+    expect(script).toContain("export VERS_INFRA_URL='https://root.example:3000'");
+    expect(script).toContain("grep -q '^export VERS_GOLDEN_COMMIT_ID='");
+    expect(script).toContain("export VERS_GOLDEN_COMMIT_ID='golden-xyz'");
+  });
+
+  test("buildPersistKeysScript omits LLM_PROXY_KEY when not provided", () => {
+    delete process.env.VERS_API_KEY;
+    delete process.env.LLM_PROXY_KEY;
+    const script = buildPersistKeysScript({ model: "claude-test" });
+    expect(script).not.toContain("LLM_PROXY_KEY");
   });
 
   test("defaults create requests to remote mode and fails when no golden commit can be resolved", async () => {
@@ -240,58 +210,13 @@ describe("lieutenant routes and runtime", () => {
       body: {
         name: "remote-default",
         role: "audit remote default",
-        anthropicApiKey: "test-anthropic-key",
+        llmProxyKey: "sk-vers-test-key",
       },
     });
 
     expect(status).toBe(400);
     expect(data.error).toContain("No golden commit available");
     expect(store.list()).toEqual([]);
-
-    await runtime.shutdown();
-    store.close();
-  });
-
-  test("creates a local lieutenant, runs a task, and reads the completed output from history", async () => {
-    const store = new LieutenantStore(join(TMP_DIR, "local-runtime.sqlite"));
-    const runtime = new LieutenantRuntime({ events: new ServiceEventBus(), store });
-    const app = createRoutes(store, () => runtime);
-
-    const created = await json(app, "/lieutenants", {
-      method: "POST",
-      body: {
-        name: "local-alpha",
-        role: "local validation",
-        local: true,
-        anthropicApiKey: "test-anthropic-key",
-      },
-    });
-    expect(created.status).toBe(201);
-    expect(created.data.isLocal).toBe(true);
-    expect(created.data.status).toBe("idle");
-
-    const sent = await json(app, "/lieutenants/local-alpha/send", {
-      method: "POST",
-      body: { message: "hello lieutenant" },
-    });
-    expect(sent.status).toBe(200);
-    expect(sent.data.sent).toBe(true);
-
-    await waitFor(() => {
-      const lt = store.getByName("local-alpha");
-      return lt?.status === "idle" && (lt.outputHistory.length ?? 0) === 1;
-    });
-
-    const read = await json(app, "/lieutenants/local-alpha/read");
-    expect(read.status).toBe(200);
-    expect(read.data.status).toBe("idle");
-    expect(read.data.historyCount).toBe(1);
-    expect(read.data.output).toContain("handled:hello lieutenant");
-
-    const destroyed = await json(app, "/lieutenants/local-alpha", { method: "DELETE" });
-    expect(destroyed.status).toBe(200);
-    expect(destroyed.data.destroyed).toBe(true);
-    expect(store.getByName("local-alpha")?.status).toBe("destroyed");
 
     await runtime.shutdown();
     store.close();
@@ -319,7 +244,7 @@ describe("lieutenant routes and runtime", () => {
       },
     });
     expect(registered.status).toBe(201);
-    expect(registered.data.isLocal).toBe(false);
+    expect(registered.data.vmId).toBe("vm-remote-1");
     expect(registered.data.status).toBe("idle");
 
     const listBeforeSend = await json(app, "/lieutenants", {});
@@ -362,7 +287,6 @@ describe("registry and vm-tree event wiring", () => {
       name: "remote-bravo",
       vmId,
       role: "orchestrator",
-      isLocal: false,
       address: `${vmId}.vm.vers.sh`,
       createdAt: new Date().toISOString(),
       parentVmId: "parent-root-1",

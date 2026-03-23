@@ -105,18 +105,10 @@ function feedAdd(nodeId, parentNodeId, tag, text, opts = {}) {
     ${statusHtml}
   `;
 
-  const children = document.createElement('div');
-  children.className = 'feed-children';
-
   item.appendChild(row);
-  item.appendChild(children);
 
-  const parentEl = parentNodeId ? feedNodes.get(parentNodeId) : null;
-  if (parentEl) {
-    parentEl.querySelector(':scope > .feed-children').appendChild(item);
-  } else {
-    feedEl.appendChild(item);
-  }
+  // Flat chronological list — always append to the root feed
+  feedEl.appendChild(item);
 
   if (nodeId) feedNodes.set(nodeId, item);
   updateFeedScope();
@@ -232,6 +224,9 @@ function renderConversationHeader() {
     $('branch-messages').innerHTML = '';
     input.disabled = false;
     send.disabled = false;
+    send.classList.remove('working');
+    send.textContent = '↵';
+    send.title = '';
     input.placeholder = 'Start a new conversation…';
     updateFeedScope();
     return;
@@ -245,6 +240,15 @@ function renderConversationHeader() {
   empty.style.display = conversation.messages.length === 0 ? '' : 'none';
   input.disabled = conversation.closed;
   send.disabled = conversation.closed;
+  if (conversation.working) {
+    send.classList.add('working');
+    send.textContent = '■';
+    send.title = 'Stop agent';
+  } else {
+    send.classList.remove('working');
+    send.textContent = '↵';
+    send.title = '';
+  }
   input.placeholder = conversation.closed ? 'Reopen this conversation to continue talking.' : 'Continue the conversation…';
   updateFeedScope();
 }
@@ -470,11 +474,13 @@ async function setConversationClosed(conversationId, closed) {
 // Send
 // =============================================================================
 
-async function submitNewConversation(text) {
+async function submitNewConversation(text, attachments = []) {
+  const body = { task: text };
+  if (attachments.length > 0) body.attachments = attachments;
   const response = await fetch(`${API}/reef/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: text }),
+    body: JSON.stringify(body),
   });
   const data = await response.json();
   if (!response.ok || data.error) throw new Error(data.error || `Failed to create conversation`);
@@ -486,31 +492,40 @@ async function submitNewConversation(text) {
     leafId: data.nodeId,
   });
   await selectConversation(data.id);
+  syncConversationList();
 }
 
-async function submitConversationReply(conversationId, text) {
+async function submitConversationReply(conversationId, text, attachments = []) {
+  addConversationMessage(conversationId, 'user', text);
+  const body = { task: text };
+  if (attachments.length > 0) body.attachments = attachments;
   const response = await fetch(`${API}/reef/conversations/${conversationId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: text }),
+    body: JSON.stringify(body),
   });
   const data = await response.json();
   if (!response.ok || data.error) throw new Error(data.error || `Failed to send reply`);
   ensureConversation(conversationId, { status: 'running', closed: false, lastActivityAt: Date.now(), leafId: data.nodeId });
+  renderConversationLists();
+  renderConversationHeader();
 }
 
-function feedSend() {
+async function feedSend() {
   const input = $('branch-text');
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && pendingFiles.length === 0) return;
   input.value = '';
   resizeInput('branch-text');
-  submitNewConversation(text).catch((error) => {
+  try {
+    const { prompt, attachments } = await uploadAndBuildPrompt(text);
+    await submitNewConversation(prompt, attachments);
+  } catch (error) {
     feedAdd(null, null, 'error', error.message);
-  });
+  }
 }
 
-function branchSend() {
+async function branchSend() {
   if (!activeConversationId) {
     feedSend();
     return;
@@ -521,12 +536,15 @@ function branchSend() {
 
   const input = $('branch-text');
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && pendingFiles.length === 0) return;
   input.value = '';
   resizeInput('branch-text');
-  submitConversationReply(activeConversationId, text).catch((error) => {
+  try {
+    const { prompt, attachments } = await uploadAndBuildPrompt(text);
+    await submitConversationReply(activeConversationId, prompt, attachments);
+  } catch (error) {
     feedAdd(null, null, 'error', error.message, { taskId: activeConversationId });
-  });
+  }
 }
 
 // =============================================================================
@@ -548,8 +566,18 @@ function connectSSE() {
     .catch(() => {
       sseConnected = false;
       setStatus('err', 'disconnected');
-      setTimeout(connectSSE, 3000);
+      setTimeout(reconnectSSE, 3000);
     });
+}
+
+function reconnectSSE() {
+  // Catch up on any state changes that happened while disconnected
+  syncConversationList();
+  updateStatus();
+  if (activePanel && LIVE_REFRESH_PANELS.has(activePanel)) {
+    refreshPanel(activePanel).catch(() => {});
+  }
+  connectSSE();
 }
 
 async function readSSE(reader) {
@@ -573,7 +601,7 @@ async function readSSE(reader) {
 
   sseConnected = false;
   setStatus('err', 'disconnected');
-  setTimeout(connectSSE, 3000);
+  setTimeout(reconnectSSE, 3000);
 }
 
 function handleEvent(event) {
@@ -675,6 +703,7 @@ function handleEvent(event) {
     case 'service_unload':
     case 'service_deploy':
       feedAdd(nodeId, parentId, 'system', `${event.type.replace('service_', '')} ${event.name || ''}`);
+      discoverPanels();
       break;
 
     case 'cron_start':
@@ -709,6 +738,20 @@ async function loadConversationList() {
   } catch (error) {
     console.error('loadConversationList:', error);
   }
+}
+
+// Lightweight sync — refetch conversation list from server without changing selection
+async function syncConversationList() {
+  try {
+    const response = await fetch(`${API}/reef/conversations?includeClosed=true`);
+    if (!response.ok) return;
+    const data = await response.json();
+    for (const conversation of data.conversations || []) {
+      ensureConversation(conversation.id, conversation);
+    }
+    renderConversationLists();
+    renderConversationHeader();
+  } catch {}
 }
 
 async function loadFeedHistory() {
@@ -819,11 +862,53 @@ function setStatus(state, text) {
 
 async function updateStatus() {
   try {
-    const response = await fetch(`${API}/reef/state`);
-    if (!response.ok) return;
-    const data = await response.json();
-    const parts = [`${data.services?.length || 0} svc`, `${conversations.size} chats`];
+    const [stateRes, vmsRes, ltsRes, sessionRes] = await Promise.all([
+      fetch(`${API}/reef/state`),
+      fetch(`${API}/registry/vms`).catch(() => null),
+      fetch(`${API}/lieutenant/lieutenants`).catch(() => null),
+      fetch('/ui/session').catch(() => null),
+    ]);
+
+    if (!stateRes.ok) return;
+    const data = await stateRes.json();
+
+    let vmCount = 1; // root reef VM is always running
+    if (vmsRes?.ok) {
+      const vmsData = await vmsRes.json();
+      vmCount = Math.max(1, vmsData.count || 0);
+    }
+
+    let ltCount = 0;
+    if (ltsRes?.ok) {
+      const ltsData = await ltsRes.json();
+      ltCount = (ltsData.lieutenants || ltsData.data || []).length;
+    }
+
+    let sessionExpiry = null;
+    if (sessionRes?.ok) {
+      const sessionData = await sessionRes.json().catch(() => null);
+      if (sessionData?.authenticated && sessionData.expiresAt) {
+        sessionExpiry = sessionData.expiresAt;
+      }
+    }
+
+    const chatCount = data.conversations || conversations.size;
+    const parts = ['vers.sh'];
+    parts.push(`${vmCount} VM${vmCount !== 1 ? 's' : ''}`);
+    if (ltCount > 0) parts.push(`${ltCount} lt`);
+    parts.push(`${chatCount} chats`);
     if (data.activeTasks > 0) parts.push(`${data.activeTasks} active`);
+    if (sessionExpiry) {
+      const ms = new Date(sessionExpiry).getTime() - Date.now();
+      const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+      const hrs = Math.floor((ms % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+      const mins = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+      const timeParts = [];
+      if (days > 0) timeParts.push(`${days}d`);
+      if (hrs > 0) timeParts.push(`${hrs}h`);
+      timeParts.push(`${mins}m`);
+      parts.push(`${timeParts.join(' ')} left`);
+    }
     setStatus('ok', parts.join(' · '));
   } catch {}
 }
@@ -833,7 +918,7 @@ async function updateStatus() {
 // =============================================================================
 
 const loadedPanels = new Map();
-const LIVE_REFRESH_PANELS = new Set(['registry', 'vm-tree', 'lieutenant', 'commits']);
+const LIVE_REFRESH_PANELS = new Set(['registry', 'vm-tree', 'lieutenant', 'commits', 'store', 'installer']);
 let activePanel = null;
 
 async function fetchPanel(name) {
@@ -850,13 +935,39 @@ async function refreshPanel(name) {
   injectPanel(loadedPanels.get(name), panel.html);
 }
 
+async function loadProfilePanel() {
+  if (loadedPanels.has('profile')) return;
+  try {
+    const response = await fetch(`${API}/reef/profile/_panel`);
+    if (!response.ok) return;
+    if (!(response.headers.get('content-type') || '').includes('html')) return;
+    const html = await response.text();
+
+    const button = document.createElement('button');
+    button.className = 'tab';
+    button.dataset.view = 'profile';
+    button.textContent = 'profile';
+    button.addEventListener('click', () => togglePanel('profile'));
+    $('tabs').appendChild(button);
+
+    const container = document.createElement('div');
+    container.className = 'panel-view';
+    container.id = 'panel-profile';
+    container.dataset.api = API;
+    $('panel-area').appendChild(container);
+    injectPanel(container, html);
+    loadedPanels.set('profile', container);
+  } catch {}
+}
+
 async function discoverPanels() {
   try {
     const response = await fetch(`${API}/services`);
     if (!response.ok) return;
     const data = await response.json();
     const services = data.modules || data.services || [];
-    const results = await Promise.allSettled(services.filter((service) => service.name !== 'ui').map((service) => fetchPanel(service.name)));
+    const SKIP_PANELS = new Set(['ui', 'agent-context', 'store', 'bootloader', 'vers-config', 'installer']);
+    const results = await Promise.allSettled(services.filter((service) => !SKIP_PANELS.has(service.name)).map((service) => fetchPanel(service.name)));
     const panels = results.filter((result) => result.status === 'fulfilled' && result.value).map((result) => result.value);
 
     for (const panel of panels) {
@@ -891,6 +1002,7 @@ function togglePanel(name) {
   $('panel-area').className = 'open';
   document.querySelectorAll('.panel-view').forEach((view) => view.classList.toggle('active', view.id === `panel-${name}`));
   $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === name));
+  // Always refresh immediately when switching to a live panel
   if (LIVE_REFRESH_PANELS.has(name)) refreshPanel(name).catch(() => {});
 }
 
@@ -923,14 +1035,283 @@ $('tabs').querySelector('[data-view="feed"]').addEventListener('click', () => {
 });
 
 // =============================================================================
+// File attachments
+// =============================================================================
+
+const pendingFiles = [];
+
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
+}
+
+function renderAttachments() {
+  const el = $('branch-attachments');
+  el.innerHTML = '';
+  for (let i = 0; i < pendingFiles.length; i++) {
+    const file = pendingFiles[i];
+    const chip = document.createElement('div');
+    chip.className = 'attachment-chip';
+    chip.innerHTML = `
+      <span>${esc(file.name)}</span>
+      <span class="size">${formatSize(file.size)}</span>
+      <button class="attachment-remove" data-index="${i}" type="button">✕</button>
+    `;
+    chip.querySelector('.attachment-remove').addEventListener('click', () => {
+      pendingFiles.splice(i, 1);
+      renderAttachments();
+    });
+    el.appendChild(chip);
+  }
+}
+
+async function addFiles(fileList) {
+  const totalNewBytes = Array.from(fileList).reduce((sum, f) => sum + f.size, 0);
+  const totalNewMib = Math.ceil(totalNewBytes / (1024 * 1024));
+
+  // Check available disk space
+  try {
+    const res = await fetch(`${API}/reef/disk`);
+    if (res.ok) {
+      const disk = await res.json();
+      if (totalNewMib >= disk.availMib) {
+        showResizeDialog(disk, totalNewMib, fileList);
+        return;
+      }
+    }
+  } catch {}
+
+  for (const file of fileList) {
+    pendingFiles.push(file);
+  }
+  renderAttachments();
+}
+
+function showResizeDialog(disk, neededMib, fileList) {
+  const currentTotal = disk.totalMib;
+  const minNeeded = currentTotal + neededMib + 100; // 100 MiB buffer
+  const options = [
+    Math.ceil(minNeeded / 1024) * 1024,                    // round up to nearest GB
+    Math.ceil(minNeeded / 1024) * 1024 + 2048,             // +2 GB extra
+    Math.ceil(minNeeded / 1024) * 1024 + 5120,             // +5 GB extra
+  ];
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:100;display:flex;align-items:center;justify-content:center';
+
+  const dialog = document.createElement('div');
+  dialog.style.cssText = 'background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:20px;max-width:420px;font-family:monospace;font-size:13px;color:#ccc';
+
+  dialog.innerHTML = `
+    <div style="color:#f55;font-weight:600;margin-bottom:12px">Not enough disk space</div>
+    <div style="margin-bottom:8px">
+      File${fileList.length > 1 ? 's' : ''} need ~${neededMib} MiB but only ${disk.availMib} MiB available
+      (${disk.usedMib} / ${disk.totalMib} MiB used).
+    </div>
+    <div style="color:#888;margin-bottom:12px;font-size:11px">
+      Resizing the disk will increase your Vers billing.
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">
+      ${options.map((size, i) => `
+        <button class="resize-option" data-size="${size}" style="
+          background:#111;border:1px solid #333;color:#ccc;padding:8px 12px;
+          border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;text-align:left;
+        ">
+          ${(size / 1024).toFixed(1)} GB (${size} MiB)
+          ${i === 0 ? ' — minimum' : i === 1 ? ' — comfortable' : ' — generous'}
+        </button>
+      `).join('')}
+    </div>
+    <button id="resize-cancel" style="
+      background:none;border:1px solid #333;color:#888;padding:6px 12px;
+      border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;
+    ">Cancel</button>
+    <div id="resize-status" style="color:#4f9;font-size:11px;margin-top:8px;min-height:16px"></div>
+  `;
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  dialog.querySelector('#resize-cancel').addEventListener('click', () => {
+    document.body.removeChild(overlay);
+  });
+
+  dialog.querySelectorAll('.resize-option').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const size = parseInt(btn.dataset.size, 10);
+      const statusEl = dialog.querySelector('#resize-status');
+      statusEl.textContent = 'Resizing disk...';
+      statusEl.style.color = '#4f9';
+
+      // Disable all buttons
+      dialog.querySelectorAll('button').forEach((b) => { b.disabled = true; b.style.opacity = '0.5'; });
+
+      try {
+        const res = await fetch(`${API}/reef/disk/resize`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fs_size_mib: size }),
+        });
+
+        if (res.ok) {
+          statusEl.textContent = `Resized to ${(size / 1024).toFixed(1)} GB. Adding files...`;
+          setTimeout(() => {
+            document.body.removeChild(overlay);
+            for (const file of fileList) {
+              pendingFiles.push(file);
+            }
+            renderAttachments();
+          }, 1000);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          statusEl.textContent = err.error || 'Resize failed';
+          statusEl.style.color = '#f55';
+          dialog.querySelectorAll('button').forEach((b) => { b.disabled = false; b.style.opacity = '1'; });
+        }
+      } catch (err) {
+        statusEl.textContent = 'Error: ' + err.message;
+        statusEl.style.color = '#f55';
+        dialog.querySelectorAll('button').forEach((b) => { b.disabled = false; b.style.opacity = '1'; });
+      }
+    });
+  });
+}
+
+async function uploadAndBuildPrompt(text) {
+  if (pendingFiles.length === 0) return { prompt: text, attachments: [] };
+
+  // Upload files to the reef VM
+  const formData = new FormData();
+  for (const file of pendingFiles) {
+    formData.append('file', file);
+  }
+
+  let uploaded = [];
+  try {
+    const res = await fetch(`${API}/reef/upload`, { method: 'POST', body: formData });
+    if (res.ok) {
+      const data = await res.json();
+      uploaded = data.files || [];
+    }
+  } catch {}
+
+  // Build prompt text and collect attachment metadata
+  const parts = [text];
+  const attachments = [];
+  for (let i = 0; i < pendingFiles.length; i++) {
+    const file = pendingFiles[i];
+    const uploadInfo = uploaded[i];
+    const path = uploadInfo?.path || file.name;
+    const url = uploadInfo?.url || null;
+    const location = url ? `url: ${url}, local: ${path}` : `saved to ${path}`;
+    const mimeType = file.type || null;
+
+    // Images: add as attachment for multimodal, plus text reference
+    if (mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(file.name)) {
+      attachments.push({ path, name: file.name, mimeType: mimeType || 'image/png' });
+      parts.push(`\n\n--- Image: ${file.name} (${location}, ${formatSize(file.size)}) ---`);
+    } else if (file.type.startsWith('text/') || /\.(txt|md|json|js|ts|py|sh|css|html|yaml|yml|toml|csv|xml|sql|rs|go|rb|java|c|cpp|h)$/i.test(file.name)) {
+      try {
+        const content = await file.text();
+        parts.push(`\n\n--- File: ${file.name} (${location}) ---\n${content}`);
+      } catch {
+        parts.push(`\n\n--- File: ${file.name} (${location}, ${formatSize(file.size)}) ---`);
+      }
+    } else {
+      parts.push(`\n\n--- File: ${file.name} (${location}, ${formatSize(file.size)}) ---`);
+    }
+  }
+
+  pendingFiles.length = 0;
+  renderAttachments();
+  return { prompt: parts.join(''), attachments };
+}
+
+// Drag and drop
+const branchEl = $('branch');
+let dragCounter = 0;
+
+branchEl.addEventListener('dragenter', (e) => {
+  e.preventDefault();
+  dragCounter++;
+  branchEl.classList.add('drag-over');
+});
+
+branchEl.addEventListener('dragleave', (e) => {
+  e.preventDefault();
+  dragCounter--;
+  if (dragCounter <= 0) {
+    dragCounter = 0;
+    branchEl.classList.remove('drag-over');
+  }
+});
+
+branchEl.addEventListener('dragover', (e) => {
+  e.preventDefault();
+});
+
+branchEl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragCounter = 0;
+  branchEl.classList.remove('drag-over');
+  if (e.dataTransfer?.files?.length) {
+    addFiles(e.dataTransfer.files);
+  }
+});
+
+// Attach button
+$('branch-attach').addEventListener('click', () => {
+  $('branch-file').click();
+});
+
+$('branch-file').addEventListener('change', async (e) => {
+  if (e.target.files?.length) {
+    const files = Array.from(e.target.files);
+    e.target.value = '';
+    await addFiles(files);
+  }
+});
+
+// =============================================================================
 // Input handlers
 // =============================================================================
 
-$('branch-send').addEventListener('click', branchSend);
+$('branch-send').addEventListener('click', async () => {
+  if (activeConversationId) {
+    const conversation = conversations.get(activeConversationId);
+    if (conversation?.working) {
+      await stopActiveConversation();
+      return;
+    }
+  }
+  branchSend();
+});
+async function stopActiveConversation() {
+  if (!activeConversationId) return;
+  const conversation = conversations.get(activeConversationId);
+  if (!conversation?.working) return;
+  try {
+    await fetch(`${API}/reef/conversations/${activeConversationId}/stop`, { method: 'POST' });
+  } catch {}
+  $('branch-text').focus();
+}
+
 $('branch-text').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    stopActiveConversation();
+    return;
+  }
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     branchSend();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    stopActiveConversation();
   }
 });
 $('branch-text').addEventListener('input', () => resizeInput('branch-text'));
@@ -956,8 +1337,11 @@ $('new-chat').addEventListener('click', () => {
 Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   connectSSE();
   updateStatus();
+  loadProfilePanel();
   discoverPanels();
   setInterval(discoverPanels, 30000);
   setInterval(refreshActivePanel, 10000);
   setInterval(updateStatus, 10000);
+  // Periodically sync conversation list to catch changes from other clients
+  setInterval(syncConversationList, 15000);
 });

@@ -83,6 +83,156 @@ routes.get("/", (c) => {
   return c.json({ modules, count: modules.length });
 });
 
+// GET /_panel — service overview with installer UI
+routes.get("/_panel", async (c) => {
+  const modules = ctx.getModules();
+
+  // Load installer registry to show installed packages with actions
+  let installed: Array<{ dirName: string; source: string; type: string; installedAt: string }> = [];
+  try {
+    const { existsSync, readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const regPath = join(ctx.servicesDir, ".installer.json");
+    if (existsSync(regPath)) {
+      installed = JSON.parse(readFileSync(regPath, "utf-8")).installed ?? [];
+    }
+  } catch {}
+  const installedNames = new Set(installed.map((e) => e.dirName));
+
+  const installedRows = installed
+    .sort((a, b) => a.dirName.localeCompare(b.dirName))
+    .map((entry) => {
+      const typeColor = entry.type === "git" ? "#5af" : entry.type === "local" ? "#4f9" : "#fd0";
+      const src = entry.source.length > 40 ? `${entry.source.slice(0, 40)}…` : entry.source;
+      return `<tr>
+        <td style="color:#4f9;font-weight:600;padding:3px 8px">${esc(entry.dirName)}</td>
+        <td style="color:${typeColor};padding:3px 8px;font-size:11px">${esc(entry.type)}</td>
+        <td style="color:#888;padding:3px 8px;font-size:12px">${esc(src)}</td>
+        <td style="padding:3px 8px">
+          ${entry.type === "git" ? `<button onclick="installerAction('update','${esc(entry.dirName)}')" style="background:none;border:1px solid #555;color:#5af;padding:2px 6px;border-radius:3px;cursor:pointer;font-size:10px;font-family:monospace;margin-right:4px">update</button>` : ""}
+          <button onclick="installerAction('remove','${esc(entry.dirName)}')" style="background:none;border:1px solid #555;color:#f55;padding:2px 6px;border-radius:3px;cursor:pointer;font-size:10px;font-family:monospace">remove</button>
+        </td>
+      </tr>`;
+    })
+    .join("");
+
+  const moduleRows = modules
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((m) => {
+      const features = [
+        m.routes ? "routes" : "",
+        m.registerTools ? "tools" : "",
+        m.registerBehaviors ? "behaviors" : "",
+        m.widget ? "widget" : "",
+        m.store ? "store" : "",
+      ]
+        .filter(Boolean)
+        .join(", ");
+      const deps = m.dependencies?.length ? m.dependencies.join(", ") : "—";
+      const badge = installedNames.has(m.name)
+        ? `<span style="color:#fd0;font-size:10px;margin-left:4px">ext</span>`
+        : "";
+      return `<tr>
+        <td style="color:#4f9;font-weight:600;padding:3px 8px">${esc(m.name)}${badge}</td>
+        <td style="color:#888;padding:3px 8px;font-size:12px">${esc(m.description || "")}</td>
+        <td style="color:#5af;padding:3px 8px;font-size:11px">${esc(features)}</td>
+        <td style="color:#666;padding:3px 8px;font-size:11px">${esc(deps)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  return c.html(`
+    <div style="font-family:monospace;font-size:13px;color:#ccc">
+      <div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #333">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <input id="install-src" placeholder="github.com/user/repo or /local/path" style="flex:1;background:#111;border:1px solid #333;color:#ccc;padding:4px 8px;border-radius:4px;font-family:monospace;font-size:12px" />
+          <button onclick="installerInstall()" style="background:#4f9;color:#000;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-family:monospace;font-size:12px;font-weight:600">install</button>
+        </div>
+        <div id="install-status" style="color:#888;font-size:11px;min-height:16px"></div>
+        ${
+          installed.length > 0
+            ? `
+        <div style="margin-top:8px;color:#888;font-size:11px">${installed.length} external package${installed.length !== 1 ? "s" : ""}</div>
+        <table style="width:100%;border-collapse:collapse;margin-top:4px">
+          <thead><tr style="color:#666;font-size:10px;text-align:left;border-bottom:1px solid #222">
+            <th style="padding:3px 8px">Package</th><th style="padding:3px 8px">Type</th><th style="padding:3px 8px">Source</th><th style="padding:3px 8px">Actions</th>
+          </tr></thead>
+          <tbody>${installedRows}</tbody>
+        </table>`
+            : ""
+        }
+      </div>
+      <div style="color:#888;margin-bottom:8px">${modules.length} modules loaded</div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="color:#666;font-size:11px;text-align:left;border-bottom:1px solid #333">
+          <th style="padding:3px 8px">Name</th><th style="padding:3px 8px">Description</th><th style="padding:3px 8px">Features</th><th style="padding:3px 8px">Deps</th>
+        </tr></thead>
+        <tbody>${moduleRows}</tbody>
+      </table>
+    </div>
+    <script>
+      function getApi() { return document.querySelector('[data-api]')?.dataset?.api || '/ui/api'; }
+      async function installerInstall() {
+        const input = document.getElementById('install-src');
+        const status = document.getElementById('install-status');
+        const source = input.value.trim();
+        if (!source) return;
+        status.textContent = 'Installing...';
+        status.style.color = '#5af';
+        try {
+          const res = await fetch(getApi() + '/installer/install', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            status.textContent = 'Installed ' + (data.name || data.dirName) + '. Refreshing...';
+            status.style.color = '#4f9';
+            input.value = '';
+            setTimeout(() => location.reload(), 1000);
+          } else {
+            status.textContent = 'Error: ' + (data.error || 'install failed');
+            status.style.color = '#f55';
+          }
+        } catch (e) {
+          status.textContent = 'Error: ' + e.message;
+          status.style.color = '#f55';
+        }
+      }
+      async function installerAction(action, name) {
+        const status = document.getElementById('install-status');
+        status.textContent = action === 'remove' ? 'Removing ' + name + '...' : 'Updating ' + name + '...';
+        status.style.color = '#5af';
+        try {
+          const res = await fetch(getApi() + '/installer/' + action, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            status.textContent = name + ' ' + (data.action || action + 'd') + '. Refreshing...';
+            status.style.color = '#4f9';
+            setTimeout(() => location.reload(), 1000);
+          } else {
+            status.textContent = 'Error: ' + (data.error || action + ' failed');
+            status.style.color = '#f55';
+          }
+        } catch (e) {
+          status.textContent = 'Error: ' + e.message;
+          status.style.color = '#f55';
+        }
+      }
+      document.getElementById('install-src').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') installerInstall();
+      });
+    </script>
+  `);
+});
+
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 // Machine-readable manifest — everything agents need to discover reef's capabilities
 routes.get("/manifest", (c) => {
   const modules = ctx.getModules();

@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { consumeMagicLink, createMagicLink, createSession, validateSession } from "./auth.js";
+import { consumeMagicLink, createMagicLink, createSession, getSessionInfo, validateSession } from "./auth.js";
 
 const AUTH_TOKEN = process.env.VERS_AUTH_TOKEN || "test-token";
 
@@ -48,7 +48,7 @@ export function createRoutes(): Hono {
       if (valid) {
         const session = createSession();
         return c.html('<html><head><meta http-equiv="refresh" content="0;url=/ui/"></head></html>', 200, {
-          "Set-Cookie": `session=${session.id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+          "Set-Cookie": `session=${session.id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`,
         });
       }
       return c.html(
@@ -65,6 +65,14 @@ export function createRoutes(): Hono {
       <p>Access requires a magic link. Generate one via:</p>
       <pre style="color:#4f9">POST /auth/magic-link</pre>
     </body></html>`);
+  });
+
+  // Session info (for the UI to show expiry countdown)
+  routes.get("/ui/session", (c) => {
+    const sessionId = getSessionId(c);
+    const info = getSessionInfo(sessionId);
+    if (!info) return c.json({ authenticated: false }, 401);
+    return c.json({ authenticated: true, ...info });
   });
 
   // --- Session-protected UI routes ---
@@ -121,7 +129,7 @@ export function createRoutes(): Hono {
     if (contentType) headers["Content-Type"] = contentType;
 
     const method = c.req.method;
-    const body = method !== "GET" && method !== "HEAD" ? await c.req.text() : undefined;
+    const body = method !== "GET" && method !== "HEAD" ? await c.req.arrayBuffer() : undefined;
 
     try {
       const resp = await fetch(internalUrl, { method, headers, body });
@@ -138,9 +146,20 @@ export function createRoutes(): Hono {
         });
       }
 
+      const respContentType = resp.headers.get("content-type") || "application/json";
+
+      // Binary passthrough for non-text/non-JSON responses (images, PDFs, etc.)
+      if (!respContentType.startsWith("text/") && !respContentType.includes("json")) {
+        const buffer = await resp.arrayBuffer();
+        return new Response(buffer, {
+          status: resp.status,
+          headers: { "Content-Type": respContentType },
+        });
+      }
+
       const text = await resp.text();
       return c.body(text, resp.status as any, {
-        "Content-Type": resp.headers.get("content-type") || "application/json",
+        "Content-Type": respContentType,
       });
     } catch (e) {
       return c.json({ error: "Proxy error", details: String(e) }, 502);

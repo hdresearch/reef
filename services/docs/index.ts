@@ -84,12 +84,87 @@ function documentService(mod: ServiceModule): ServiceDoc {
   };
 }
 
+const reefDoc: ServiceDoc = {
+  name: "reef",
+  description: "Agent conversation engine — task submission, branching conversations, user profile",
+  auth: true,
+  routes: [
+    { method: "POST", path: "/reef/submit", summary: "Start a task (legacy)" },
+    {
+      method: "GET",
+      path: "/reef/conversations",
+      summary: "List conversations",
+      query: { includeClosed: { type: "boolean", description: "Include closed" } },
+    },
+    { method: "GET", path: "/reef/conversations/:id", summary: "Get conversation with messages" },
+    {
+      method: "POST",
+      path: "/reef/conversations",
+      summary: "Create a conversation and start a task",
+      body: { task: { type: "string", required: true, description: "The prompt" } },
+    },
+    {
+      method: "POST",
+      path: "/reef/conversations/:id/messages",
+      summary: "Send a follow-up message",
+      body: { task: { type: "string", required: true, description: "The prompt" } },
+    },
+    { method: "POST", path: "/reef/conversations/:id/close", summary: "Close a conversation" },
+    { method: "POST", path: "/reef/conversations/:id/open", summary: "Reopen a conversation" },
+    {
+      method: "GET",
+      path: "/reef/tasks",
+      summary: "List tasks",
+      query: { status: { type: "string", description: "Filter: running, done, error" } },
+    },
+    { method: "GET", path: "/reef/tasks/:name", summary: "Get full task conversation" },
+    { method: "GET", path: "/reef/tree", summary: "Full conversation tree" },
+    { method: "GET", path: "/reef/tree/:id", summary: "Get a node and its children" },
+    { method: "GET", path: "/reef/tree/:id/path", summary: "Get ancestors of a node" },
+    { method: "GET", path: "/reef/profile", summary: "Get user profile" },
+    {
+      method: "PUT",
+      path: "/reef/profile",
+      summary: "Update user profile — injected into agent prompts",
+      body: {
+        name: { type: "string", description: "User name" },
+        timezone: { type: "string", description: "IANA timezone" },
+        location: { type: "string", description: "User location" },
+        preferences: { type: "string", description: "Free-text context for agents" },
+      },
+    },
+    { method: "GET", path: "/reef/disk", summary: "Get disk usage (totalMib, usedMib, availMib)" },
+    {
+      method: "POST",
+      path: "/reef/disk/resize",
+      summary: "Resize VM disk via Vers API",
+      body: {
+        fs_size_mib: { type: "integer", required: true, description: "New disk size in MiB (must be > current)" },
+      },
+    },
+    {
+      method: "POST",
+      path: "/reef/upload",
+      summary: "Upload files to the reef VM (multipart/form-data)",
+      body: {
+        file: { type: "File", required: true, description: "One or more files to upload" },
+      },
+    },
+    { method: "GET", path: "/reef/state", summary: "Status and counts" },
+    { method: "GET", path: "/reef/events", summary: "SSE event stream" },
+    { method: "POST", path: "/auth/magic-link", summary: "Generate a login link" },
+  ],
+  capabilities: { hasTools: false, hasBehaviors: false, hasWidget: false, hasStore: false },
+  dependencies: [],
+};
+
 function documentAll(): ServiceDoc[] {
-  return ctx
+  const services = ctx
     .getModules()
     .filter((m) => m.name !== "docs")
-    .map(documentService)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .map(documentService);
+  services.push(reefDoc);
+  return services.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // =============================================================================
@@ -334,6 +409,38 @@ const routes = new Hono();
 routes.get("/", (c) => c.json({ services: documentAll() }));
 
 routes.get("/ui", (c) => c.html(renderHTML(documentAll())));
+
+routes.get("/_panel", (c) => {
+  const docs = documentAll();
+  const totalRoutes = docs.reduce((sum, s) => sum + s.routes.length, 0);
+  const documented = docs.reduce((sum, s) => sum + s.routes.filter((r) => r.summary).length, 0);
+
+  const serviceList = docs
+    .map((svc) => {
+      const routeCount = svc.routes.length;
+      const badges = [
+        svc.capabilities.hasTools ? '<span style="color:#5af;font-size:10px">tools</span>' : "",
+        svc.capabilities.hasStore ? '<span style="color:#5cc;font-size:10px">store</span>' : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #1a1a1a">
+        <span><span style="color:#4f9">/${esc(svc.name)}</span> ${badges}</span>
+        <span style="color:#666">${routeCount} route${routeCount !== 1 ? "s" : ""}</span>
+      </div>`;
+    })
+    .join("");
+
+  return c.html(`
+    <div style="font-family:monospace;font-size:13px;color:#ccc">
+      <div style="margin-bottom:8px;color:#888">${docs.length} services · ${totalRoutes} routes · ${documented} documented</div>
+      ${serviceList}
+      <div style="margin-top:12px">
+        <a href="/docs/ui" target="_blank" style="color:#5af;text-decoration:none;font-size:12px">Open full API docs →</a>
+      </div>
+    </div>
+  `);
+});
 
 routes.get("/:service", (c) => {
   const name = c.req.param("service");

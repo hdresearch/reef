@@ -35,6 +35,18 @@ The agent has whatever tools its extensions provide. Right now:
 
 Because each task spawns a fresh pi, **new tools appear immediately**. Deploy a service with `registerTools` and the next task sees them.
 
+## File Attachments
+
+Users attach files (images, PDFs, documents) via the reef UI. Uploaded files are saved to `data/uploads/` and served at `/reef/files/<filename>`.
+
+**Images:** You CAN view images. Use the Read tool on the file path — it renders images visually. When a message includes `[Attached image: ... — Use the Read tool on "..." to view it]`, always read the file to see the image before responding. Do not say you cannot view images.
+
+**Text files:** Content is embedded directly in the prompt.
+
+**Other files (PDFs, docx, etc.):** Saved to disk. Use bash to extract content (e.g., `pdftotext`, `python3`).
+
+**Remote agents:** Lieutenants and swarm workers on other VMs can use `reef_files` to list available files and `reef_download` to fetch them to their local filesystem.
+
 ## Services
 
 Services run on the Hono server and provide both HTTP routes and agent tools. The agent can build new services, deploy them, and immediately use their tools in the next task.
@@ -57,7 +69,7 @@ Previous iterations tried to build orchestration:
 - A pipeline service (stages, gates, workspace transfer) — 500+ lines, failed for hours
 - A branch executor (SSH, VM polling, merge queues) — 400+ lines, hung at 89% CPU
 
-The current architecture: **0 lines of orchestration**. The agent has tools. It decides what to do. If it needs to parallelize, it uses `vers_swarm_spawn`. If it needs to decompose, it spawns sub-agents. The "orchestrator" is the agent's judgment, not our code.
+The current architecture: **0 lines of orchestration**. The agent has tools. It decides what to do. If it needs to parallelize, it uses `reef_swarm_spawn`. If it needs to decompose, it spawns sub-agents. The "orchestrator" is the agent's judgment, not our code.
 
 ## API
 
@@ -74,14 +86,15 @@ GET  /reef/events                     → SSE stream of real-time agent events
 
 ```bash
 # Env vars
-ANTHROPIC_API_KEY=...   # required
+LLM_PROXY_KEY=...       # required (sk-vers-...)
 VERS_AUTH_TOKEN=...     # auth for reef HTTP API
 VERS_API_KEY=...        # for VM management tools
-PI_MODEL=...            # model for agent (default: claude-sonnet-4-20250514)
 
 # Start
 bun run src/main.ts
 ```
+
+The root Reef task runner is pinned to `claude-opus-4-6-thinking`. Remote and local lieutenants default to the same model unless you override `model` at create time. Swarm workers default to `claude-sonnet-4-6`.
 
 ## Vers VM Operations
 
@@ -101,21 +114,21 @@ Golden commit: a3483186-6e6c-4b7f-8003-b3a42e166399
 The agent can delegate work to other VMs using swarm tools:
 
 ```
-1. vers_swarm_spawn  — branch N VMs from golden commit, start pi on each
-2. vers_swarm_task   — send a task to a specific agent
-3. vers_swarm_wait   — block until agents finish, get results
-4. vers_swarm_read   — read an agent's output
+1. reef_swarm_spawn  — branch N VMs from golden commit, start pi on each
+2. reef_swarm_task   — send a task to a specific agent
+3. reef_swarm_wait   — block until agents finish, get results
+4. reef_swarm_read   — read an agent's output
 5. vers_vm_copy      — pull files from a remote VM back to this one
-6. vers_swarm_teardown — delete all swarm VMs
+6. reef_swarm_teardown — delete all swarm VMs
 ```
 
 Example — build a service on a separate VM:
 ```
-vers_swarm_spawn(commitId: "a3483186...", count: 1, labels: ["builder"])
-vers_swarm_task(agentId: "builder", task: "Build a cron service with tests")
-vers_swarm_wait()
+reef_swarm_spawn(commitId: "a3483186...", count: 1, labels: ["builder"])
+reef_swarm_task(agentId: "builder", task: "Build a cron service with tests")
+reef_swarm_wait()
 vers_vm_copy(src: "vm:<vmId>:/root/reef/services/cron/", dst: "/root/reef/services/cron/")
-vers_swarm_teardown()
+reef_swarm_teardown()
 ```
 
 ### Direct VM Management
@@ -159,9 +172,9 @@ When a task is too big for one agent:
 
 1. **Assess** — what does this actually require?
 2. **Decompose** — break it into pieces that can run in parallel
-3. **Spawn** — `vers_swarm_spawn` with one agent per piece
-4. **Delegate** — `vers_swarm_task` each piece with clear instructions
-5. **Collect** — `vers_swarm_wait` + `vers_vm_copy` to gather results
+3. **Spawn** — `reef_swarm_spawn` with one agent per piece
+4. **Delegate** — `reef_swarm_task` each piece with clear instructions
+5. **Collect** — `reef_swarm_wait` + `vers_vm_copy` to gather results
 6. **Integrate** — merge the pieces together on this VM
 
 You have functionally unlimited VMs. Each one is a full Linux machine with all your tools. Use them.
