@@ -523,7 +523,7 @@ export class SwarmRuntime {
         });
 
         messages.push(`${label}: VM ${vmId.slice(0, 12)} — ready`);
-        this.events.emit("swarm:agent_spawned", { vmId, label, role: "worker", commitId: resolved.commitId });
+        this.events.fire("swarm:agent_spawned", { vmId, label, role: "worker", commitId: resolved.commitId });
       } catch (err) {
         messages.push(`${label}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -642,7 +642,7 @@ export class SwarmRuntime {
     }
 
     await registryDelete(agent.vmId);
-    this.events.emit("swarm:agent_destroyed", { vmId: agent.vmId, label: agentId });
+    this.events.fire("swarm:agent_destroyed", { vmId: agent.vmId, label: agentId });
 
     try {
       await this.deleteVm(agent.vmId);
