@@ -1248,11 +1248,16 @@ branchEl.addEventListener('drop', (e) => {
   }
 });
 
-// Attach button — <label for="branch-file"> natively opens the file picker
-$('branch-file').addEventListener('change', (e) => {
+// Attach button
+$('branch-attach').addEventListener('click', () => {
+  $('branch-file').click();
+});
+
+$('branch-file').addEventListener('change', async (e) => {
   if (e.target.files?.length) {
-    addFiles(e.target.files);
+    const files = Array.from(e.target.files);
     e.target.value = '';
+    await addFiles(files);
   }
 });
 
