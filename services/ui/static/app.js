@@ -462,11 +462,13 @@ async function setConversationClosed(conversationId, closed) {
 // Send
 // =============================================================================
 
-async function submitNewConversation(text) {
+async function submitNewConversation(text, attachments = []) {
+  const body = { task: text };
+  if (attachments.length > 0) body.attachments = attachments;
   const response = await fetch(`${API}/reef/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: text }),
+    body: JSON.stringify(body),
   });
   const data = await response.json();
   if (!response.ok || data.error) throw new Error(data.error || `Failed to create conversation`);
@@ -478,16 +480,17 @@ async function submitNewConversation(text) {
     leafId: data.nodeId,
   });
   await selectConversation(data.id);
-  // Sync conversation list from server after mutation
   syncConversationList();
 }
 
-async function submitConversationReply(conversationId, text) {
+async function submitConversationReply(conversationId, text, attachments = []) {
   addConversationMessage(conversationId, 'user', text);
+  const body = { task: text };
+  if (attachments.length > 0) body.attachments = attachments;
   const response = await fetch(`${API}/reef/conversations/${conversationId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: text }),
+    body: JSON.stringify(body),
   });
   const data = await response.json();
   if (!response.ok || data.error) throw new Error(data.error || `Failed to send reply`);
@@ -503,8 +506,8 @@ async function feedSend() {
   input.value = '';
   resizeInput('branch-text');
   try {
-    const prompt = await uploadAndBuildPrompt(text);
-    await submitNewConversation(prompt);
+    const { prompt, attachments } = await uploadAndBuildPrompt(text);
+    await submitNewConversation(prompt, attachments);
   } catch (error) {
     feedAdd(null, null, 'error', error.message);
   }
@@ -525,8 +528,8 @@ async function branchSend() {
   input.value = '';
   resizeInput('branch-text');
   try {
-    const prompt = await uploadAndBuildPrompt(text);
-    await submitConversationReply(activeConversationId, prompt);
+    const { prompt, attachments } = await uploadAndBuildPrompt(text);
+    await submitConversationReply(activeConversationId, prompt, attachments);
   } catch (error) {
     feedAdd(null, null, 'error', error.message, { taskId: activeConversationId });
   }
@@ -1164,7 +1167,7 @@ function showResizeDialog(disk, neededMib, fileList) {
 }
 
 async function uploadAndBuildPrompt(text) {
-  if (pendingFiles.length === 0) return text;
+  if (pendingFiles.length === 0) return { prompt: text, attachments: [] };
 
   // Upload files to the reef VM
   const formData = new FormData();
@@ -1181,16 +1184,22 @@ async function uploadAndBuildPrompt(text) {
     }
   } catch {}
 
-  // Read text files and include content in prompt
+  // Build prompt text and collect attachment metadata
   const parts = [text];
+  const attachments = [];
   for (let i = 0; i < pendingFiles.length; i++) {
     const file = pendingFiles[i];
     const uploadInfo = uploaded[i];
     const path = uploadInfo?.path || file.name;
     const url = uploadInfo?.url || null;
     const location = url ? `url: ${url}, local: ${path}` : `saved to ${path}`;
+    const mimeType = file.type || null;
 
-    if (file.type.startsWith('text/') || /\.(txt|md|json|js|ts|py|sh|css|html|yaml|yml|toml|csv|xml|sql|rs|go|rb|java|c|cpp|h)$/i.test(file.name)) {
+    // Images: add as attachment for multimodal, plus text reference
+    if (mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(file.name)) {
+      attachments.push({ path, name: file.name, mimeType: mimeType || 'image/png' });
+      parts.push(`\n\n--- Image: ${file.name} (${location}, ${formatSize(file.size)}) ---`);
+    } else if (file.type.startsWith('text/') || /\.(txt|md|json|js|ts|py|sh|css|html|yaml|yml|toml|csv|xml|sql|rs|go|rb|java|c|cpp|h)$/i.test(file.name)) {
       try {
         const content = await file.text();
         parts.push(`\n\n--- File: ${file.name} (${location}) ---\n${content}`);
@@ -1204,7 +1213,7 @@ async function uploadAndBuildPrompt(text) {
 
   pendingFiles.length = 0;
   renderAttachments();
-  return parts.join('');
+  return { prompt: parts.join(''), attachments };
 }
 
 // Drag and drop

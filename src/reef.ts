@@ -114,11 +114,55 @@ function conversationPayload(tree: ConversationTree, id: string) {
   };
 }
 
+interface Attachment {
+  path: string;
+  name: string;
+  mimeType?: string;
+}
+
+function buildRpcMessage(prompt: string, attachments?: Attachment[]): string | any[] {
+  const imageAttachments = (attachments || []).filter(
+    (a) => (a.mimeType || "").startsWith("image/") || /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(a.name),
+  );
+
+  if (imageAttachments.length === 0) return prompt;
+
+  // Build multimodal content blocks (Anthropic API format)
+  const content: any[] = [];
+  for (const att of imageAttachments) {
+    try {
+      const data = readFileSync(att.path);
+      const base64 = data.toString("base64");
+      const ext = att.name.split(".").pop()?.toLowerCase() || "png";
+      const mediaTypes: Record<string, string> = {
+        png: "image/png",
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        gif: "image/gif",
+        webp: "image/webp",
+        svg: "image/svg+xml",
+      };
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: mediaTypes[ext] || att.mimeType || "image/png", data: base64 },
+      });
+    } catch {
+      // File not readable — skip, agent will see the text reference
+    }
+  }
+
+  if (content.length === 0) return prompt;
+
+  content.push({ type: "text", text: prompt });
+  return content;
+}
+
 function spawnTask(
   prompt: string,
   treeContext: string,
   opts: {
     model?: string;
+    attachments?: Attachment[];
     onEvent: (event: any) => void;
     onDone: (output: string) => void;
     onError: (err: string) => void;
@@ -166,13 +210,15 @@ function spawnTask(
 
       prompted = true;
       clearInterval(readyCheck);
-      child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
+      const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+      child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
     }
 
     if (!prompted && event.type === "response" && event.command === "set_model") {
       modelConfigured = true;
       prompted = true;
-      child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
+      const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+      child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
     }
 
     opts.onEvent(event);
@@ -319,12 +365,19 @@ export async function createReef(config: ReefConfig = {}) {
     tree.pruneToLimit();
   }
 
-  function launchTask(task: Task, taskId: string, userNode: import("./tree.js").TreeNode, treeContext: string) {
+  function launchTask(
+    task: Task,
+    taskId: string,
+    userNode: import("./tree.js").TreeNode,
+    treeContext: string,
+    attachments?: Attachment[],
+  ) {
     let lastToolNode: import("./tree.js").TreeNode | null = null;
 
     try {
       spawnTask(task.prompt, treeContext, {
         model: agentModel,
+        attachments,
         onEvent(event) {
           task.events.push(event);
           if (task.events.length > 500) task.events.shift();
@@ -414,7 +467,12 @@ export async function createReef(config: ReefConfig = {}) {
   const auth = bearerAuth();
   reef.use("*", async (c, next) => await auth(c, next));
 
-  async function submitPrompt(opts: { prompt: string; conversationId?: string; parentId?: string | null }) {
+  async function submitPrompt(opts: {
+    prompt: string;
+    attachments?: Attachment[];
+    conversationId?: string;
+    parentId?: string | null;
+  }) {
     const taskId = opts.conversationId || `task-${++taskCounter}-${Date.now()}`;
     const taskExists = !!tree.getTask(taskId);
     const continuing = taskExists;
@@ -459,7 +517,7 @@ export async function createReef(config: ReefConfig = {}) {
     });
     const profile = profileContext();
     const context = profile ? `${profile}\n\n${tree.contextFor(userNode.id)}` : tree.contextFor(userNode.id);
-    launchTask(task, taskId, userNode, context);
+    launchTask(task, taskId, userNode, context, opts.attachments);
 
     return { taskId, userNode, continuing };
   }
@@ -477,8 +535,13 @@ export async function createReef(config: ReefConfig = {}) {
         : typeof body.conversationId === "string"
           ? body.conversationId
           : undefined;
+    const attachments: Attachment[] = Array.isArray(body.attachments)
+      ? body.attachments.filter((a: any) => a?.path && a?.name)
+      : [];
+
     const result = await submitPrompt({
       prompt,
+      attachments: attachments.length > 0 ? attachments : undefined,
       conversationId: taskId,
       parentId: typeof body.parentId === "string" ? body.parentId : undefined,
     });
@@ -522,7 +585,11 @@ export async function createReef(config: ReefConfig = {}) {
       return c.json({ error: "Missing 'task' string in body." }, 400);
     }
 
-    const result = await submitPrompt({ prompt });
+    const attachments: Attachment[] = Array.isArray(body.attachments)
+      ? body.attachments.filter((a: any) => a?.path && a?.name)
+      : [];
+
+    const result = await submitPrompt({ prompt, attachments: attachments.length > 0 ? attachments : undefined });
     const conversation = conversationPayload(tree, result.taskId);
     return c.json(
       {
@@ -545,8 +612,13 @@ export async function createReef(config: ReefConfig = {}) {
       return c.json({ error: "Missing 'task' string in body." }, 400);
     }
 
+    const msgAttachments: Attachment[] = Array.isArray(body.attachments)
+      ? body.attachments.filter((a: any) => a?.path && a?.name)
+      : [];
+
     const result = await submitPrompt({
       prompt,
+      attachments: msgAttachments.length > 0 ? msgAttachments : undefined,
       conversationId: id,
       parentId: typeof body.parentId === "string" ? body.parentId : undefined,
     });
