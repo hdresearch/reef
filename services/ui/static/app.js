@@ -224,6 +224,9 @@ function renderConversationHeader() {
     $('branch-messages').innerHTML = '';
     input.disabled = false;
     send.disabled = false;
+    send.classList.remove('working');
+    send.textContent = '↵';
+    send.title = '';
     input.placeholder = 'Start a new conversation…';
     updateFeedScope();
     return;
@@ -237,6 +240,15 @@ function renderConversationHeader() {
   empty.style.display = conversation.messages.length === 0 ? '' : 'none';
   input.disabled = conversation.closed;
   send.disabled = conversation.closed;
+  if (conversation.working) {
+    send.classList.add('working');
+    send.textContent = '■';
+    send.title = 'Stop agent';
+  } else {
+    send.classList.remove('working');
+    send.textContent = '↵';
+    send.title = '';
+  }
   input.placeholder = conversation.closed ? 'Reopen this conversation to continue talking.' : 'Continue the conversation…';
   updateFeedScope();
 }
@@ -1265,11 +1277,41 @@ $('branch-file').addEventListener('change', async (e) => {
 // Input handlers
 // =============================================================================
 
-$('branch-send').addEventListener('click', branchSend);
+$('branch-send').addEventListener('click', async () => {
+  if (activeConversationId) {
+    const conversation = conversations.get(activeConversationId);
+    if (conversation?.working) {
+      await stopActiveConversation();
+      return;
+    }
+  }
+  branchSend();
+});
+async function stopActiveConversation() {
+  if (!activeConversationId) return;
+  const conversation = conversations.get(activeConversationId);
+  if (!conversation?.working) return;
+  try {
+    await fetch(`${API}/reef/conversations/${activeConversationId}/stop`, { method: 'POST' });
+  } catch {}
+  $('branch-text').focus();
+}
+
 $('branch-text').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    stopActiveConversation();
+    return;
+  }
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     branchSend();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    stopActiveConversation();
   }
 });
 $('branch-text').addEventListener('input', () => resizeInput('branch-text'));

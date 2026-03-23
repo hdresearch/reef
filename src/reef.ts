@@ -41,6 +41,7 @@ interface Task {
   startedAt: number;
   completedAt?: number;
   error?: string;
+  child?: ChildProcess;
 }
 
 // =============================================================================
@@ -358,7 +359,7 @@ export async function createReef(config: ReefConfig = {}) {
     let lastToolNode: import("./tree.js").TreeNode | null = null;
 
     try {
-      spawnTask(task.prompt, treeContext, {
+      task.child = spawnTask(task.prompt, treeContext, {
         model: agentModel,
         attachments,
         onEvent(event) {
@@ -615,6 +616,28 @@ export async function createReef(config: ReefConfig = {}) {
       },
       202,
     );
+  });
+
+  reef.post("/conversations/:id/stop", (c) => {
+    const id = c.req.param("id");
+    const task = piProcesses.get(id);
+    if (!task) return c.json({ error: "not found" }, 404);
+    if (task.status !== "running") return c.json({ error: "not running" }, 400);
+
+    if (task.child && task.child.exitCode === null) {
+      task.child.kill("SIGTERM");
+    }
+    task.status = "done";
+    task.completedAt = Date.now();
+    task.output += "\n\n[Stopped by user]";
+
+    const assistantNode = tree.add(tree.getRef(id) ?? null, "assistant", task.output);
+    tree.setRef(id, assistantNode.id);
+    tree.completeTask(id, task.output);
+    appendConversationLog(id, { type: "task_stopped", nodeId: assistantNode.id });
+    broadcast({ taskId: id, conversationId: id, type: "task_done", output: task.output, stopped: true });
+
+    return c.json({ stopped: true, taskId: id });
   });
 
   reef.post("/conversations/:id/close", (c) => {

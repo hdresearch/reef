@@ -392,8 +392,10 @@ header h1 {
   font-size: 16px; cursor: pointer; align-self: flex-end;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
+  transition: background 0.2s;
 }
 #branch-send:hover { opacity: 0.8; }
+#branch-send.working { background: #d4a017; }
 
 /* ---- Branch messages ---- */
 
