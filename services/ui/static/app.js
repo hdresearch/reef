@@ -1238,11 +1238,7 @@ branchEl.addEventListener('drop', (e) => {
   }
 });
 
-// Attach button
-$('branch-attach').addEventListener('click', () => {
-  $('branch-file').click();
-});
-
+// Attach button — <label for="branch-file"> natively opens the file picker
 $('branch-file').addEventListener('change', (e) => {
   if (e.target.files?.length) {
     addFiles(e.target.files);
