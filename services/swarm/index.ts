@@ -14,7 +14,8 @@
  *   reef_swarm_discover — Recover workers from registry
  *   reef_swarm_teardown — Destroy all workers and VMs
  *
- * Events: swarm:agent_spawned, swarm:agent_destroyed
+ * Events: swarm:agent_spawned, swarm:agent_destroyed, swarm:agent_task_sent,
+ *         swarm:agent_completed, swarm:agent_error, swarm:agent_reconnected
  */
 
 import { ServiceEventBus } from "../../src/core/events.js";

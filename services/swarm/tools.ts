@@ -101,7 +101,12 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
         const qs = params.tail ? `?tail=${params.tail}` : "";
         const result = await client.api<any>("GET", `/swarm/agents/${encodeURIComponent(params.agentId)}/read${qs}`);
         const warning = result.warning ? `\n${result.warning}\n` : "";
-        return client.ok(`[${result.id}] (${result.status}):${warning}\n${result.output}`, {
+        const events = (result.lifecycle || [])
+          .slice(-5)
+          .map((e: any) => `  [${new Date(e.timestamp).toLocaleTimeString()}] ${e.type}: ${e.detail}`)
+          .join("\n");
+        const eventsSection = events ? `\nRecent events:\n${events}` : "";
+        return client.ok(`[${result.id}] (${result.status}):${warning}${eventsSection}\n${result.output}`, {
           agentId: result.id,
           status: result.status,
           outputLength: result.outputLength,
@@ -131,7 +136,15 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           timeoutSeconds: params.timeoutSeconds,
         });
 
-        const agentResults = result.agents.map((a: any) => `=== ${a.id} [${a.status}] ===\n${a.output}\n`).join("\n");
+        const agentResults = result.agents
+          .map((a: any) => {
+            const events = (a.lifecycle || [])
+              .slice(-3)
+              .map((e: any) => `  [${e.type}] ${e.detail}`)
+              .join("\n");
+            return `=== ${a.id} [${a.status}] ===\n${events ? `${events}\n` : ""}${a.output}\n`;
+          })
+          .join("\n");
 
         const header = result.timedOut
           ? `TIMED OUT after ${result.elapsed}s`

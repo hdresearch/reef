@@ -27,6 +27,13 @@ import {
 // Types
 // =============================================================================
 
+export interface AgentEvent {
+  type: "spawned" | "task_sent" | "completed" | "error" | "watchdog_alert" | "destroyed";
+  timestamp: number;
+  detail: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface SwarmAgent {
   id: string;
   vmId: string;
@@ -35,7 +42,9 @@ export interface SwarmAgent {
   task?: string;
   lastOutput: string;
   events: string[];
+  lifecycle: AgentEvent[];
   lastActivityAt: number;
+  taskStartedAt?: number;
   createdAt: number;
 }
 
@@ -399,11 +408,76 @@ export class SwarmRuntime {
           );
           agent.status = "done";
           this.clearWatchdog(id);
+          this.pushLifecycle(agent, {
+            type: "watchdog_alert",
+            timestamp: Date.now(),
+            detail: `Silent for ${Math.round(silentMs / 1000)}s, auto-completed`,
+            metadata: { silentMs },
+          });
+          this.events.fire("swarm:agent_completed", {
+            vmId: agent.vmId,
+            label: id,
+            task: agent.task,
+            outputLength: agent.lastOutput.length,
+            elapsed: Math.round(silentMs / 1000),
+          });
+          this.events.fire("reef:event", {
+            type: "swarm_watchdog_alert",
+            source: "swarm",
+            name: id,
+            vmId: agent.vmId,
+          });
         }
       }
     }, SwarmRuntime.ACTIVITY_CHECK_INTERVAL_MS);
 
     if (this.activityChecker.unref) this.activityChecker.unref();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle helpers
+  // ---------------------------------------------------------------------------
+
+  private pushLifecycle(agent: SwarmAgent, event: AgentEvent): void {
+    agent.lifecycle.push(event);
+    if (agent.lifecycle.length > 50) agent.lifecycle.shift();
+  }
+
+  private wireAgentEvents(agent: SwarmAgent, handle: RpcHandle): void {
+    handle.onEvent((event) => {
+      agent.events.push(JSON.stringify(event));
+      if (agent.events.length > 200) agent.events.shift();
+      agent.lastActivityAt = Date.now();
+
+      if (event.type === "agent_start") {
+        agent.status = "working";
+      } else if (event.type === "agent_end") {
+        const elapsed = agent.taskStartedAt ? Math.round((Date.now() - agent.taskStartedAt) / 1000) : 0;
+        agent.status = "done";
+        this.clearWatchdog(agent.id);
+        this.pushLifecycle(agent, {
+          type: "completed",
+          timestamp: Date.now(),
+          detail: `Completed (${agent.lastOutput.length} chars, ${elapsed}s)`,
+          metadata: { outputLength: agent.lastOutput.length, elapsed },
+        });
+        this.events.fire("swarm:agent_completed", {
+          vmId: agent.vmId,
+          label: agent.label,
+          task: agent.task,
+          outputLength: agent.lastOutput.length,
+          elapsed,
+        });
+        this.events.fire("reef:event", {
+          type: "swarm_agent_completed",
+          source: "swarm",
+          name: agent.label,
+          vmId: agent.vmId,
+        });
+      } else if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+        agent.lastOutput += event.assistantMessageEvent.delta;
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -489,28 +563,22 @@ export class SwarmRuntime {
           status: "idle",
           lastOutput: "",
           events: [],
+          lifecycle: [],
           lastActivityAt: Date.now(),
           createdAt: Date.now(),
         };
 
-        // Wire up event handler
-        handle.onEvent((event) => {
-          agent.events.push(JSON.stringify(event));
-          if (agent.events.length > 200) agent.events.shift();
-          agent.lastActivityAt = Date.now();
-
-          if (event.type === "agent_start") {
-            agent.status = "working";
-          } else if (event.type === "agent_end") {
-            agent.status = "done";
-            this.clearWatchdog(label);
-          } else if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-            agent.lastOutput += event.assistantMessageEvent.delta;
-          }
-        });
-
+        this.wireAgentEvents(agent, handle);
         this.agents.set(label, agent);
         this.handles.set(label, handle);
+
+        // Lifecycle + events
+        this.pushLifecycle(agent, {
+          type: "spawned",
+          timestamp: Date.now(),
+          detail: `Spawned on VM ${vmId.slice(0, 12)}`,
+          metadata: { vmId, commitId: resolved.commitId },
+        });
 
         // Register in coordination registry
         await registryPost({
@@ -524,6 +592,12 @@ export class SwarmRuntime {
 
         messages.push(`${label}: VM ${vmId.slice(0, 12)} — ready`);
         this.events.fire("swarm:agent_spawned", { vmId, label, role: "worker", commitId: resolved.commitId });
+        this.events.fire("reef:event", {
+          type: "swarm_agent_spawned",
+          source: "swarm",
+          name: label,
+          vmId,
+        });
       } catch (err) {
         messages.push(`${label}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -544,9 +618,25 @@ export class SwarmRuntime {
     agent.status = "working";
     agent.lastOutput = "";
     agent.lastActivityAt = Date.now();
+    agent.taskStartedAt = Date.now();
 
     handle.send({ type: "prompt", message: task });
     this.startWatchdog(agentId);
+
+    this.pushLifecycle(agent, {
+      type: "task_sent",
+      timestamp: Date.now(),
+      detail: `Task: ${task.slice(0, 80)}`,
+      metadata: { task },
+    });
+    this.events.fire("swarm:agent_task_sent", { vmId: agent.vmId, label: agentId, task });
+    this.events.fire("reef:event", {
+      type: "swarm_task_sent",
+      source: "swarm",
+      name: agentId,
+      prompt: task.slice(0, 120),
+      vmId: agent.vmId,
+    });
   }
 
   readOutput(agentId: string, tail?: number): { agent: SwarmAgent; output: string; warning?: string } {
@@ -576,7 +666,7 @@ export class SwarmRuntime {
   ): Promise<{
     elapsed: number;
     timedOut: boolean;
-    agents: Array<{ id: string; status: string; output: string }>;
+    agents: Array<{ id: string; status: string; output: string; lifecycle: AgentEvent[] }>;
   }> {
     const timeout = timeoutSeconds * 1000;
     const startTime = Date.now();
@@ -619,7 +709,12 @@ export class SwarmRuntime {
 
     const agents = targetIds.map((id) => {
       const a = this.agents.get(id);
-      return { id, status: a?.status || "unknown", output: a?.lastOutput || "(no output)" };
+      return {
+        id,
+        status: a?.status || "unknown",
+        output: a?.lastOutput || "(no output)",
+        lifecycle: a?.lifecycle.slice(-10) || [],
+      };
     });
 
     return { elapsed, timedOut, agents };
@@ -641,8 +736,20 @@ export class SwarmRuntime {
       this.handles.delete(agentId);
     }
 
+    this.pushLifecycle(agent, {
+      type: "destroyed",
+      timestamp: Date.now(),
+      detail: `Destroyed VM ${agent.vmId.slice(0, 12)}`,
+    });
+
     await registryDelete(agent.vmId);
     this.events.fire("swarm:agent_destroyed", { vmId: agent.vmId, label: agentId });
+    this.events.fire("reef:event", {
+      type: "swarm_agent_destroyed",
+      source: "swarm",
+      name: agentId,
+      vmId: agent.vmId,
+    });
 
     try {
       await this.deleteVm(agent.vmId);
@@ -690,25 +797,29 @@ export class SwarmRuntime {
           status: "idle",
           lastOutput: "",
           events: [],
+          lifecycle: [],
           lastActivityAt: Date.now(),
           createdAt: Date.now(),
         };
 
-        handle.onEvent((event) => {
-          agent.events.push(JSON.stringify(event));
-          if (agent.events.length > 200) agent.events.shift();
-          agent.lastActivityAt = Date.now();
-          if (event.type === "agent_start") agent.status = "working";
-          else if (event.type === "agent_end") {
-            agent.status = "done";
-            this.clearWatchdog(label);
-          } else if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-            agent.lastOutput += event.assistantMessageEvent.delta;
-          }
-        });
-
+        this.wireAgentEvents(agent, handle);
         this.agents.set(label, agent);
         this.handles.set(label, handle);
+
+        this.pushLifecycle(agent, {
+          type: "spawned",
+          timestamp: Date.now(),
+          detail: `Reconnected to VM ${vmId.slice(0, 12)}`,
+          metadata: { vmId, reconnected: true },
+        });
+        this.events.fire("swarm:agent_reconnected", { vmId, label, role: "worker" });
+        this.events.fire("reef:event", {
+          type: "swarm_agent_reconnected",
+          source: "swarm",
+          name: label,
+          vmId,
+        });
+
         return `${label}: VM ${vmId.slice(0, 12)} — reconnected`;
       }),
     );
@@ -785,11 +896,49 @@ export class SwarmRuntime {
         if (aliveCheck.stdout.includes("dead")) {
           console.error(`[swarm] Agent '${agentId}' pi-rpc session is dead — marking as error`);
           agent.status = "error";
+          this.pushLifecycle(agent, {
+            type: "error",
+            timestamp: Date.now(),
+            detail: "pi-rpc session dead",
+            metadata: { lastActivityAt: agent.lastActivityAt },
+          });
+          this.events.fire("swarm:agent_error", {
+            vmId: agent.vmId,
+            label: agentId,
+            reason: "rpc_session_dead",
+            lastActivityAt: agent.lastActivityAt,
+          });
+          this.events.fire("reef:event", {
+            type: "swarm_agent_error",
+            source: "swarm",
+            name: agentId,
+            error: "pi-rpc session dead",
+            vmId: agent.vmId,
+          });
         } else {
           console.error(
             `[swarm] Agent '${agentId}' pi alive but silent for ${Math.round(staleDuration / 1000)}s — marking as done`,
           );
           agent.status = "done";
+          this.pushLifecycle(agent, {
+            type: "watchdog_alert",
+            timestamp: Date.now(),
+            detail: `Silent for ${Math.round(staleDuration / 1000)}s, auto-completed`,
+            metadata: { staleDurationMs: staleDuration },
+          });
+          this.events.fire("swarm:agent_completed", {
+            vmId: agent.vmId,
+            label: agentId,
+            task: agent.task,
+            outputLength: agent.lastOutput.length,
+            elapsed: Math.round(staleDuration / 1000),
+          });
+          this.events.fire("reef:event", {
+            type: "swarm_watchdog_alert",
+            source: "swarm",
+            name: agentId,
+            vmId: agent.vmId,
+          });
         }
         this.clearWatchdog(agentId);
       } catch (err) {

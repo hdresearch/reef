@@ -49,6 +49,7 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
         eventCount: a.events.length,
         lastActivityAt: a.lastActivityAt,
         createdAt: a.createdAt,
+        lifecycle: a.lifecycle.slice(-5),
       }));
     return c.json({ agents, count: agents.length, summary: getRuntime().summary() });
   });
@@ -66,6 +67,7 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
       eventCount: agent.events.length,
       lastActivityAt: agent.lastActivityAt,
       createdAt: agent.createdAt,
+      lifecycle: agent.lifecycle,
     });
   });
 
@@ -96,6 +98,7 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
         warning,
         outputLength: agent.lastOutput.length,
         lastActivityAt: agent.lastActivityAt,
+        lifecycle: agent.lifecycle.slice(-10),
       });
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);

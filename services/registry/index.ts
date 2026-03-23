@@ -84,6 +84,58 @@ const registry: ServiceModule = {
       if (!data?.vmId) return;
       store.deregister(data.vmId);
     });
+
+    ctx.events.on("swarm:agent_task_sent", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "working" });
+      } catch {
+        // Ignore if VM not yet registered.
+      }
+    });
+
+    ctx.events.on("swarm:agent_completed", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "running" });
+      } catch {
+        // Ignore out-of-order events.
+      }
+    });
+
+    ctx.events.on("swarm:agent_error", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "error" });
+      } catch {
+        // Ignore.
+      }
+    });
+
+    ctx.events.on("swarm:agent_reconnected", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "running" });
+      } catch {
+        // Not registered yet — register it.
+        try {
+          store.register({
+            id: data.vmId,
+            name: data.label,
+            role: "worker",
+            address: `${data.vmId}.vm.vers.sh`,
+            parentVmId: process.env.VERS_VM_ID || undefined,
+            registeredBy: "swarm-service",
+            metadata: {
+              role: "worker",
+              registeredVia: "swarm:agent_reconnected",
+            },
+          });
+        } catch {
+          // Best effort.
+        }
+      }
+    });
   },
 
   store: {
