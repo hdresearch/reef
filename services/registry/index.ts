@@ -23,7 +23,7 @@ const registry: ServiceModule = {
 
   init(ctx: ServiceContext) {
     ctx.events.on("lieutenant:created", (data: any) => {
-      if (!data?.vmId || data.isLocal) return;
+      if (!data?.vmId) return;
       store.register({
         id: data.vmId,
         name: data.name,
@@ -61,6 +61,80 @@ const registry: ServiceModule = {
     ctx.events.on("lieutenant:destroyed", (data: any) => {
       if (!data?.vmId) return;
       store.deregister(data.vmId);
+    });
+
+    ctx.events.on("swarm:agent_spawned", (data: any) => {
+      if (!data?.vmId) return;
+      store.register({
+        id: data.vmId,
+        name: data.label,
+        role: "worker",
+        address: `${data.vmId}.vm.vers.sh`,
+        parentVmId: process.env.VERS_VM_ID || undefined,
+        registeredBy: "swarm-service",
+        metadata: {
+          role: "worker",
+          commitId: data.commitId,
+          registeredVia: "swarm:agent_spawned",
+        },
+      });
+    });
+
+    ctx.events.on("swarm:agent_destroyed", (data: any) => {
+      if (!data?.vmId) return;
+      store.deregister(data.vmId);
+    });
+
+    ctx.events.on("swarm:agent_task_sent", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "working" });
+      } catch {
+        // Ignore if VM not yet registered.
+      }
+    });
+
+    ctx.events.on("swarm:agent_completed", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "running" });
+      } catch {
+        // Ignore out-of-order events.
+      }
+    });
+
+    ctx.events.on("swarm:agent_error", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "error" });
+      } catch {
+        // Ignore.
+      }
+    });
+
+    ctx.events.on("swarm:agent_reconnected", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "running" });
+      } catch {
+        // Not registered yet — register it.
+        try {
+          store.register({
+            id: data.vmId,
+            name: data.label,
+            role: "worker",
+            address: `${data.vmId}.vm.vers.sh`,
+            parentVmId: process.env.VERS_VM_ID || undefined,
+            registeredBy: "swarm-service",
+            metadata: {
+              role: "worker",
+              registeredVia: "swarm:agent_reconnected",
+            },
+          });
+        } catch {
+          // Best effort.
+        }
+      }
     });
   },
 

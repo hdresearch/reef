@@ -25,17 +25,13 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     description: [
       "Spawn a persistent agent session (lieutenant).",
       "Lieutenants persist across tasks, accumulate context, and support multi-turn interaction.",
-      "Remote mode is the default and uses the explicit commitId, configured env golden, or root Reef golden commit.",
-      "Remote lieutenants are agent VMs running punkin + pi-vers + the root Reef extension, not standalone Reef nodes.",
-      "Set local=true to run as a local subprocess instead.",
+      "Uses the explicit commitId, configured env golden, or root Reef golden commit.",
+      "Lieutenants are agent VMs running punkin + pi-vers + the root Reef extension, not standalone Reef nodes.",
     ].join(" "),
     parameters: Type.Object({
       name: Type.String({ description: "Short name for this lieutenant (e.g., 'infra', 'billing')" }),
       role: Type.String({ description: "Role description — becomes the lieutenant's system prompt context" }),
-      local: Type.Optional(
-        Type.Boolean({ description: "Run locally as a subprocess instead of on a VM (default: false)" }),
-      ),
-      model: Type.Optional(Type.String({ description: "Model ID (default: claude-opus-4-6-thinking)" })),
+      model: Type.Optional(Type.String({ description: "Model ID (default: claude-opus-4-6)" })),
       commitId: Type.Optional(
         Type.String({
           description: "Golden image commit ID for VM creation (optional if a default golden is configured)",
@@ -49,12 +45,11 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
         const result = await client.api<any>("POST", "/lieutenant/lieutenants", {
           name: params.name,
           role: params.role,
-          local: params.local ?? false,
           model: params.model,
           commitId: params.commitId,
           llmProxyKey: params.llmProxyKey,
         });
-        const loc = result.isLocal ? "[local]" : `[VM: ${result.vmId}]`;
+        const loc = `[VM: ${result.vmId}]`;
         return client.ok(
           [`Lieutenant "${result.name}" is ready ${loc}.`, `  Role: ${result.role}`, `  Status: ${result.status}`].join(
             "\n",
@@ -162,7 +157,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
                   : lt.status === "error"
                     ? "X"
                     : "o";
-          const location = lt.isLocal ? "local" : `VM: ${lt.vmId.slice(0, 12)}`;
+          const location = `VM: ${lt.vmId.slice(0, 12)}`;
           return [
             `${icon} ${lt.name} [${lt.status}]`,
             `  Role: ${lt.role}`,

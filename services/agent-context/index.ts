@@ -120,6 +120,65 @@ const agentContext: ServiceModule = {
       },
     });
 
+    pi.registerTool({
+      name: "reef_files",
+      label: "Reef: List Files",
+      description: "List files uploaded to the root reef server. Returns file names, URLs, and sizes.",
+      parameters: Type.Object({}),
+      async execute() {
+        if (!client.getBaseUrl()) return client.noUrl();
+        try {
+          const result = await client.api<{ files: any[]; count: number }>("GET", "/reef/files");
+          if (result.count === 0) return client.ok("No files uploaded.", { files: [] });
+          const lines = result.files.map((f: any) => `  ${f.name} (${f.size} bytes) — ${f.url}`);
+          return client.ok(`${result.count} file(s):\n${lines.join("\n")}`, { files: result.files });
+        } catch (error) {
+          return client.err(error instanceof Error ? error.message : String(error));
+        }
+      },
+    });
+
+    pi.registerTool({
+      name: "reef_download",
+      label: "Reef: Download File",
+      description:
+        "Download a file from the root reef server to the local filesystem. Use this when a task references a file uploaded to the reef.",
+      parameters: Type.Object({
+        url: Type.String({ description: "The file URL path, e.g. /reef/files/1234-report.pdf" }),
+        dest: Type.Optional(
+          Type.String({ description: "Local destination path (defaults to filename in current directory)" }),
+        ),
+      }),
+      async execute(_id, params) {
+        if (!client.getBaseUrl()) return client.noUrl();
+        try {
+          const base = client.getBaseUrl()!;
+          const headers: Record<string, string> = {};
+          const token = process.env.VERS_AUTH_TOKEN;
+          if (token) headers.Authorization = `Bearer ${token}`;
+
+          const res = await fetch(`${base}${params.url}`, { headers });
+          if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            return client.err(`Download failed (${res.status}): ${text}`);
+          }
+
+          const buffer = Buffer.from(await res.arrayBuffer());
+          const filename = params.url.split("/").pop() || "download";
+          const destPath = params.dest || filename;
+
+          const { writeFileSync: writeFs, mkdirSync: mkFs } = await import("node:fs");
+          const { dirname } = await import("node:path");
+          mkFs(dirname(destPath), { recursive: true });
+          writeFs(destPath, buffer);
+
+          return client.ok(`Downloaded ${buffer.length} bytes to ${destPath}`, { path: destPath, size: buffer.length });
+        } catch (error) {
+          return client.err(error instanceof Error ? error.message : String(error));
+        }
+      },
+    });
+
     if (client.agentRole !== "lieutenant") return;
 
     pi.registerTool({

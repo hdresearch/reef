@@ -224,6 +224,9 @@ function renderConversationHeader() {
     $('branch-messages').innerHTML = '';
     input.disabled = false;
     send.disabled = false;
+    send.classList.remove('working');
+    send.textContent = '↵';
+    send.title = '';
     input.placeholder = 'Start a new conversation…';
     updateFeedScope();
     return;
@@ -237,6 +240,15 @@ function renderConversationHeader() {
   empty.style.display = conversation.messages.length === 0 ? '' : 'none';
   input.disabled = conversation.closed;
   send.disabled = conversation.closed;
+  if (conversation.working) {
+    send.classList.add('working');
+    send.textContent = '■';
+    send.title = 'Stop agent';
+  } else {
+    send.classList.remove('working');
+    send.textContent = '↵';
+    send.title = '';
+  }
   input.placeholder = conversation.closed ? 'Reopen this conversation to continue talking.' : 'Continue the conversation…';
   updateFeedScope();
 }
@@ -462,11 +474,13 @@ async function setConversationClosed(conversationId, closed) {
 // Send
 // =============================================================================
 
-async function submitNewConversation(text) {
+async function submitNewConversation(text, attachments = []) {
+  const body = { task: text };
+  if (attachments.length > 0) body.attachments = attachments;
   const response = await fetch(`${API}/reef/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: text }),
+    body: JSON.stringify(body),
   });
   const data = await response.json();
   if (!response.ok || data.error) throw new Error(data.error || `Failed to create conversation`);
@@ -478,16 +492,17 @@ async function submitNewConversation(text) {
     leafId: data.nodeId,
   });
   await selectConversation(data.id);
-  // Sync conversation list from server after mutation
   syncConversationList();
 }
 
-async function submitConversationReply(conversationId, text) {
+async function submitConversationReply(conversationId, text, attachments = []) {
   addConversationMessage(conversationId, 'user', text);
+  const body = { task: text };
+  if (attachments.length > 0) body.attachments = attachments;
   const response = await fetch(`${API}/reef/conversations/${conversationId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task: text }),
+    body: JSON.stringify(body),
   });
   const data = await response.json();
   if (!response.ok || data.error) throw new Error(data.error || `Failed to send reply`);
@@ -503,8 +518,8 @@ async function feedSend() {
   input.value = '';
   resizeInput('branch-text');
   try {
-    const prompt = await uploadAndBuildPrompt(text);
-    await submitNewConversation(prompt);
+    const { prompt, attachments } = await uploadAndBuildPrompt(text);
+    await submitNewConversation(prompt, attachments);
   } catch (error) {
     feedAdd(null, null, 'error', error.message);
   }
@@ -525,8 +540,8 @@ async function branchSend() {
   input.value = '';
   resizeInput('branch-text');
   try {
-    const prompt = await uploadAndBuildPrompt(text);
-    await submitConversationReply(activeConversationId, prompt);
+    const { prompt, attachments } = await uploadAndBuildPrompt(text);
+    await submitConversationReply(activeConversationId, prompt, attachments);
   } catch (error) {
     feedAdd(null, null, 'error', error.message, { taskId: activeConversationId });
   }
@@ -951,7 +966,8 @@ async function discoverPanels() {
     if (!response.ok) return;
     const data = await response.json();
     const services = data.modules || data.services || [];
-    const results = await Promise.allSettled(services.filter((service) => service.name !== 'ui').map((service) => fetchPanel(service.name)));
+    const SKIP_PANELS = new Set(['ui', 'agent-context', 'store', 'bootloader', 'vers-config']);
+    const results = await Promise.allSettled(services.filter((service) => !SKIP_PANELS.has(service.name)).map((service) => fetchPanel(service.name)));
     const panels = results.filter((result) => result.status === 'fulfilled' && result.value).map((result) => result.value);
 
     for (const panel of panels) {
@@ -1163,7 +1179,7 @@ function showResizeDialog(disk, neededMib, fileList) {
 }
 
 async function uploadAndBuildPrompt(text) {
-  if (pendingFiles.length === 0) return text;
+  if (pendingFiles.length === 0) return { prompt: text, attachments: [] };
 
   // Upload files to the reef VM
   const formData = new FormData();
@@ -1180,28 +1196,36 @@ async function uploadAndBuildPrompt(text) {
     }
   } catch {}
 
-  // Read text files and include content in prompt
+  // Build prompt text and collect attachment metadata
   const parts = [text];
+  const attachments = [];
   for (let i = 0; i < pendingFiles.length; i++) {
     const file = pendingFiles[i];
     const uploadInfo = uploaded[i];
     const path = uploadInfo?.path || file.name;
+    const url = uploadInfo?.url || null;
+    const location = url ? `url: ${url}, local: ${path}` : `saved to ${path}`;
+    const mimeType = file.type || null;
 
-    if (file.type.startsWith('text/') || /\.(txt|md|json|js|ts|py|sh|css|html|yaml|yml|toml|csv|xml|sql|rs|go|rb|java|c|cpp|h)$/i.test(file.name)) {
+    // Images: add as attachment for multimodal, plus text reference
+    if (mimeType?.startsWith('image/') || /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(file.name)) {
+      attachments.push({ path, name: file.name, mimeType: mimeType || 'image/png' });
+      parts.push(`\n\n--- Image: ${file.name} (${location}, ${formatSize(file.size)}) ---`);
+    } else if (file.type.startsWith('text/') || /\.(txt|md|json|js|ts|py|sh|css|html|yaml|yml|toml|csv|xml|sql|rs|go|rb|java|c|cpp|h)$/i.test(file.name)) {
       try {
         const content = await file.text();
-        parts.push(`\n\n--- File: ${file.name} (saved to ${path}) ---\n${content}`);
+        parts.push(`\n\n--- File: ${file.name} (${location}) ---\n${content}`);
       } catch {
-        parts.push(`\n\n--- File: ${file.name} (saved to ${path}, ${formatSize(file.size)}) ---`);
+        parts.push(`\n\n--- File: ${file.name} (${location}, ${formatSize(file.size)}) ---`);
       }
     } else {
-      parts.push(`\n\n--- File: ${file.name} (saved to ${path}, ${formatSize(file.size)}) ---`);
+      parts.push(`\n\n--- File: ${file.name} (${location}, ${formatSize(file.size)}) ---`);
     }
   }
 
   pendingFiles.length = 0;
   renderAttachments();
-  return parts.join('');
+  return { prompt: parts.join(''), attachments };
 }
 
 // Drag and drop
@@ -1241,10 +1265,11 @@ $('branch-attach').addEventListener('click', () => {
   $('branch-file').click();
 });
 
-$('branch-file').addEventListener('change', (e) => {
+$('branch-file').addEventListener('change', async (e) => {
   if (e.target.files?.length) {
-    addFiles(e.target.files);
+    const files = Array.from(e.target.files);
     e.target.value = '';
+    await addFiles(files);
   }
 });
 
@@ -1252,11 +1277,41 @@ $('branch-file').addEventListener('change', (e) => {
 // Input handlers
 // =============================================================================
 
-$('branch-send').addEventListener('click', branchSend);
+$('branch-send').addEventListener('click', async () => {
+  if (activeConversationId) {
+    const conversation = conversations.get(activeConversationId);
+    if (conversation?.working) {
+      await stopActiveConversation();
+      return;
+    }
+  }
+  branchSend();
+});
+async function stopActiveConversation() {
+  if (!activeConversationId) return;
+  const conversation = conversations.get(activeConversationId);
+  if (!conversation?.working) return;
+  try {
+    await fetch(`${API}/reef/conversations/${activeConversationId}/stop`, { method: 'POST' });
+  } catch {}
+  $('branch-text').focus();
+}
+
 $('branch-text').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    stopActiveConversation();
+    return;
+  }
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     branchSend();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    stopActiveConversation();
   }
 });
 $('branch-text').addEventListener('input', () => resizeInput('branch-text'));

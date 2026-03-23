@@ -1,14 +1,10 @@
 /**
  * RPC agent management — spawns and manages pi processes for lieutenants.
  *
- * Two modes:
- *   - Local: pi child process on the same machine (no VM required)
- *   - Remote: pi on a Vers VM via SSH + RPC (FIFOs + tmux)
+ * Lieutenants run on Vers VMs via SSH + RPC (FIFOs + tmux).
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { loadVersKeyFromDisk, resolveAgentBinary, VersClient } from "@hdresearch/pi-v/core";
 
 const RPC_DIR = "/tmp/pi-rpc";
@@ -26,13 +22,6 @@ export interface RpcHandle {
   isAlive: () => boolean;
   reconnectTail?: () => void;
   suspendTail?: () => void;
-}
-
-export interface LocalRpcOptions {
-  llmProxyKey?: string;
-  systemPrompt?: string;
-  model?: string;
-  cwd?: string;
 }
 
 export interface RemoteRpcOptions {
@@ -351,108 +340,6 @@ export async function reconnectRemoteRpcAgent(vmId: string): Promise<RpcHandle> 
     throw new Error(`Pi RPC session not found on VM ${vmId}`);
   }
   return createRemoteHandle(vmId, sshBaseArgs, true);
-}
-
-export async function startLocalRpcAgent(name: string, opts: LocalRpcOptions): Promise<RpcHandle> {
-  const ltDir = join(process.cwd(), "data", "lieutenants", name);
-  const workDir = opts.cwd || join(ltDir, "workspace");
-  const homeDir = join(ltDir, "home");
-
-  if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
-  if (!existsSync(homeDir)) mkdirSync(homeDir, { recursive: true });
-
-  const piPath = resolveAgentBinary();
-  const args = ["--mode", "rpc", "--no-session"];
-
-  if (opts.systemPrompt) {
-    args.push("--append-system-prompt", opts.systemPrompt);
-  }
-
-  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-  if (opts.model) env.PI_MODEL = opts.model;
-  if (opts.llmProxyKey) env.LLM_PROXY_KEY = opts.llmProxyKey;
-  if (!env.VERS_PARENT_AGENT) env.VERS_PARENT_AGENT = process.env.VERS_AGENT_NAME || "reef";
-  if (!env.PI_PATH) env.PI_PATH = piPath;
-  env.HOME = homeDir;
-  env.USERPROFILE = homeDir;
-
-  const child: ChildProcess = spawn(piPath, args, {
-    cwd: workDir,
-    env,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-
-  if (!child.stdin || !child.stdout || !child.stderr) {
-    throw new Error(`Failed to spawn pi process for lieutenant "${name}"`);
-  }
-
-  const handlers = createHandlerSet();
-  let killed = false;
-  let lineBuffer = "";
-
-  child.stdout.on("data", (chunk: Buffer) => {
-    lineBuffer += chunk.toString();
-    const lines = lineBuffer.split("\n");
-    lineBuffer = lines.pop() || "";
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        handlers.emit(JSON.parse(line));
-      } catch {
-        // Ignore non-JSON output from pi.
-      }
-    }
-  });
-
-  child.stderr.on("data", (chunk: Buffer) => {
-    const msg = chunk.toString().trim();
-    if (msg) console.error(`  [lt:${name}] ${msg}`);
-  });
-
-  child.on("exit", (code) => {
-    if (!killed) {
-      console.error(`  [lt:${name}] pi exited with code ${code}`);
-    }
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  if (child.exitCode !== null) {
-    throw new Error(`Pi process for "${name}" exited immediately (code ${child.exitCode})`);
-  }
-
-  return {
-    send(cmd: object) {
-      if (killed || child.exitCode !== null) return;
-      child.stdin?.write(`${JSON.stringify(cmd)}\n`);
-    },
-    onEvent(handler: EventHandler) {
-      return handlers.subscribe(handler);
-    },
-    async kill() {
-      killed = true;
-      if (child.exitCode !== null) return;
-      child.kill("SIGTERM");
-      await new Promise<void>((resolve) => {
-        const timeout = setTimeout(() => {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            // Ignore forced shutdown race.
-          }
-          resolve();
-        }, 3000);
-        child.on("exit", () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-      });
-    },
-    vmId: `local-${name}`,
-    isAlive() {
-      return !killed && child.exitCode === null;
-    },
-  };
 }
 
 export function waitForRpcReady(handle: RpcHandle, timeoutMs = 30000): Promise<boolean> {

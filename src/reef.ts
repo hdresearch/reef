@@ -20,7 +20,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAgentBinary } from "@hdresearch/pi-v/core";
 import { Hono } from "hono";
@@ -41,6 +41,7 @@ interface Task {
   startedAt: number;
   completedAt?: number;
   error?: string;
+  child?: ChildProcess;
 }
 
 // =============================================================================
@@ -114,11 +115,38 @@ function conversationPayload(tree: ConversationTree, id: string) {
   };
 }
 
+interface Attachment {
+  path: string;
+  name: string;
+  mimeType?: string;
+}
+
+function buildRpcMessage(prompt: string, attachments?: Attachment[]): string {
+  const imageAttachments = (attachments || []).filter(
+    (a) => (a.mimeType || "").startsWith("image/") || /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(a.name),
+  );
+
+  if (imageAttachments.length === 0) return prompt;
+
+  // Punkin v1_rc5 RPC only accepts string messages (no multimodal content blocks).
+  // Instruct the agent to use the Read tool to view attached images.
+  const cwd = process.env.REEF_DIR ?? process.cwd();
+  const imageInstructions = imageAttachments
+    .map((a) => {
+      const absPath = a.path.startsWith("/") ? a.path : join(cwd, a.path);
+      return `[Attached image: ${a.name} — Use the Read tool on "${absPath}" to view it]`;
+    })
+    .join("\n");
+
+  return `${imageInstructions}\n\n${prompt}`;
+}
+
 function spawnTask(
   prompt: string,
   treeContext: string,
   opts: {
     model?: string;
+    attachments?: Attachment[];
     onEvent: (event: any) => void;
     onDone: (output: string) => void;
     onError: (err: string) => void;
@@ -166,13 +194,15 @@ function spawnTask(
 
       prompted = true;
       clearInterval(readyCheck);
-      child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
+      const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+      child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
     }
 
     if (!prompted && event.type === "response" && event.command === "set_model") {
       modelConfigured = true;
       prompted = true;
-      child.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
+      const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+      child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
     }
 
     opts.onEvent(event);
@@ -319,12 +349,19 @@ export async function createReef(config: ReefConfig = {}) {
     tree.pruneToLimit();
   }
 
-  function launchTask(task: Task, taskId: string, userNode: import("./tree.js").TreeNode, treeContext: string) {
+  function launchTask(
+    task: Task,
+    taskId: string,
+    userNode: import("./tree.js").TreeNode,
+    treeContext: string,
+    attachments?: Attachment[],
+  ) {
     let lastToolNode: import("./tree.js").TreeNode | null = null;
 
     try {
-      spawnTask(task.prompt, treeContext, {
+      task.child = spawnTask(task.prompt, treeContext, {
         model: agentModel,
+        attachments,
         onEvent(event) {
           task.events.push(event);
           if (task.events.length > 500) task.events.shift();
@@ -414,7 +451,12 @@ export async function createReef(config: ReefConfig = {}) {
   const auth = bearerAuth();
   reef.use("*", async (c, next) => await auth(c, next));
 
-  async function submitPrompt(opts: { prompt: string; conversationId?: string; parentId?: string | null }) {
+  async function submitPrompt(opts: {
+    prompt: string;
+    attachments?: Attachment[];
+    conversationId?: string;
+    parentId?: string | null;
+  }) {
     const taskId = opts.conversationId || `task-${++taskCounter}-${Date.now()}`;
     const taskExists = !!tree.getTask(taskId);
     const continuing = taskExists;
@@ -459,7 +501,7 @@ export async function createReef(config: ReefConfig = {}) {
     });
     const profile = profileContext();
     const context = profile ? `${profile}\n\n${tree.contextFor(userNode.id)}` : tree.contextFor(userNode.id);
-    launchTask(task, taskId, userNode, context);
+    launchTask(task, taskId, userNode, context, opts.attachments);
 
     return { taskId, userNode, continuing };
   }
@@ -477,8 +519,13 @@ export async function createReef(config: ReefConfig = {}) {
         : typeof body.conversationId === "string"
           ? body.conversationId
           : undefined;
+    const attachments: Attachment[] = Array.isArray(body.attachments)
+      ? body.attachments.filter((a: any) => a?.path && a?.name)
+      : [];
+
     const result = await submitPrompt({
       prompt,
+      attachments: attachments.length > 0 ? attachments : undefined,
       conversationId: taskId,
       parentId: typeof body.parentId === "string" ? body.parentId : undefined,
     });
@@ -522,7 +569,11 @@ export async function createReef(config: ReefConfig = {}) {
       return c.json({ error: "Missing 'task' string in body." }, 400);
     }
 
-    const result = await submitPrompt({ prompt });
+    const attachments: Attachment[] = Array.isArray(body.attachments)
+      ? body.attachments.filter((a: any) => a?.path && a?.name)
+      : [];
+
+    const result = await submitPrompt({ prompt, attachments: attachments.length > 0 ? attachments : undefined });
     const conversation = conversationPayload(tree, result.taskId);
     return c.json(
       {
@@ -545,8 +596,13 @@ export async function createReef(config: ReefConfig = {}) {
       return c.json({ error: "Missing 'task' string in body." }, 400);
     }
 
+    const msgAttachments: Attachment[] = Array.isArray(body.attachments)
+      ? body.attachments.filter((a: any) => a?.path && a?.name)
+      : [];
+
     const result = await submitPrompt({
       prompt,
+      attachments: msgAttachments.length > 0 ? msgAttachments : undefined,
       conversationId: id,
       parentId: typeof body.parentId === "string" ? body.parentId : undefined,
     });
@@ -560,6 +616,28 @@ export async function createReef(config: ReefConfig = {}) {
       },
       202,
     );
+  });
+
+  reef.post("/conversations/:id/stop", (c) => {
+    const id = c.req.param("id");
+    const task = piProcesses.get(id);
+    if (!task) return c.json({ error: "not found" }, 404);
+    if (task.status !== "running") return c.json({ error: "not running" }, 400);
+
+    if (task.child && task.child.exitCode === null) {
+      task.child.kill("SIGTERM");
+    }
+    task.status = "done";
+    task.completedAt = Date.now();
+    task.output += "\n\n[Stopped by user]";
+
+    const assistantNode = tree.add(tree.getRef(id) ?? null, "assistant", task.output);
+    tree.setRef(id, assistantNode.id);
+    tree.completeTask(id, task.output);
+    appendConversationLog(id, { type: "task_stopped", nodeId: assistantNode.id });
+    broadcast({ taskId: id, conversationId: id, type: "task_done", output: task.output, stopped: true });
+
+    return c.json({ stopped: true, taskId: id });
   });
 
   reef.post("/conversations/:id/close", (c) => {
@@ -736,21 +814,78 @@ export async function createReef(config: ReefConfig = {}) {
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await c.req.formData();
-      const results: Array<{ name: string; path: string; size: number }> = [];
+      const results: Array<{ name: string; path: string; url: string; size: number }> = [];
 
       for (const [, value] of formData.entries()) {
         if (!(value instanceof File)) continue;
         const safeName = value.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const filePath = join(uploadsDir, `${Date.now()}-${safeName}`);
+        const storedName = `${Date.now()}-${safeName}`;
+        const filePath = join(uploadsDir, storedName);
         const buffer = Buffer.from(await value.arrayBuffer());
         writeFileSync(filePath, buffer);
-        results.push({ name: value.name, path: filePath, size: buffer.length });
+        results.push({ name: value.name, path: filePath, url: `/reef/files/${storedName}`, size: buffer.length });
       }
 
       return c.json({ files: results });
     }
 
     return c.json({ error: "Expected multipart/form-data" }, 400);
+  });
+
+  // File serving — list and download uploaded files
+  reef.get("/files", (c) => {
+    const uploadsDir = join(process.env.REEF_DATA_DIR ?? "data", "uploads");
+    if (!existsSync(uploadsDir)) return c.json({ files: [], count: 0 });
+
+    const entries = readdirSync(uploadsDir);
+    const files = entries.map((name) => {
+      const filePath = join(uploadsDir, name);
+      const stats = statSync(filePath);
+      return { name, url: `/reef/files/${name}`, size: stats.size, uploadedAt: stats.mtimeMs };
+    });
+
+    return c.json({ files, count: files.length });
+  });
+
+  reef.get("/files/:filename", (c) => {
+    const uploadsDir = join(process.env.REEF_DATA_DIR ?? "data", "uploads");
+    const filename = c.req.param("filename");
+
+    if (!filename || filename.includes("/") || filename.includes("..")) {
+      return c.json({ error: "Invalid filename" }, 400);
+    }
+
+    const filePath = join(uploadsDir, filename);
+    if (!existsSync(filePath)) {
+      return c.json({ error: "File not found" }, 404);
+    }
+
+    const fileBuffer = readFileSync(filePath);
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
+    const mimeMap: Record<string, string> = {
+      txt: "text/plain",
+      md: "text/markdown",
+      json: "application/json",
+      js: "text/javascript",
+      ts: "text/typescript",
+      py: "text/x-python",
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      webp: "image/webp",
+      svg: "image/svg+xml",
+      pdf: "application/pdf",
+      csv: "text/csv",
+      html: "text/html",
+      xml: "application/xml",
+      zip: "application/zip",
+    };
+    const contentType = mimeMap[ext] || "application/octet-stream";
+
+    return new Response(fileBuffer, {
+      headers: { "Content-Type": contentType },
+    });
   });
 
   reef.get("/state", (c) => {

@@ -9,7 +9,7 @@ import { discoverServiceModules, filterClientModules } from "./core/discover.js"
 import { createExtension } from "./core/extension.js";
 import { DEFAULT_SERVICES_DIR } from "./core/server.js";
 
-const CHILD_SAFE_SERVICE_NAMES = ["agent-context"];
+const CHILD_SAFE_SERVICE_NAMES = ["agent-context", "swarm"];
 
 export function resolveClientServiceSelection(env: NodeJS.ProcessEnv = process.env): string[] | undefined {
   return env.REEF_CHILD_AGENT === "true" ? CHILD_SAFE_SERVICE_NAMES : undefined;

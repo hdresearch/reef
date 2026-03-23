@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "../src/core/server.js";
 import { ServiceEventBus } from "../src/core/events.js";
@@ -12,12 +12,10 @@ import registry from "../services/registry/index.js";
 import vmTree from "../services/vm-tree/index.js";
 
 const TMP_DIR = join(import.meta.dir, ".tmp-lieutenant");
-const FAKE_PI_PATH = join(TMP_DIR, "fake-pi.mjs");
 const AUTH_TOKEN = "test-token-12345";
 
 const ORIGINAL_ENV = {
   LLM_PROXY_KEY: process.env.LLM_PROXY_KEY,
-  PI_PATH: process.env.PI_PATH,
   VERS_API_KEY: process.env.VERS_API_KEY,
   VERS_AUTH_TOKEN: process.env.VERS_AUTH_TOKEN,
   VERS_GOLDEN_COMMIT_ID: process.env.VERS_GOLDEN_COMMIT_ID,
@@ -96,59 +94,6 @@ function createFakeRemoteHandle() {
   };
 }
 
-function writeFakePi() {
-  rmSync(TMP_DIR, { recursive: true, force: true });
-  mkdirSync(TMP_DIR, { recursive: true });
-  writeFileSync(
-    FAKE_PI_PATH,
-    `#!/usr/bin/env node
-import readline from "node:readline";
-
-const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-
-function emit(event) {
-  process.stdout.write(JSON.stringify(event) + "\\n");
-}
-
-rl.on("line", (line) => {
-  let cmd;
-  try {
-    cmd = JSON.parse(line);
-  } catch {
-    return;
-  }
-
-  if (cmd.type === "get_state") {
-    emit({ type: "response", command: "get_state", state: "idle" });
-    return;
-  }
-
-  if (cmd.type === "set_model") {
-    emit({ type: "response", command: "set_model", ok: true, model: cmd.modelId ?? null });
-    return;
-  }
-
-  if (cmd.type === "prompt" || cmd.type === "follow_up" || cmd.type === "steer") {
-    emit({ type: "agent_start" });
-    setTimeout(() => {
-      emit({
-        type: "message_update",
-        assistantMessageEvent: {
-          type: "text_delta",
-          delta: "handled:" + (cmd.message ?? ""),
-        },
-      });
-      emit({ type: "agent_end" });
-    }, 10);
-  }
-});
-
-process.stdin.resume();
-`,
-  );
-  chmodSync(FAKE_PI_PATH, 0o755);
-}
-
 function request(
   app: { fetch: (req: Request) => Promise<Response> },
   path: string,
@@ -190,9 +135,9 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000) {
 }
 
 beforeEach(() => {
-  writeFakePi();
+  rmSync(TMP_DIR, { recursive: true, force: true });
+  mkdirSync(TMP_DIR, { recursive: true });
   process.env.LLM_PROXY_KEY = "sk-vers-test-key";
-  process.env.PI_PATH = FAKE_PI_PATH;
   process.env.VERS_AUTH_TOKEN = AUTH_TOKEN;
   process.env.VERS_AGENT_NAME = "reef-test";
   delete process.env.VERS_INFRA_URL;
@@ -277,52 +222,6 @@ describe("lieutenant routes and runtime", () => {
     store.close();
   });
 
-  test("creates a local lieutenant, runs a task, and reads the completed output from history", async () => {
-    const store = new LieutenantStore(join(TMP_DIR, "local-runtime.sqlite"));
-    const runtime = new LieutenantRuntime({ events: new ServiceEventBus(), store });
-    const app = createRoutes(store, () => runtime);
-
-    const created = await json(app, "/lieutenants", {
-      method: "POST",
-      body: {
-        name: "local-alpha",
-        role: "local validation",
-        local: true,
-        llmProxyKey: "sk-vers-test-key",
-      },
-    });
-    expect(created.status).toBe(201);
-    expect(created.data.isLocal).toBe(true);
-    expect(created.data.status).toBe("idle");
-    expect(created.data.model).toBe("claude-opus-4-6");
-
-    const sent = await json(app, "/lieutenants/local-alpha/send", {
-      method: "POST",
-      body: { message: "hello lieutenant" },
-    });
-    expect(sent.status).toBe(200);
-    expect(sent.data.sent).toBe(true);
-
-    await waitFor(() => {
-      const lt = store.getByName("local-alpha");
-      return lt?.status === "idle" && (lt.outputHistory.length ?? 0) === 1;
-    });
-
-    const read = await json(app, "/lieutenants/local-alpha/read");
-    expect(read.status).toBe(200);
-    expect(read.data.status).toBe("idle");
-    expect(read.data.historyCount).toBe(1);
-    expect(read.data.output).toContain("handled:hello lieutenant");
-
-    const destroyed = await json(app, "/lieutenants/local-alpha", { method: "DELETE" });
-    expect(destroyed.status).toBe(200);
-    expect(destroyed.data.destroyed).toBe(true);
-    expect(store.getByName("local-alpha")?.status).toBe("destroyed");
-
-    await runtime.shutdown();
-    store.close();
-  });
-
   test("registers a remote agent VM and syncs status/output over RPC", async () => {
     const store = new LieutenantStore(join(TMP_DIR, "remote-runtime.sqlite"));
     const remote = createFakeRemoteHandle();
@@ -345,7 +244,7 @@ describe("lieutenant routes and runtime", () => {
       },
     });
     expect(registered.status).toBe(201);
-    expect(registered.data.isLocal).toBe(false);
+    expect(registered.data.vmId).toBe("vm-remote-1");
     expect(registered.data.status).toBe("idle");
 
     const listBeforeSend = await json(app, "/lieutenants", {});
@@ -388,7 +287,6 @@ describe("registry and vm-tree event wiring", () => {
       name: "remote-bravo",
       vmId,
       role: "orchestrator",
-      isLocal: false,
       address: `${vmId}.vm.vers.sh`,
       createdAt: new Date().toISOString(),
       parentVmId: "parent-root-1",

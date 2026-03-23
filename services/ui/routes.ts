@@ -129,7 +129,7 @@ export function createRoutes(): Hono {
     if (contentType) headers["Content-Type"] = contentType;
 
     const method = c.req.method;
-    const body = method !== "GET" && method !== "HEAD" ? await c.req.text() : undefined;
+    const body = method !== "GET" && method !== "HEAD" ? await c.req.arrayBuffer() : undefined;
 
     try {
       const resp = await fetch(internalUrl, { method, headers, body });
@@ -146,9 +146,20 @@ export function createRoutes(): Hono {
         });
       }
 
+      const respContentType = resp.headers.get("content-type") || "application/json";
+
+      // Binary passthrough for non-text/non-JSON responses (images, PDFs, etc.)
+      if (!respContentType.startsWith("text/") && !respContentType.includes("json")) {
+        const buffer = await resp.arrayBuffer();
+        return new Response(buffer, {
+          status: resp.status,
+          headers: { "Content-Type": respContentType },
+        });
+      }
+
       const text = await resp.text();
       return c.body(text, resp.status as any, {
-        "Content-Type": resp.headers.get("content-type") || "application/json",
+        "Content-Type": respContentType,
       });
     } catch (e) {
       return c.json({ error: "Proxy error", details: String(e) }, 502);
