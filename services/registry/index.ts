@@ -58,6 +58,15 @@ const registry: ServiceModule = {
       }
     });
 
+    ctx.events.on("lieutenant:completed", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.update(data.vmId, { status: "running" });
+      } catch {
+        // Ignore out-of-order events.
+      }
+    });
+
     ctx.events.on("lieutenant:destroyed", (data: any) => {
       if (!data?.vmId) return;
       store.deregister(data.vmId);
@@ -85,28 +94,12 @@ const registry: ServiceModule = {
       store.deregister(data.vmId);
     });
 
-    ctx.events.on("swarm:agent_task_sent", (data: any) => {
-      if (!data?.vmId) return;
-      try {
-        store.update(data.vmId, { status: "working" });
-      } catch {
-        // Ignore if VM not yet registered.
-      }
-    });
-
-    ctx.events.on("swarm:agent_completed", (data: any) => {
-      if (!data?.vmId) return;
-      try {
-        store.update(data.vmId, { status: "running" });
-      } catch {
-        // Ignore out-of-order events.
-      }
-    });
-
+    // Swarm lifecycle — registry tracks VM liveness (running/paused/stopped),
+    // not task state (idle/working/done). Task state lives in the swarm service.
     ctx.events.on("swarm:agent_error", (data: any) => {
       if (!data?.vmId) return;
       try {
-        store.update(data.vmId, { status: "error" });
+        store.update(data.vmId, { status: "stopped" });
       } catch {
         // Ignore.
       }

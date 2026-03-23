@@ -34,9 +34,10 @@ export function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
     }
   });
 
-  // Mark stopped on agent end
+  // Mark stopped on agent end — only for child agent VMs, not the root reef
+  // (root spawns ephemeral task processes that end, but the reef server keeps running)
   pi.on("agent_end", async () => {
-    if (!client.getBaseUrl() || !client.vmId) return;
+    if (!client.getBaseUrl() || !client.vmId || !client.isChildAgent) return;
     try {
       await client.api("PATCH", `/registry/vms/${client.vmId}`, { status: "stopped" });
     } catch {

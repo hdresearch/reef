@@ -966,7 +966,7 @@ async function discoverPanels() {
     if (!response.ok) return;
     const data = await response.json();
     const services = data.modules || data.services || [];
-    const SKIP_PANELS = new Set(['ui', 'agent-context', 'store', 'bootloader', 'vers-config']);
+    const SKIP_PANELS = new Set(['ui', 'agent-context', 'store', 'bootloader', 'vers-config', 'installer']);
     const results = await Promise.allSettled(services.filter((service) => !SKIP_PANELS.has(service.name)).map((service) => fetchPanel(service.name)));
     const panels = results.filter((result) => result.status === 'fulfilled' && result.value).map((result) => result.value);
 
