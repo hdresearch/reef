@@ -120,41 +120,24 @@ interface Attachment {
   mimeType?: string;
 }
 
-function buildRpcMessage(prompt: string, attachments?: Attachment[]): string | any[] {
+function buildRpcMessage(prompt: string, attachments?: Attachment[]): string {
   const imageAttachments = (attachments || []).filter(
     (a) => (a.mimeType || "").startsWith("image/") || /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(a.name),
   );
 
   if (imageAttachments.length === 0) return prompt;
 
-  // Build multimodal content blocks (Anthropic API format)
-  const content: any[] = [];
-  for (const att of imageAttachments) {
-    try {
-      const data = readFileSync(att.path);
-      const base64 = data.toString("base64");
-      const ext = att.name.split(".").pop()?.toLowerCase() || "png";
-      const mediaTypes: Record<string, string> = {
-        png: "image/png",
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        gif: "image/gif",
-        webp: "image/webp",
-        svg: "image/svg+xml",
-      };
-      content.push({
-        type: "image",
-        source: { type: "base64", media_type: mediaTypes[ext] || att.mimeType || "image/png", data: base64 },
-      });
-    } catch {
-      // File not readable — skip, agent will see the text reference
-    }
-  }
+  // Punkin v1_rc5 RPC only accepts string messages (no multimodal content blocks).
+  // Instruct the agent to use the Read tool to view attached images.
+  const cwd = process.env.REEF_DIR ?? process.cwd();
+  const imageInstructions = imageAttachments
+    .map((a) => {
+      const absPath = a.path.startsWith("/") ? a.path : join(cwd, a.path);
+      return `[Attached image: ${a.name} — Use the Read tool on "${absPath}" to view it]`;
+    })
+    .join("\n");
 
-  if (content.length === 0) return prompt;
-
-  content.push({ type: "text", text: prompt });
-  return content;
+  return `${imageInstructions}\n\n${prompt}`;
 }
 
 function spawnTask(
