@@ -251,7 +251,7 @@ const vmTree: ServiceModule = {
         category: "lieutenant",
         reefConfig: {
           services: ["lieutenant"],
-          capabilities: ["punkin", "vers-lieutenant", "vers-vm", "vers-vm-copy", "vers-swarm"],
+          capabilities: ["punkin", "vers-lieutenant", "vers-vm", "vers-vm-copy", "reef-swarm"],
         },
       });
     });
