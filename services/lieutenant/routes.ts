@@ -14,7 +14,7 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
   routes.post("/lieutenants", async (c) => {
     try {
       const body = await c.req.json();
-      const { name, role, local, model, commitId, llmProxyKey } = body;
+      const { name, role, model, commitId, llmProxyKey } = body;
 
       if (!name || typeof name !== "string") return c.json({ error: "name is required" }, 400);
       if (!role || typeof role !== "string") return c.json({ error: "role is required" }, 400);
@@ -22,7 +22,6 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
       const lt = await getRuntime().create({
         name,
         role,
-        isLocal: !!local,
         model,
         commitId,
         llmProxyKey,
@@ -203,7 +202,7 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
                 : lt.status === "error"
                   ? "&#x2717;"
                   : "&#x25CB;";
-        const location = lt.isLocal ? "local" : `VM: ${lt.vmId.slice(0, 12)}`;
+        const location = `VM: ${lt.vmId.slice(0, 12)}`;
         return `<tr>
         <td><span style="color:${statusColor}">${icon}</span> ${lt.name}</td>
         <td>${lt.role.slice(0, 50)}</td>

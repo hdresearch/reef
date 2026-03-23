@@ -2,7 +2,7 @@
  * Lieutenant store — persistent agent session state backed by SQLite.
  *
  * Tracks lieutenant lifecycle: creation, messaging, pause/resume, destruction.
- * Each lieutenant is a persistent agent session running on a VM or locally.
+ * Each lieutenant is a persistent agent session running on a Vers VM.
  */
 
 import { Database } from "bun:sqlite";
@@ -21,7 +21,6 @@ export interface Lieutenant {
   name: string;
   role: string;
   vmId: string;
-  isLocal: boolean;
   status: LtStatus;
   lastOutput: string;
   outputHistory: string[];
@@ -37,7 +36,6 @@ export interface CreateInput {
   name: string;
   role: string;
   vmId?: string;
-  isLocal?: boolean;
   systemPrompt?: string;
   model?: string;
   parentAgent?: string;
@@ -139,17 +137,16 @@ export class LieutenantStore {
 
     const id = ulid();
     const now = new Date().toISOString();
-    const vmId = input.vmId || (input.isLocal ? `local-${input.name}` : "");
+    const vmId = input.vmId || "";
 
     this.db.run(
       `INSERT INTO lieutenants (id, name, role, vm_id, is_local, status, system_prompt, model, parent_agent, created_at, last_activity_at)
-       VALUES (?, ?, ?, ?, ?, 'starting', ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, 0, 'starting', ?, ?, ?, ?, ?)`,
       [
         id,
         input.name.trim(),
         input.role.trim(),
         vmId,
-        input.isLocal ? 1 : 0,
         input.systemPrompt || null,
         input.model || null,
         input.parentAgent || null,
@@ -171,17 +168,13 @@ export class LieutenantStore {
     return row ? rowToLieutenant(row) : undefined;
   }
 
-  list(filters?: { status?: LtStatus; isLocal?: boolean }): Lieutenant[] {
+  list(filters?: { status?: LtStatus }): Lieutenant[] {
     let sql = "SELECT * FROM lieutenants WHERE status != 'destroyed'";
     const params: any[] = [];
 
     if (filters?.status) {
       sql += " AND status = ?";
       params.push(filters.status);
-    }
-    if (filters?.isLocal !== undefined) {
-      sql += " AND is_local = ?";
-      params.push(filters.isLocal ? 1 : 0);
     }
 
     sql += " ORDER BY created_at DESC";
@@ -289,7 +282,6 @@ function rowToLieutenant(row: any): Lieutenant {
     name: row.name,
     role: row.role,
     vmId: row.vm_id,
-    isLocal: !!row.is_local,
     status: row.status,
     lastOutput: row.last_output || "",
     outputHistory: JSON.parse(row.output_history || "[]"),
