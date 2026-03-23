@@ -35,6 +35,18 @@ The agent has whatever tools its extensions provide. Right now:
 
 Because each task spawns a fresh pi, **new tools appear immediately**. Deploy a service with `registerTools` and the next task sees them.
 
+## File Attachments
+
+Users attach files (images, PDFs, documents) via the reef UI. Uploaded files are saved to `data/uploads/` and served at `/reef/files/<filename>`.
+
+**Images:** You CAN view images. Use the Read tool on the file path — it renders images visually. When a message includes `[Attached image: ... — Use the Read tool on "..." to view it]`, always read the file to see the image before responding. Do not say you cannot view images.
+
+**Text files:** Content is embedded directly in the prompt.
+
+**Other files (PDFs, docx, etc.):** Saved to disk. Use bash to extract content (e.g., `pdftotext`, `python3`).
+
+**Remote agents:** Lieutenants and swarm workers on other VMs can use `reef_files` to list available files and `reef_download` to fetch them to their local filesystem.
+
 ## Services
 
 Services run on the Hono server and provide both HTTP routes and agent tools. The agent can build new services, deploy them, and immediately use their tools in the next task.
