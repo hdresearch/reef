@@ -1186,16 +1186,18 @@ async function uploadAndBuildPrompt(text) {
     const file = pendingFiles[i];
     const uploadInfo = uploaded[i];
     const path = uploadInfo?.path || file.name;
+    const url = uploadInfo?.url || null;
+    const location = url ? `url: ${url}, local: ${path}` : `saved to ${path}`;
 
     if (file.type.startsWith('text/') || /\.(txt|md|json|js|ts|py|sh|css|html|yaml|yml|toml|csv|xml|sql|rs|go|rb|java|c|cpp|h)$/i.test(file.name)) {
       try {
         const content = await file.text();
-        parts.push(`\n\n--- File: ${file.name} (saved to ${path}) ---\n${content}`);
+        parts.push(`\n\n--- File: ${file.name} (${location}) ---\n${content}`);
       } catch {
-        parts.push(`\n\n--- File: ${file.name} (saved to ${path}, ${formatSize(file.size)}) ---`);
+        parts.push(`\n\n--- File: ${file.name} (${location}, ${formatSize(file.size)}) ---`);
       }
     } else {
-      parts.push(`\n\n--- File: ${file.name} (saved to ${path}, ${formatSize(file.size)}) ---`);
+      parts.push(`\n\n--- File: ${file.name} (${location}, ${formatSize(file.size)}) ---`);
     }
   }
 

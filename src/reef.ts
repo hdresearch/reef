@@ -20,7 +20,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAgentBinary } from "@hdresearch/pi-v/core";
 import { Hono } from "hono";
@@ -736,21 +736,78 @@ export async function createReef(config: ReefConfig = {}) {
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await c.req.formData();
-      const results: Array<{ name: string; path: string; size: number }> = [];
+      const results: Array<{ name: string; path: string; url: string; size: number }> = [];
 
       for (const [, value] of formData.entries()) {
         if (!(value instanceof File)) continue;
         const safeName = value.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const filePath = join(uploadsDir, `${Date.now()}-${safeName}`);
+        const storedName = `${Date.now()}-${safeName}`;
+        const filePath = join(uploadsDir, storedName);
         const buffer = Buffer.from(await value.arrayBuffer());
         writeFileSync(filePath, buffer);
-        results.push({ name: value.name, path: filePath, size: buffer.length });
+        results.push({ name: value.name, path: filePath, url: `/reef/files/${storedName}`, size: buffer.length });
       }
 
       return c.json({ files: results });
     }
 
     return c.json({ error: "Expected multipart/form-data" }, 400);
+  });
+
+  // File serving — list and download uploaded files
+  reef.get("/files", (c) => {
+    const uploadsDir = join(process.env.REEF_DATA_DIR ?? "data", "uploads");
+    if (!existsSync(uploadsDir)) return c.json({ files: [], count: 0 });
+
+    const entries = readdirSync(uploadsDir);
+    const files = entries.map((name) => {
+      const filePath = join(uploadsDir, name);
+      const stats = statSync(filePath);
+      return { name, url: `/reef/files/${name}`, size: stats.size, uploadedAt: stats.mtimeMs };
+    });
+
+    return c.json({ files, count: files.length });
+  });
+
+  reef.get("/files/:filename", (c) => {
+    const uploadsDir = join(process.env.REEF_DATA_DIR ?? "data", "uploads");
+    const filename = c.req.param("filename");
+
+    if (!filename || filename.includes("/") || filename.includes("..")) {
+      return c.json({ error: "Invalid filename" }, 400);
+    }
+
+    const filePath = join(uploadsDir, filename);
+    if (!existsSync(filePath)) {
+      return c.json({ error: "File not found" }, 404);
+    }
+
+    const fileBuffer = readFileSync(filePath);
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
+    const mimeMap: Record<string, string> = {
+      txt: "text/plain",
+      md: "text/markdown",
+      json: "application/json",
+      js: "text/javascript",
+      ts: "text/typescript",
+      py: "text/x-python",
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      webp: "image/webp",
+      svg: "image/svg+xml",
+      pdf: "application/pdf",
+      csv: "text/csv",
+      html: "text/html",
+      xml: "application/xml",
+      zip: "application/zip",
+    };
+    const contentType = mimeMap[ext] || "application/octet-stream";
+
+    return new Response(fileBuffer, {
+      headers: { "Content-Type": contentType },
+    });
   });
 
   reef.get("/state", (c) => {
