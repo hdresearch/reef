@@ -100,7 +100,7 @@ function profileContext(): string {
 
 let taskCounter = 0;
 export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6";
-const ROOT_REEF_PROVIDER = "vers";
+const ROOT_REEF_PROVIDER = "anthropic";
 
 function conversationPayload(tree: ConversationTree, id: string) {
   const info = tree.getTask(id);
@@ -356,6 +356,14 @@ export async function createReef(config: ReefConfig = {}) {
     tree.failTask(taskId, error);
     appendConversationLog(taskId, { type: "error", error });
     broadcast({ taskId, conversationId: taskId, type: "task_error", error });
+    events.fire("reef:event", {
+      type: "task_error",
+      taskId,
+      error,
+      source: "reef",
+      trigger: task.prompt || "",
+      durationMs: (task.completedAt || Date.now()) - task.startedAt,
+    });
     tree.pruneToLimit();
   }
 
@@ -440,6 +448,16 @@ export async function createReef(config: ReefConfig = {}) {
             summary: output.trim().slice(0, 200),
             nodeId: assistantNode.id,
             parentId: assistantNode.parentId,
+          });
+          events.fire("reef:event", {
+            type: "task_done",
+            taskId,
+            summary: output.trim().slice(0, 200),
+            trigger: task.prompt || "",
+            source: "reef",
+            startedAt: task.startedAt,
+            completedAt: task.completedAt,
+            durationMs: (task.completedAt || Date.now()) - task.startedAt,
           });
 
           tree.pruneToLimit();
@@ -646,6 +664,15 @@ export async function createReef(config: ReefConfig = {}) {
     tree.completeTask(id, task.output);
     appendConversationLog(id, { type: "task_stopped", nodeId: assistantNode.id });
     broadcast({ taskId: id, conversationId: id, type: "task_done", output: task.output, stopped: true });
+    events.fire("reef:event", {
+      type: "task_done",
+      taskId: id,
+      summary: "[Stopped by user]",
+      trigger: task.prompt || "",
+      stopped: true,
+      source: "reef",
+      durationMs: (task.completedAt || Date.now()) - task.startedAt,
+    });
 
     return c.json({ stopped: true, taskId: id });
   });
