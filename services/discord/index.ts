@@ -125,7 +125,7 @@ async function submitAndWait(prompt: string, channelId: string): Promise<string>
   // Tell the notifications service this task came from Discord (skip self-notification)
   if (serviceBus) serviceBus.fire("notification:external-task", { taskId: conversationId });
 
-  const result = await sharedWaitForResult(conversationId);
+  const result = await sharedWaitForResult(conversationId, serviceBus!);
   console.log("  [discord] Task result:", result.slice(0, 100));
   return result;
 }

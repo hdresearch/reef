@@ -300,7 +300,7 @@ function handleSlackEvent(event: any) {
   if (slackServiceBus) slackServiceBus.fire("notification:external-task", { taskId: conversationId });
 
   submitToReef(text, conversationId)
-    .then(() => waitForTaskResult(conversationId))
+    .then(() => waitForTaskResult(conversationId, slackServiceBus!))
     .then(async (result) => {
       // Swap eyes → white_check_mark
       if (token) {

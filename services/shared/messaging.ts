@@ -3,7 +3,7 @@
  *
  * Handles the reef integration side that's identical across platforms:
  * - Submit messages to reef conversations
- * - Poll for task results
+ * - Wait for task results via event bus (no polling)
  * - Strip internal tags from output
  * - Split long messages into chunks
  */
@@ -59,49 +59,61 @@ export async function submitToReef(prompt: string, conversationId: string): Prom
 }
 
 /**
- * Poll for a task/conversation result. Returns the full assistant output.
+ * Fetch the full assistant output from a conversation.
+ * The event bus only provides a 200-char summary — this gets the complete text.
  */
-export async function waitForTaskResult(conversationId: string): Promise<string> {
+async function fetchFullOutput(conversationId: string): Promise<string | null> {
   const baseUrl = reefBaseUrl();
   const headers = reefAuthHeaders();
+  try {
+    const res = await fetch(`${baseUrl}/reef/conversations/${conversationId}`, { headers });
+    if (!res.ok) return null;
+    const convo = (await res.json()) as any;
+    const nodes: any[] = convo.nodes || [];
+    const lastAssistant = [...nodes].reverse().find((n: any) => n.role === "assistant");
+    return lastAssistant?.content || null;
+  } catch {
+    return null;
+  }
+}
 
-  for (let i = 0; i < 120; i++) {
-    await new Promise((r) => setTimeout(r, 2000));
-
-    try {
-      const res = await fetch(`${baseUrl}/reef/tasks`, { headers });
-      if (!res.ok) continue;
-
-      const data = (await res.json()) as any;
-      const tasks = data.tasks || [...(data.active || []), ...(data.completed || [])];
-      const task = tasks.find(
-        (t: any) => t.id === conversationId || t.taskId === conversationId || t.name === conversationId,
-      );
-
-      if (task && (task.status === "done" || task.status === "error")) {
-        if (task.status === "error") return `Error: ${task.error || "unknown error"}`;
-
-        // Try to get full output from the conversation tree (artifacts.summary is capped at 500 chars)
-        try {
-          const convoRes = await fetch(`${baseUrl}/reef/conversations/${conversationId}`, { headers });
-          if (convoRes.ok) {
-            const convo = (await convoRes.json()) as any;
-            const nodes: any[] = convo.nodes || [];
-            const lastAssistant = [...nodes].reverse().find((n: any) => n.role === "assistant");
-            if (lastAssistant?.content) return lastAssistant.content;
-          }
-        } catch {
-          // Fall back to summary
-        }
-
-        return task.artifacts?.summary || task.output || "(no output)";
-      }
-    } catch {
-      // Keep polling
-    }
+/**
+ * Wait for a task to complete using the in-process event bus.
+ * No polling — listens for the task_done/task_error event directly.
+ * Resolves when reef fires the completion event. No timeout — reef
+ * guarantees every task emits task_done or task_error (even on crash).
+ *
+ * @param conversationId - The reef conversation/task ID to wait for
+ * @param eventBus - The ServiceEventBus from ctx.events (required, set in init())
+ */
+export async function waitForTaskResult(
+  conversationId: string,
+  eventBus: { on(event: string, handler: (data: any) => void): () => void },
+): Promise<string> {
+  if (!eventBus) {
+    throw new Error("waitForTaskResult requires an event bus — services must pass ctx.events from init()");
   }
 
-  return "(task timed out after 4 minutes)";
+  return new Promise<string>((resolve) => {
+    const unsubscribe = eventBus.on("reef:event", async (data: any) => {
+      const taskId = data?.taskId;
+      if (taskId !== conversationId) return;
+
+      const type = data?.type;
+      if (type !== "task_done" && type !== "task_error") return;
+
+      unsubscribe();
+
+      if (type === "task_error") {
+        resolve(`Error: ${data.error || "unknown error"}`);
+        return;
+      }
+
+      // Event has a 200-char summary — fetch the full output
+      const fullOutput = await fetchFullOutput(conversationId);
+      resolve(fullOutput || data.summary || "(no output)");
+    });
+  });
 }
 
 // =============================================================================
