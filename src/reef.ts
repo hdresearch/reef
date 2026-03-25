@@ -211,6 +211,16 @@ function spawnTask(
       output += event.assistantMessageEvent.delta;
     }
 
+    // Capture LLM errors (e.g. 429 no credits) so they surface to the user
+    if ((event.type === "message_end" || event.type === "turn_end") && event.message?.errorMessage && !output) {
+      const raw = event.message.errorMessage;
+      if (raw.includes("no-credits") || raw.includes("no credits")) {
+        output = "Error: No credits available on the Vers account. Please add credits to continue.";
+      } else {
+        output = `Error: ${raw}`;
+      }
+    }
+
     if (event.type === "agent_end") {
       child.kill("SIGTERM");
       opts.onDone(output);
