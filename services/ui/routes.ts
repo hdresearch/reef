@@ -5,7 +5,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { consumeMagicLink, createMagicLink, createSession, getSessionInfo, validateSession } from "./auth.js";
+import {
+  consumeMagicLink,
+  createMagicLink,
+  createQrLink,
+  createSession,
+  getSessionInfo,
+  validateSession,
+} from "./auth.js";
 
 const AUTH_TOKEN = process.env.VERS_AUTH_TOKEN || "test-token";
 
@@ -33,6 +40,20 @@ export function createRoutes(): Hono {
     if (!hasBearerAuth(c)) return c.json({ error: "Unauthorized" }, 401);
 
     const link = createMagicLink();
+    const host = c.req.header("host") || "localhost:3000";
+    const proto = c.req.header("x-forwarded-proto") || "https";
+    const url = `${proto}://${host}/ui/login?token=${link.token}`;
+    return c.json({ url, expiresAt: link.expiresAt });
+  });
+
+  // QR link — requires session or bearer auth, returns URL for mobile access
+  routes.post("/auth/qr-link", (c) => {
+    const sessionId = getSessionId(c);
+    const hasSession = validateSession(sessionId);
+    const hasBearer = hasBearerAuth(c);
+    if (!hasSession && !hasBearer) return c.json({ error: "Unauthorized" }, 401);
+
+    const link = createQrLink();
     const host = c.req.header("host") || "localhost:3000";
     const proto = c.req.header("x-forwarded-proto") || "https";
     const url = `${proto}://${host}/ui/login?token=${link.token}`;

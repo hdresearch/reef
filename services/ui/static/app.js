@@ -1331,6 +1331,253 @@ $('new-chat').addEventListener('click', () => {
 });
 
 // =============================================================================
+// Mobile mode
+// =============================================================================
+
+const isMobileQuery = window.matchMedia('(max-width: 768px)');
+let currentMobileView = 'chats';
+
+function isMobile() {
+  return isMobileQuery.matches;
+}
+
+function switchMobileView(view) {
+  if (!isMobile()) return;
+  currentMobileView = view;
+
+  // Update tab active states
+  document.querySelectorAll('.mobile-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.mobileView === view);
+  });
+
+  // Hide all sections
+  $('conversations').classList.remove('mobile-visible');
+  $('branch').classList.remove('mobile-visible');
+  $('feed').classList.remove('mobile-visible');
+  const moreView = $('mobile-more-view');
+  if (moreView) moreView.classList.remove('mobile-visible');
+
+  // Close panel overlay when switching main views
+  const overlay = $('mobile-panel-overlay');
+  if (overlay) overlay.classList.remove('open');
+
+  // Show the relevant section
+  switch (view) {
+    case 'chats':
+      $('conversations').classList.add('mobile-visible');
+      break;
+    case 'chat':
+      $('branch').classList.add('mobile-visible');
+      break;
+    case 'feed':
+      $('feed').classList.add('mobile-visible');
+      break;
+    case 'more':
+      if (moreView) moreView.classList.add('mobile-visible');
+      buildMoreView();
+      break;
+  }
+}
+
+function buildMoreView() {
+  let moreView = $('mobile-more-view');
+  if (!moreView) {
+    moreView = document.createElement('div');
+    moreView.id = 'mobile-more-view';
+    $('workspace').appendChild(moreView);
+  }
+  moreView.innerHTML = '';
+
+  // QR code section
+  const qrSection = document.createElement('div');
+  qrSection.id = 'panel-qr';
+  qrSection.innerHTML = '<div class="qr-label">Loading QR code...</div>';
+  moreView.appendChild(qrSection);
+  loadQrCode();
+
+  // Panel buttons
+  for (const [name] of loadedPanels) {
+    const btn = document.createElement('button');
+    btn.className = 'more-item';
+    btn.textContent = name;
+    btn.addEventListener('click', () => openMobilePanelOverlay(name));
+    moreView.appendChild(btn);
+  }
+
+  // Status info
+  const statusBtn = document.createElement('div');
+  statusBtn.className = 'more-item';
+  statusBtn.style.cursor = 'default';
+  statusBtn.textContent = $('status').querySelector('.label').textContent;
+  moreView.appendChild(statusBtn);
+}
+
+function openMobilePanelOverlay(panelName) {
+  let overlay = $('mobile-panel-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'mobile-panel-overlay';
+    overlay.innerHTML = `
+      <div class="overlay-header">
+        <button class="overlay-back">← Back</button>
+        <span class="overlay-title"></span>
+      </div>
+      <div class="overlay-content"></div>
+    `;
+    overlay.querySelector('.overlay-back').addEventListener('click', () => {
+      overlay.classList.remove('open');
+    });
+    document.body.appendChild(overlay);
+  }
+
+  overlay.querySelector('.overlay-title').textContent = panelName;
+  const content = overlay.querySelector('.overlay-content');
+  content.innerHTML = '';
+
+  const panelContainer = loadedPanels.get(panelName);
+  if (panelContainer) {
+    content.innerHTML = panelContainer.innerHTML;
+  }
+
+  overlay.classList.add('open');
+  if (LIVE_REFRESH_PANELS.has(panelName)) refreshPanel(panelName).catch(() => {});
+}
+
+// Hook mobile tab clicks
+document.querySelectorAll('.mobile-tab').forEach((tab) => {
+  tab.addEventListener('click', () => {
+    switchMobileView(tab.dataset.mobileView);
+  });
+});
+
+// Add mobile back button to branch header
+(function addMobileBackBtn() {
+  const header = $('branch-header');
+  if (!header) return;
+  const btn = document.createElement('button');
+  btn.id = 'mobile-back-btn';
+  btn.textContent = '←';
+  btn.addEventListener('click', () => switchMobileView('chats'));
+  header.insertBefore(btn, header.firstChild);
+})();
+
+// Override selectConversation to switch to chat view on mobile
+const _origSelectConversation = selectConversation;
+selectConversation = async function (conversationId) {
+  await _origSelectConversation(conversationId);
+  if (isMobile()) switchMobileView('chat');
+};
+
+// Apply initial mobile state on load and on resize
+function applyMobileState() {
+  if (isMobile()) {
+    switchMobileView(currentMobileView);
+  } else {
+    // Desktop: ensure all sections are visible (remove mobile classes)
+    $('conversations').classList.remove('mobile-visible');
+    $('branch').classList.remove('mobile-visible');
+    $('feed').classList.remove('mobile-visible');
+    const moreView = $('mobile-more-view');
+    if (moreView) moreView.classList.remove('mobile-visible');
+    const overlay = $('mobile-panel-overlay');
+    if (overlay) overlay.classList.remove('open');
+  }
+}
+
+isMobileQuery.addEventListener('change', applyMobileState);
+
+// Feed item click → switch to chat view on mobile
+const _origFeedAdd = feedAdd;
+feedAdd = function (nodeId, parentNodeId, tag, text, opts) {
+  const item = _origFeedAdd(nodeId, parentNodeId, tag, text, opts);
+  if (opts?.clickable && opts?.taskId) {
+    const row = item.querySelector('.feed-row.clickable');
+    if (row) {
+      const origHandler = row.onclick;
+      row.addEventListener('click', () => {
+        if (isMobile()) switchMobileView('chat');
+      });
+    }
+  }
+  return item;
+};
+
+// =============================================================================
+// QR code panel
+// =============================================================================
+
+let qrRefreshTimer = null;
+let qrCountdownInterval = null;
+
+async function loadQrCode() {
+  const container = $('panel-qr');
+  if (!container) return;
+
+  try {
+    const response = await fetch(`${API}/auth/qr-link`, { method: 'POST' });
+    if (!response.ok) {
+      container.innerHTML = '<div class="qr-error">Could not generate QR code. Auth may not be enabled.</div>';
+      return;
+    }
+
+    const data = await response.json();
+    const svg = typeof QRCode !== 'undefined' ? QRCode.toSVG(data.url, { scale: 4, margin: 2 }) : null;
+
+    if (!svg) {
+      container.innerHTML = '<div class="qr-error">QR generation failed</div>';
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="qr-label">Scan to open reef on your phone</div>
+      <div class="qr-container">${svg}</div>
+      <div class="qr-timer"></div>
+    `;
+
+    // Countdown timer
+    const expiresAt = new Date(data.expiresAt).getTime();
+    if (qrCountdownInterval) clearInterval(qrCountdownInterval);
+    qrCountdownInterval = setInterval(() => {
+      const remaining = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+      const timerEl = container.querySelector('.qr-timer');
+      if (!timerEl) { clearInterval(qrCountdownInterval); return; }
+      if (remaining <= 0) {
+        timerEl.textContent = 'Expired — refreshing...';
+        clearInterval(qrCountdownInterval);
+        loadQrCode();
+        return;
+      }
+      const min = Math.floor(remaining / 60);
+      const sec = remaining % 60;
+      timerEl.textContent = `Expires in ${min}:${sec.toString().padStart(2, '0')}`;
+    }, 1000);
+
+    // Auto-refresh 30s before expiry
+    if (qrRefreshTimer) clearTimeout(qrRefreshTimer);
+    const msUntilRefresh = Math.max(1000, expiresAt - Date.now() - 30000);
+    qrRefreshTimer = setTimeout(loadQrCode, msUntilRefresh);
+  } catch {
+    container.innerHTML = '<div class="qr-error">Failed to load QR code</div>';
+  }
+}
+
+// =============================================================================
+// Mobile reconnection — handle phone sleep/wake and network changes
+// =============================================================================
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !sseConnected) {
+    reconnectSSE();
+  }
+});
+
+window.addEventListener('online', () => {
+  if (!sseConnected) {
+    reconnectSSE();
+  }
+});
+
+// =============================================================================
 // Init
 // =============================================================================
 
@@ -1344,4 +1591,6 @@ Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   setInterval(updateStatus, 10000);
   // Periodically sync conversation list to catch changes from other clients
   setInterval(syncConversationList, 15000);
+  // Apply mobile state after initial load
+  applyMobileState();
 });
