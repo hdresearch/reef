@@ -34,8 +34,7 @@ import {
   stripInternalTags,
 } from "../shared/messaging.js";
 
-// TODO: Replace with the official Vers Discord bot application ID
-const DEFAULT_DISCORD_APP_ID = "YOUR_APP_ID_HERE";
+const DEFAULT_DISCORD_APP_ID = "1486474064649523220";
 
 function resolveAppId(): string {
   return resolveConfig("DISCORD_APP_ID") || DEFAULT_DISCORD_APP_ID;
@@ -43,8 +42,7 @@ function resolveAppId(): string {
 
 function getInviteUrl(): string {
   const appId = resolveAppId();
-  // permissions=2048 = Send Messages; 1024 = Read Message History; 68608 = combined useful set
-  return `https://discord.com/api/oauth2/authorize?client_id=${appId}&permissions=68608&scope=bot`;
+  return `https://discord.com/oauth2/authorize?client_id=${appId}&permissions=274877975616&integration_type=0&scope=bot`;
 }
 
 function resolveToken(): string | null {
@@ -114,10 +112,10 @@ const gateway: GatewayState = {
 // Reference to event bus for notifying the notifications service about external tasks
 let serviceBus: ServiceContext["events"] | null = null;
 
-async function submitAndWait(prompt: string, channelId: string): Promise<string> {
-  // Deterministic conversation ID per Discord channel — all messages in the
-  // same channel continue the same reef conversation, preserving context.
-  const conversationId = `discord-${channelId}`;
+async function submitAndWait(prompt: string, channelId: string, messageId?: string): Promise<string> {
+  // Each top-level @mention gets its own reef conversation (using message ID).
+  // Discord threads already have their own channel ID, so they're naturally isolated.
+  const conversationId = messageId ? `discord-${channelId}-${messageId}` : `discord-${channelId}`;
 
   await sharedSubmitToReef(prompt, conversationId);
   console.log(`  [discord] Task submitted: ${conversationId} (channel: ${channelId})`);
@@ -353,7 +351,7 @@ function handleMessage(msg: any) {
   }
 
   // Submit to reef and reply (async, don't block the Gateway handler)
-  submitAndWait(content, channelId)
+  submitAndWait(content, channelId, messageId)
     .then(async (result) => {
       unreact("👀");
       react("✅");

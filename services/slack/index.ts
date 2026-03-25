@@ -26,6 +26,19 @@ function resolveToken(): string | null {
   return resolveConfig("SLACK_BOT_TOKEN");
 }
 
+const DEFAULT_SLACK_CLIENT_ID = "10789560620147.10789608176035";
+const SLACK_SCOPES =
+  "reactions:write,app_mentions:read,assistant:write,channels:history,channels:read,chat:write,im:history,im:read,im:write,reactions:read,users:read";
+
+function resolveClientId(): string {
+  return resolveConfig("SLACK_CLIENT_ID") || DEFAULT_SLACK_CLIENT_ID;
+}
+
+function getSlackInviteUrl(): string {
+  const clientId = resolveClientId();
+  return `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${SLACK_SCOPES}&user_scope=`;
+}
+
 function slackHeaders(token: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
@@ -97,6 +110,20 @@ routes.get("/channels", async (c) => {
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
+});
+
+routes.get("/invite", (c) => {
+  const url = getSlackInviteUrl();
+  const clientId = resolveClientId();
+  const isPlaceholder = clientId === DEFAULT_SLACK_CLIENT_ID;
+  return c.json({
+    url,
+    clientId,
+    placeholder: isPlaceholder,
+    instructions: isPlaceholder
+      ? "Using a temporary Slack app. Click the URL to add it to your workspace."
+      : "Click the URL to add the Vers bot to your Slack workspace.",
+  });
 });
 
 routes.get("/status", async (c) => {
@@ -293,8 +320,10 @@ function handleSlackEvent(event: any) {
     slackRequest("reactions.add", token, { channel, timestamp: event.ts, name: "eyes" }).catch(() => {});
   }
 
-  // Deterministic conversation ID per Slack channel
-  const conversationId = `slack-${channel}`;
+  // Conversation ID per thread — each top-level @mention starts a new conversation,
+  // replies in the same thread continue it. threadTs is event.thread_ts (if in thread)
+  // or event.ts (if top-level — using the message's own ts as the thread anchor).
+  const conversationId = `slack-${channel}-${threadTs}`;
 
   // Tell notifications service this is external
   if (slackServiceBus) slackServiceBus.fire("notification:external-task", { taskId: conversationId });
@@ -354,7 +383,7 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
       } catch (e: any) {
         if (e.message.includes("not configured")) {
           return client.err(
-            "Slack not configured. Ask the user for a Slack Bot Token, then use reef_slack_configure to set it.",
+            "Slack not configured. Use reef_slack_setup to get the install link, or reef_slack_configure for a BYO bot token.",
           );
         }
         return client.err(e.message);
@@ -377,7 +406,7 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
       } catch (e: any) {
         if (e.message.includes("not configured")) {
           return client.err(
-            "Slack not configured. Ask the user for a Slack Bot Token, then use reef_slack_configure to set it.",
+            "Slack not configured. Use reef_slack_setup to get the install link, or reef_slack_configure for a BYO bot token.",
           );
         }
         return client.err(e.message);
@@ -386,12 +415,37 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
   });
 
   pi.registerTool({
-    name: "reef_slack_configure",
-    label: "Slack: Configure",
+    name: "reef_slack_setup",
+    label: "Slack: Setup",
     description:
-      "Set the Slack Bot Token. The user must create a Slack app at api.slack.com/apps, " +
-      "add bot scopes (chat:write, channels:read, channels:history), install to workspace, " +
-      "and provide the Bot User OAuth Token (xoxb-...).",
+      "Set up Slack integration. Returns an install link for the user to add the Vers bot to their workspace. " +
+      "This is the default path — the user clicks the link, authorizes, and the bot joins their workspace. " +
+      "Once added, ask which channel to use for notifications.",
+    parameters: Type.Object({}),
+    async execute() {
+      if (!client.getBaseUrl()) return client.noUrl();
+      try {
+        const result = await client.api<{ url: string; instructions: string }>("GET", "/slack/invite");
+        return client.ok(
+          "**Add the Vers bot to your Slack workspace:**\n\n" +
+            result.url +
+            "\n\n" +
+            "Click the link, select your workspace, and authorize.\n" +
+            "Once added, tell me which channel to use for notifications.",
+        );
+      } catch (e: any) {
+        return client.err(e.message);
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "reef_slack_configure",
+    label: "Slack: Configure (BYO Token)",
+    description:
+      "Fallback: set a custom Slack Bot Token for self-hosted or BYO-bot setups. " +
+      "Most users should use reef_slack_setup instead, which provides the official Vers bot install link. " +
+      "Only use this if the user explicitly provides their own bot token.",
     parameters: Type.Object({
       token: Type.String({ description: "Slack Bot User OAuth Token (starts with xoxb-)" }),
     }),
