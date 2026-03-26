@@ -57,6 +57,7 @@ export interface SpawnParams {
   model?: string;
   context?: string; // v2: situational context appended to inherited AGENTS.md
   category?: string; // v2: override category (default: swarm_vm, agent_vm for reef_agent_spawn)
+  directive?: string; // v2: hard guardrails (VERS_AGENT_DIRECTIVE)
 }
 
 export interface SwarmRuntimeOptions {
@@ -82,7 +83,11 @@ function escapeEnvValue(value: string): string {
   return value.replace(/'/g, "'\\''");
 }
 
-function buildWorkerEnv(vmId: string, label: string, opts: { llmProxyKey?: string }): string {
+function buildWorkerEnv(
+  vmId: string,
+  label: string,
+  opts: { llmProxyKey?: string; directive?: string; category?: string },
+): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const exports = [
     opts.llmProxyKey
@@ -109,15 +114,13 @@ function buildWorkerEnv(vmId: string, label: string, opts: { llmProxyKey?: strin
     `export PI_VERS_HOME='${escapeEnvValue(process.env.PI_VERS_HOME || "/root/pi-vers")}'`,
     `export SERVICES_DIR='${escapeEnvValue(process.env.SERVICES_DIR || "/root/reef/services-active")}'`,
     // v2: category-based identity
-    "export REEF_CATEGORY='swarm_vm'",
+    `export REEF_CATEGORY='${escapeEnvValue(opts.category || "swarm_vm")}'`,
     `export VERS_AGENT_NAME='${escapeEnvValue(label)}'`,
     process.env.VERS_VM_ID ? `export REEF_PARENT_VM_ID='${escapeEnvValue(process.env.VERS_VM_ID)}'` : "",
     process.env.VERS_VM_ID
       ? `export REEF_ROOT_VM_ID='${escapeEnvValue(process.env.REEF_ROOT_VM_ID || process.env.VERS_VM_ID)}'`
       : "",
-    // v1 backward compat
-    "export REEF_CHILD_AGENT='true'",
-    "export VERS_AGENT_ROLE='worker'",
+    opts.directive ? `export VERS_AGENT_DIRECTIVE='${escapeEnvValue(opts.directive)}'` : "",
     process.env.VERS_AGENT_NAME
       ? `export VERS_PARENT_AGENT='${escapeEnvValue(process.env.VERS_AGENT_NAME)}'`
       : "export VERS_PARENT_AGENT='reef'",
@@ -257,7 +260,7 @@ rm -rf ${RPC_DIR}`,
 
 export async function startWorkerRpcAgent(
   vmId: string,
-  opts: { llmProxyKey?: string; model?: string; label?: string },
+  opts: { llmProxyKey?: string; model?: string; label?: string; directive?: string; category?: string },
 ): Promise<RpcHandle> {
   const sshBaseArgs = await versClient.sshArgs(vmId);
   const envExports = buildWorkerEnv(vmId, opts.label || `worker-${vmId.slice(0, 8)}`, opts);
@@ -579,7 +582,13 @@ export class SwarmRuntime {
         }
 
         // Start RPC agent
-        const handle = await this.startHandle(vmId, { llmProxyKey, model, label });
+        const handle = await this.startHandle(vmId, {
+          llmProxyKey,
+          model,
+          label,
+          directive: params.directive,
+          category: params.category,
+        });
 
         // Wait for RPC ready
         const ready = await this.waitForReady(handle, 45000);

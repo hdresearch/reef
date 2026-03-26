@@ -229,19 +229,11 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           commitId: params.commitId,
           context: params.context,
           category: "agent_vm",
+          directive: params.directive,
         });
 
         const agent = spawnResult.agents?.[0];
         if (!agent) return client.err("Failed to spawn agent VM");
-
-        // Set directive if provided (category already set via spawn)
-        if (params.directive) {
-          try {
-            await client.api("PATCH", `/vm-tree/vms/${agent.vmId}`, { directive: params.directive });
-          } catch {
-            /* best effort */
-          }
-        }
 
         // Send the task — agent VMs always get an initial task
         await client.api("POST", `/swarm/agents/${params.name}/task`, { task: params.task });

@@ -30,6 +30,7 @@ export interface RemoteRpcOptions {
   systemPrompt?: string;
   model?: string;
   agentsMd?: string; // v2: full AGENTS.md content to write to child VM
+  directive?: string; // v2: hard guardrails (VERS_AGENT_DIRECTIVE)
 }
 const versClient = new VersClient();
 
@@ -136,9 +137,7 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
     process.env.VERS_VM_ID
       ? `export REEF_ROOT_VM_ID='${escapeEnvValue(process.env.REEF_ROOT_VM_ID || process.env.VERS_VM_ID)}'`
       : "",
-    // v1 backward compat (remove once v2 is fully deployed)
-    "export REEF_CHILD_AGENT='true'",
-    "export VERS_AGENT_ROLE='lieutenant'",
+    opts.directive ? `export VERS_AGENT_DIRECTIVE='${escapeEnvValue(opts.directive)}'` : "",
     process.env.VERS_AGENT_NAME
       ? `export VERS_PARENT_AGENT='${escapeEnvValue(process.env.VERS_AGENT_NAME)}'`
       : "export VERS_PARENT_AGENT='reef'",

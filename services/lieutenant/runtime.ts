@@ -43,6 +43,7 @@ interface CreateParams {
   model?: string;
   commitId?: string;
   context?: string; // v2: situational context appended to inherited AGENTS.md
+  directive?: string; // v2: hard guardrails (VERS_AGENT_DIRECTIVE)
 }
 
 export const DEFAULT_LIEUTENANT_MODEL = "claude-opus-4-6";
@@ -230,6 +231,7 @@ export class LieutenantRuntime {
         model: resolvedModel,
         systemPrompt,
         agentsMd,
+        directive: params.directive,
       });
       this.handles.set(name, handle);
 

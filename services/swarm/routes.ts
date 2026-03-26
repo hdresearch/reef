@@ -13,13 +13,22 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
   routes.post("/agents", async (c) => {
     try {
       const body = await c.req.json();
-      const { commitId, count, labels, llmProxyKey, model, context, category } = body;
+      const { commitId, count, labels, llmProxyKey, model, context, category, directive } = body;
 
       if (!count || typeof count !== "number" || count < 1) {
         return c.json({ error: "count is required and must be >= 1" }, 400);
       }
 
-      const result = await getRuntime().spawn({ commitId, count, labels, llmProxyKey, model, context, category });
+      const result = await getRuntime().spawn({
+        commitId,
+        count,
+        labels,
+        llmProxyKey,
+        model,
+        context,
+        category,
+        directive,
+      });
       return c.json(
         {
           agents: result.agents.map((a) => ({ id: a.id, vmId: a.vmId, status: a.status })),

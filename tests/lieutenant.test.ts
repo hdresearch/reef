@@ -160,7 +160,7 @@ describe("lieutenant routes and runtime", () => {
 
     expect(env).toContain("export VERS_VM_ID='vm-child-123'");
     expect(env).toContain("export VERS_INFRA_URL='https://root.example:3000'");
-    expect(env).toContain("export VERS_AGENT_ROLE='lieutenant'");
+    expect(env).toContain("export REEF_CATEGORY='lieutenant'");
   });
 
   test("post-restore VM identity script persists VERS_VM_ID into reef-agent.sh", () => {
