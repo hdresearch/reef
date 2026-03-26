@@ -141,6 +141,8 @@ routes.put("/:key", async (c) => {
     "NOTIFICATION_MUTE",
     "NOTIFICATION_MIN_DURATION_MS",
     "SLACK_NOTIFICATION_CHANNEL",
+    "SLACK_APP_TOKEN",
+    "DISCORD_APP_ID",
   ]);
 
   if (!validKeys.has(key)) {

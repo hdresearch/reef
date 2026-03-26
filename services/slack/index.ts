@@ -186,7 +186,7 @@ async function sendSlackReply(channel: string, text: string, threadTs?: string) 
   if (!token) return;
 
   const cleaned = stripInternalTags(text);
-  const chunks = splitMessage(cleaned);
+  const chunks = splitMessage(cleaned, 3900); // Slack allows up to 40k, but keep reasonable
 
   try {
     for (const chunk of chunks) {
@@ -260,8 +260,11 @@ async function connectSocketMode() {
       return;
     }
 
-    if (payload.type === "events_api" && payload.payload?.event) {
-      handleSlackEvent(payload.payload.event);
+    if (payload.type === "events_api") {
+      const evt = payload.payload?.event || payload.event;
+      if (evt) {
+        handleSlackEvent(evt);
+      }
     }
   };
 
@@ -283,17 +286,14 @@ function scheduleReconnect() {
 }
 
 function handleSlackEvent(event: any) {
-  // Only handle messages (not subtypes like bot_message, message_changed, etc.)
-  if (event.type !== "message" || event.subtype) return;
+  // Handle both message.im (DMs) and app_mention (@mentions in channels)
+  const isMessage = event.type === "message" && !event.subtype;
+  const isAppMention = event.type === "app_mention";
+
+  if (!isMessage && !isAppMention) return;
 
   // Ignore bot messages
   if (event.bot_id) return;
-
-  // Check if the bot was mentioned or if it's a DM
-  const isDM = event.channel_type === "im";
-  const botMentioned = socket.botUserId && event.text?.includes(`<@${socket.botUserId}>`);
-
-  if (!isDM && !botMentioned) return;
 
   // Strip bot mention
   let text = event.text || "";
@@ -493,7 +493,7 @@ const slack: ServiceModule = {
     const appToken = resolveAppToken();
     if (appToken) {
       console.log("  [slack] App token found, connecting to Socket Mode...");
-      connectSocketMode();
+      connectSocketMode().catch((err: any) => console.error("  [slack] Socket Mode connection failed:", err.message));
     } else {
       console.log(
         "  [slack] No SLACK_APP_TOKEN set, Socket Mode disabled. Set token to enable bidirectional messaging.",
