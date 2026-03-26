@@ -20,7 +20,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Hono } from "hono";
-import type { FleetClient, RouteDocs, ServiceModule } from "../../src/core/types.js";
+import type { FleetClient, RouteDocs, ServiceContext, ServiceModule } from "../../src/core/types.js";
 
 const VERS_CONFIG_PATH = join(process.cwd(), "data", "vers-config.json");
 
@@ -260,12 +260,59 @@ const routeDocs: Record<string, RouteDocs> = {
   },
 };
 
+// =============================================================================
+// Notification forwarding — receives from notifications service
+// =============================================================================
+
+function resolveNotificationChannel(): string | null {
+  if (process.env.SLACK_NOTIFICATION_CHANNEL) return process.env.SLACK_NOTIFICATION_CHANNEL;
+  return loadVersConfigOverride("SLACK_NOTIFICATION_CHANNEL");
+}
+
+function formatNotificationForSlack(n: any): string {
+  return `*${n.title}* — ${n.body}`;
+}
+
+async function sendSlackNotification(channel: string, text: string) {
+  const token = resolveToken();
+  if (!token) return;
+  try {
+    await slackRequest("chat.postMessage", token, { channel, text });
+  } catch (e: any) {
+    console.error("  [slack] Failed to forward notification:", e.message);
+  }
+}
+
+// =============================================================================
+// Module
+// =============================================================================
+
 const slack: ServiceModule = {
   name: "slack",
   description: "Slack messaging — send messages and manage channels via bot token",
   routes,
   routeDocs,
   registerTools,
+
+  init(ctx: ServiceContext) {
+    // Subscribe to notification:push from the notifications service
+    ctx.events.on("notification:push", (data: any) => {
+      const channelId = resolveNotificationChannel();
+      if (!channelId) return;
+
+      const notifications: any[] = data?.notifications || [];
+      if (notifications.length === 0) return;
+
+      const formatted = notifications.map(formatNotificationForSlack).join("\n\n");
+      sendSlackNotification(channelId, formatted);
+    });
+
+    const notifChannel = resolveNotificationChannel();
+    if (notifChannel) {
+      console.log(`  [slack] Notification forwarding to channel ${notifChannel}`);
+    }
+  },
+
   dependencies: ["vers-config"],
   capabilities: ["slack.send", "slack.channels"],
 };

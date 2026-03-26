@@ -121,8 +121,8 @@ const gateway: GatewayState = {
   shutdownRequested: false,
 };
 
-// Track task IDs submitted from Discord so we skip self-notifications
-const discordSubmittedTasks = new Set<string>();
+// Reference to event bus for notifying the notifications service about external tasks
+let serviceBus: ServiceContext["events"] | null = null;
 
 function reefBaseUrl(): string {
   return process.env.VERS_INFRA_URL || "http://localhost:3000";
@@ -170,8 +170,8 @@ async function submitToReef(prompt: string, channelId: string): Promise<string> 
   const taskId = data.id || data.conversationId || conversationId;
   console.log(`  [discord] Task submitted: ${taskId} (channel: ${channelId})`);
 
-  // Tag so we skip self-notification
-  discordSubmittedTasks.add(conversationId);
+  // Tell the notifications service this task came from Discord (skip self-notification)
+  if (serviceBus) serviceBus.fire("notification:external-task", { taskId: conversationId });
 
   // Poll for task completion
   const result = await waitForTaskResult(baseUrl, token, conversationId);
@@ -486,7 +486,7 @@ function disconnectGateway() {
 }
 
 // =============================================================================
-// Proactive event notifications
+// Notification forwarding — receives from notifications service
 // =============================================================================
 
 function resolveNotificationChannel(): string | null {
@@ -494,148 +494,26 @@ function resolveNotificationChannel(): string | null {
   return loadVersConfigOverride("DISCORD_NOTIFICATION_CHANNEL_ID");
 }
 
-function isNotificationsMuted(): boolean {
-  const muted = process.env.DISCORD_NOTIFICATIONS_MUTED || loadVersConfigOverride("DISCORD_NOTIFICATIONS_MUTED");
-  return muted === "true";
+function formatNotificationForDiscord(n: any): string {
+  const icon = n.level === "error" ? "**" : n.level === "warning" ? "**" : "**";
+  return `${icon}${n.title}** — ${n.body}`;
 }
 
-// Batching: collect events for 5s then flush
-const notificationBuffer: string[] = [];
-let notificationFlushTimer: ReturnType<typeof setTimeout> | null = null;
+function subscribeToNotifications(ctx: ServiceContext) {
+  ctx.events.on("notification:push", (data: any) => {
+    const channelId = resolveNotificationChannel();
+    if (!channelId) return;
 
-function queueNotification(message: string) {
-  const channelId = resolveNotificationChannel();
-  if (!channelId || isNotificationsMuted()) return;
+    const notifications: any[] = data?.notifications || [];
+    if (notifications.length === 0) return;
 
-  notificationBuffer.push(message);
-
-  if (notificationFlushTimer) clearTimeout(notificationFlushTimer);
-  notificationFlushTimer = setTimeout(() => flushNotifications(channelId), 5000);
-}
-
-async function flushNotifications(channelId: string) {
-  if (notificationBuffer.length === 0) return;
-  const messages = notificationBuffer.splice(0);
-  notificationFlushTimer = null;
-
-  const combined = messages.join("\n\n");
-  await sendDiscordReply(channelId, combined);
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
-  return `${(ms / 3_600_000).toFixed(1)}h`;
-}
-
-const MIN_NOTIFY_DURATION_MS = 30_000; // Only notify for tasks >30s
-
-function shouldNotifyTask(data: any): boolean {
-  const taskId = data?.taskId;
-
-  // Skip tasks submitted from Discord (user already saw the reply)
-  if (taskId && discordSubmittedTasks.has(taskId)) {
-    discordSubmittedTasks.delete(taskId);
-    return false;
-  }
-
-  // Always notify errors
-  if (data?.type === "task_error") return true;
-
-  // Notify if files were changed (something was built)
-  const filesChanged = data?.filesChanged;
-  if (Array.isArray(filesChanged) && filesChanged.length > 0) return true;
-
-  // Notify if task took >30s (long-running work, not quick Q&A)
-  const duration = data?.durationMs;
-  if (typeof duration === "number" && duration >= MIN_NOTIFY_DURATION_MS) return true;
-
-  return false;
-}
-
-function subscribeToEvents(ctx: ServiceContext) {
-  // Task completions (from reef.ts broadcast → reef:event)
-  ctx.events.on("reef:event", (data: any) => {
-    const type = data?.type || data?.eventType;
-
-    if (type === "task_done" || type === "task_error") {
-      if (!shouldNotifyTask(data)) return;
-
-      const trigger = data.trigger || data.prompt || data.taskId || "";
-      const duration = data.durationMs ? ` (${formatDuration(data.durationMs)})` : "";
-      if (type === "task_error") {
-        const err = data.error || "unknown error";
-        queueNotification(`**Task failed**${duration} — "${trigger.slice(0, 80)}"\nError: \`${err.slice(0, 200)}\``);
-      } else if (data.output || data.summary) {
-        const summary = (data.summary || data.output || "").slice(0, 300);
-        queueNotification(`**Task completed**${duration} — "${trigger.slice(0, 80)}"\n${summary}`);
-      }
-    }
-
-    if (type === "service_installed") {
-      queueNotification(`**Service installed** — \`${data.name || "unknown"}\``);
-    }
-    if (type === "service_removed") {
-      queueNotification(`**Service removed** — \`${data.name || "unknown"}\``);
-    }
+    const formatted = notifications.map(formatNotificationForDiscord).join("\n\n");
+    sendDiscordReply(channelId, formatted).catch((err: any) => {
+      console.error("  [discord] Failed to forward notification:", err.message);
+    });
   });
 
-  // Lieutenant lifecycle
-  ctx.events.on("lieutenant:created", (data: any) => {
-    if (data?.reconnected) return; // Skip reconnections
-    queueNotification(`**Lieutenant spawned** — \`${data?.name || "unknown"}\` (VM: ${data?.vmId || "?"})`);
-  });
-  ctx.events.on("lieutenant:completed", (data: any) => {
-    const duration = data?.duration ? ` (${formatDuration(data.duration)})` : "";
-    queueNotification(`**Lieutenant completed** — \`${data?.name || "unknown"}\`${duration}`);
-  });
-  ctx.events.on("lieutenant:destroyed", (data: any) => {
-    queueNotification(`**Lieutenant destroyed** — \`${data?.name || "unknown"}\``);
-  });
-
-  // Swarm events — track spawn/complete/error counts to post a summary when done
-  const SWARM_TTL = 30 * 60 * 1000; // 30 min max lifetime per tracker
-  const swarmTracker = new Map<string, { total: number; done: number; failed: number; createdAt: number }>();
-
-  ctx.events.on("swarm:agent_spawned", (data: any) => {
-    const key = data?.swarmId || "default";
-    const tracker = swarmTracker.get(key) || { total: 0, done: 0, failed: 0, createdAt: Date.now() };
-    tracker.total++;
-    swarmTracker.set(key, tracker);
-
-    // Sweep stale entries
-    const now = Date.now();
-    for (const [k, v] of swarmTracker) {
-      if (now - v.createdAt > SWARM_TTL) swarmTracker.delete(k);
-    }
-  });
-  ctx.events.on("swarm:agent_completed", (data: any) => {
-    const key = data?.swarmId || "default";
-    const tracker = swarmTracker.get(key);
-    if (!tracker) return;
-    tracker.done++;
-    if (tracker.done + tracker.failed >= tracker.total) {
-      queueNotification(
-        "**Swarm finished** — " +
-          tracker.done +
-          "/" +
-          tracker.total +
-          " workers done" +
-          (tracker.failed > 0 ? `, ${tracker.failed} failed` : ""),
-      );
-      swarmTracker.delete(key);
-    }
-  });
-  ctx.events.on("swarm:agent_error", (data: any) => {
-    const key = data?.swarmId || "default";
-    const tracker = swarmTracker.get(key);
-    if (tracker) tracker.failed++;
-    queueNotification(
-      `**Swarm worker error** — \`${data?.label || data?.vmId || "unknown"}\`: ${(data?.error || "unknown error").slice(0, 200)}`,
-    );
-  });
-
-  console.log("  [discord] Event notifications subscribed");
+  console.log("  [discord] Notification forwarding subscribed");
 }
 
 // =============================================================================
@@ -901,53 +779,8 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
     },
   });
 
-  pi.registerTool({
-    name: "reef_discord_mute",
-    label: "Discord: Mute Notifications",
-    description: "Pause Discord notifications without clearing the channel. Use reef_discord_unmute to resume.",
-    parameters: Type.Object({}),
-    async execute() {
-      if (!client.getBaseUrl()) return client.noUrl();
-      try {
-        await client.api("PUT", "/discord/notifications", { muted: true });
-        return client.ok("Discord notifications muted.");
-      } catch (e: any) {
-        return client.err(e.message);
-      }
-    },
-  });
-
-  pi.registerTool({
-    name: "reef_discord_unmute",
-    label: "Discord: Unmute Notifications",
-    description: "Resume Discord notifications after muting.",
-    parameters: Type.Object({}),
-    async execute() {
-      if (!client.getBaseUrl()) return client.noUrl();
-      try {
-        await client.api("PUT", "/discord/notifications", { muted: false });
-        return client.ok("Discord notifications resumed.");
-      } catch (e: any) {
-        return client.err(e.message);
-      }
-    },
-  });
-
-  pi.registerTool({
-    name: "reef_discord_notify_stop",
-    label: "Discord: Stop Notifications",
-    description: "Stop Discord notifications entirely by clearing the notification channel.",
-    parameters: Type.Object({}),
-    async execute() {
-      if (!client.getBaseUrl()) return client.noUrl();
-      try {
-        await client.api("PUT", "/discord/notifications", { channel_id: "" });
-        return client.ok("Discord notifications stopped. No channel configured.");
-      } catch (e: any) {
-        return client.err(e.message);
-      }
-    },
-  });
+  // Mute/unmute/stop are handled centrally by the notifications service.
+  // Use reef_notify_mute / reef_notify_unmute for global control.
 }
 
 // =============================================================================
@@ -1002,6 +835,8 @@ const discord: ServiceModule = {
   registerTools,
 
   init(ctx: ServiceContext) {
+    serviceBus = ctx.events;
+
     // Connect to Discord Gateway if token is available
     const token = resolveToken();
     if (token) {
@@ -1013,26 +848,18 @@ const discord: ServiceModule = {
       );
     }
 
-    // Subscribe to reef events for proactive notifications
-    subscribeToEvents(ctx);
+    // Subscribe to notification:push from the notifications service
+    subscribeToNotifications(ctx);
     const notifChannel = resolveNotificationChannel();
     if (notifChannel) {
-      console.log(`  [discord] Event notifications enabled for channel ${notifChannel}`);
+      console.log(`  [discord] Notification forwarding to channel ${notifChannel}`);
     } else {
-      console.log(
-        "  [discord] Event notifications disabled (no channel configured). Use reef_discord_notify to enable.",
-      );
+      console.log("  [discord] No notification channel set. Use reef_discord_notify to enable.");
     }
   },
 
   store: {
     async close() {
-      // Flush pending notifications before shutdown
-      const channelId = resolveNotificationChannel();
-      if (channelId && notificationBuffer.length > 0) {
-        if (notificationFlushTimer) clearTimeout(notificationFlushTimer);
-        await flushNotifications(channelId);
-      }
       disconnectGateway();
     },
   },

@@ -138,6 +138,9 @@ routes.put("/:key", async (c) => {
     "DISCORD_BOT_TOKEN",
     "DISCORD_NOTIFICATION_CHANNEL_ID",
     "DISCORD_NOTIFICATIONS_MUTED",
+    "NOTIFICATION_MUTE",
+    "NOTIFICATION_MIN_DURATION_MS",
+    "SLACK_NOTIFICATION_CHANNEL",
   ]);
 
   if (!validKeys.has(key)) {
