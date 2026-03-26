@@ -54,6 +54,19 @@ function invalidateConfigCache() {
   configCache = null;
 }
 
+// TODO: Replace with the official Vers Discord bot application ID
+const DEFAULT_DISCORD_APP_ID = "YOUR_APP_ID_HERE";
+
+function resolveAppId(): string {
+  return process.env.DISCORD_APP_ID || loadVersConfigOverride("DISCORD_APP_ID") || DEFAULT_DISCORD_APP_ID;
+}
+
+function getInviteUrl(): string {
+  const appId = resolveAppId();
+  // permissions=2048 = Send Messages; 1024 = Read Message History; 68608 = combined useful set
+  return `https://discord.com/api/oauth2/authorize?client_id=${appId}&permissions=68608&scope=bot`;
+}
+
 function resolveToken(): string | null {
   // 1. Environment variable (set at provision time)
   if (process.env.DISCORD_BOT_TOKEN) return process.env.DISCORD_BOT_TOKEN;
@@ -584,6 +597,20 @@ routes.get("/guilds", async (c) => {
   }
 });
 
+routes.get("/invite", (c) => {
+  const url = getInviteUrl();
+  const appId = resolveAppId();
+  const isPlaceholder = appId === DEFAULT_DISCORD_APP_ID;
+  return c.json({
+    url,
+    appId,
+    placeholder: isPlaceholder,
+    instructions: isPlaceholder
+      ? "The official Vers bot is not yet configured. Set DISCORD_APP_ID or use reef_discord_configure with a BYO bot token."
+      : "Click the URL to add the Vers bot to your Discord server. Once added, tell the agent which channel to use for notifications.",
+  });
+});
+
 routes.get("/status", async (c) => {
   const token = resolveToken();
   if (!token) return c.json({ configured: false, error: "DISCORD_BOT_TOKEN not set" });
@@ -697,7 +724,7 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
       } catch (e: any) {
         if (e.message.includes("not configured")) {
           return client.err(
-            "Discord not configured. Ask the user for a Discord Bot Token, then use reef_discord_configure to set it.",
+            "Discord not configured. Use reef_discord_setup to get the invite link, or reef_discord_configure for a BYO bot token.",
           );
         }
         return client.err(e.message);
@@ -725,7 +752,7 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
       } catch (e: any) {
         if (e.message.includes("not configured")) {
           return client.err(
-            "Discord not configured. Ask the user for a Discord Bot Token, then use reef_discord_configure to set it.",
+            "Discord not configured. Use reef_discord_setup to get the invite link, or reef_discord_configure for a BYO bot token.",
           );
         }
         return client.err(e.message);
@@ -734,12 +761,47 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
   });
 
   pi.registerTool({
-    name: "reef_discord_configure",
-    label: "Discord: Configure",
+    name: "reef_discord_setup",
+    label: "Discord: Setup",
     description:
-      "Set the Discord Bot Token. The user must create a Discord application at discord.com/developers/applications, " +
-      "add a bot, enable MESSAGE CONTENT intent, add the bot to their server with Send Messages permission, " +
-      "and provide the bot token.",
+      "Set up Discord integration. Returns an invite link for the user to add the Vers bot to their server. " +
+      "This is the default path — the user clicks the link, authorizes, and the bot joins their server. " +
+      "Once added, ask which channel to use for notifications.",
+    parameters: Type.Object({}),
+    async execute() {
+      if (!client.getBaseUrl()) return client.noUrl();
+      try {
+        const result = await client.api<{ url: string; placeholder: boolean; instructions: string }>(
+          "GET",
+          "/discord/invite",
+        );
+        if (result.placeholder) {
+          return client.ok(
+            "The official Vers Discord bot is not yet configured.\n\n" +
+              "For now, you can bring your own bot token using reef_discord_configure.\n" +
+              "To create a bot: discord.com/developers/applications → New App → Bot → copy token.",
+          );
+        }
+        return client.ok(
+          "**Add the Vers bot to your Discord server:**\n\n" +
+            result.url +
+            "\n\n" +
+            "Click the link, select your server, and authorize.\n" +
+            "Once added, tell me which channel to use for notifications.",
+        );
+      } catch (e: any) {
+        return client.err(e.message);
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "reef_discord_configure",
+    label: "Discord: Configure (BYO Token)",
+    description:
+      "Fallback: set a custom Discord Bot Token for self-hosted or BYO-bot setups. " +
+      "Most users should use reef_discord_setup instead, which provides the official Vers bot invite link. " +
+      "Only use this if the user explicitly provides their own bot token.",
     parameters: Type.Object({
       token: Type.String({ description: "Discord Bot Token" }),
     }),
@@ -804,6 +866,10 @@ const routeDocs: Record<string, RouteDocs> = {
   "GET /guilds": {
     summary: "List guilds the bot is in",
     response: "{ guilds: [{ id, name, icon, owner, permissions }] }",
+  },
+  "GET /invite": {
+    summary: "Get the Discord bot invite link for adding the Vers bot to a server",
+    response: "{ url, appId, placeholder, instructions }",
   },
   "GET /status": {
     summary: "Check Discord integration status, bot identity, and Gateway connection",
