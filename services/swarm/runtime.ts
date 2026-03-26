@@ -12,6 +12,7 @@ import {
   resolveGoldenCommit,
   VersClient,
 } from "@hdresearch/pi-v/core";
+import { buildAgentsMdWriteScript, buildChildAgentsMd, readParentAgentsMd } from "../../src/core/agents-md.js";
 import type { ServiceEventBus } from "../../src/core/events.js";
 import {
   buildPersistKeysScript,
@@ -54,6 +55,8 @@ export interface SpawnParams {
   labels?: string[];
   llmProxyKey?: string;
   model?: string;
+  context?: string; // v2: situational context appended to inherited AGENTS.md
+  category?: string; // v2: override category (default: swarm_vm, agent_vm for reef_agent_spawn)
 }
 
 export interface SwarmRuntimeOptions {
@@ -521,8 +524,9 @@ export class SwarmRuntime {
     const resolved = await this.resolveCommitId(params.commitId);
     const llmProxyKey = params.llmProxyKey || process.env.LLM_PROXY_KEY || "";
     const model = params.model?.trim() || DEFAULT_SWARM_MODEL;
-    if (!llmProxyKey) {
-      throw new Error("LLM_PROXY_KEY is required to spawn swarm agents.");
+    // v2: accept either LLM_PROXY_KEY (vers) or ANTHROPIC_API_KEY (direct) for spawning
+    if (!llmProxyKey && !process.env.ANTHROPIC_API_KEY) {
+      throw new Error("LLM_PROXY_KEY or ANTHROPIC_API_KEY is required to spawn swarm agents.");
     }
 
     let rootVmId = "";
@@ -557,6 +561,17 @@ export class SwarmRuntime {
 
         if (i === 0) {
           await versClient.exec(vmId, `mkdir -p /root/.swarm/status && echo '{"vms":[]}' > /root/.swarm/registry.json`);
+        }
+
+        // v2: Copy parent's AGENTS.md with inherited context to child VM
+        try {
+          const parentMd = readParentAgentsMd();
+          const parentName = process.env.VERS_AGENT_NAME || "reef";
+          const childMd = buildChildAgentsMd(parentMd, parentName, params.context);
+          await versClient.execScript(vmId, buildAgentsMdWriteScript(childMd));
+        } catch (err) {
+          console.error(`  [swarm] AGENTS.md copy failed for ${label}: ${err instanceof Error ? err.message : err}`);
+          // Non-fatal — worker can still function without inherited context
         }
 
         // Start RPC agent
@@ -606,7 +621,17 @@ export class SwarmRuntime {
         });
 
         messages.push(`${label}: VM ${vmId.slice(0, 12)} — ready`);
-        this.events.fire("swarm:agent_spawned", { vmId, label, role: "worker", commitId: resolved.commitId });
+
+        // v2: Register in vm_tree first, then update status to running
+        this.events.fire("swarm:agent_spawned", {
+          vmId,
+          label,
+          role: "worker",
+          commitId: resolved.commitId,
+          category: params.category || "swarm_vm",
+          context: params.context,
+        });
+        this.events.fire("swarm:agent_ready", { vmId, label });
         this.events.fire("reef:event", {
           type: "swarm_agent_spawned",
           source: "swarm",

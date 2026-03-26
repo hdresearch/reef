@@ -6,6 +6,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { type ResolveGoldenCommitResult, resolveGoldenCommit } from "@hdresearch/pi-v/core";
+import { buildChildAgentsMd, readParentAgentsMd } from "../../src/core/agents-md.js";
 import type { ServiceEventBus } from "../../src/core/events.js";
 import {
   buildSystemPrompt,
@@ -41,6 +42,7 @@ interface CreateParams {
   llmProxyKey?: string;
   model?: string;
   commitId?: string;
+  context?: string; // v2: situational context appended to inherited AGENTS.md
 }
 
 export const DEFAULT_LIEUTENANT_MODEL = "claude-opus-4-6";
@@ -212,11 +214,22 @@ export class LieutenantRuntime {
       this.store.update(name, { vmId: remote.vmId });
       await this.waitForRemoteVm(remote.vmId);
 
+      // v2: Build inherited AGENTS.md with context
+      let agentsMd: string | undefined;
+      try {
+        const parentMd = readParentAgentsMd();
+        const parentName = process.env.VERS_AGENT_NAME || "reef";
+        agentsMd = buildChildAgentsMd(parentMd, parentName, params.context);
+      } catch (err) {
+        console.error(`  [lieutenant] AGENTS.md build failed for ${name}: ${err instanceof Error ? err.message : err}`);
+      }
+
       const handle = await this.startRemoteHandle(remote.vmId, {
         name,
         llmProxyKey: resolvedLlmProxyKey,
         model: resolvedModel,
         systemPrompt,
+        agentsMd,
       });
       this.handles.set(name, handle);
 

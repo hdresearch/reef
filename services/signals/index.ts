@@ -54,6 +54,20 @@ routes.post("/", async (c) => {
     events?.emit(`signal:${signalType}`, signal);
     events?.emit("signal:new", signal);
 
+    // v2: Update sender's vm_tree status based on signal type
+    if (direction === "up" && vmTreeStore) {
+      try {
+        const sender = vmTreeStore.getVMByName(fromAgent);
+        if (sender) {
+          if (signalType === "done" || signalType === "failed") {
+            vmTreeStore.updateVM(sender.vmId, { status: "stopped" });
+          }
+        }
+      } catch {
+        /* best effort */
+      }
+    }
+
     return c.json(signal, 201);
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -312,6 +326,72 @@ Messages are auto-acknowledged when you read them.`,
         });
 
         return client.ok(`${signals.length} message(s):\n${lines.join("\n")}`, { signals });
+      } catch (e: any) {
+        return client.err(e.message);
+      }
+    },
+  });
+
+  // reef_fleet_status — live view of direct children
+  pi.registerTool({
+    name: "reef_fleet_status",
+    label: "Fleet: Status",
+    description: [
+      "Get a live view of your direct children in the fleet tree.",
+      "Shows each child's name, category, status, model, last signal, and context.",
+      "Use this to monitor your fleet without polling individual agents.",
+    ].join("\n"),
+    parameters: Type.Object({}),
+    async execute() {
+      if (!client.getBaseUrl()) return client.noUrl();
+      try {
+        // Get our VM ID
+        const vmId = process.env.VERS_VM_ID;
+        if (!vmId) return client.ok("No VERS_VM_ID set — cannot determine fleet position.");
+
+        // Get direct children from vm_tree
+        const treeResult = await client.api<any>("GET", `/vm-tree/vms/${encodeURIComponent(vmId)}/children`);
+        const children = treeResult.children || [];
+
+        if (children.length === 0) {
+          return client.ok("No children in fleet. You haven't spawned any agents yet.");
+        }
+
+        // Get fleet-wide status
+        const fleetResult = await client.api<any>("GET", "/vm-tree/fleet/status");
+
+        // For each child, get their last signal
+        const lines: string[] = [`Fleet: ${fleetResult.alive} alive VMs, ${children.length} direct children\n`];
+
+        for (const child of children) {
+          const statusColor = child.status === "running" ? "running" : child.status;
+          let lastSignal = "none";
+
+          // Try to get last signal from this child
+          try {
+            const sigResult = await client.api<any>("GET", `/signals/?from=${encodeURIComponent(child.name)}&limit=1`);
+            const sig = sigResult.signals?.[0];
+            if (sig) {
+              const payload =
+                sig.payload?.summary || sig.payload?.message || JSON.stringify(sig.payload || {}).slice(0, 80);
+              lastSignal = `${sig.signalType}: ${payload}`;
+            }
+          } catch {
+            /* best effort */
+          }
+
+          const elapsed = child.createdAt ? `${Math.round((Date.now() - child.createdAt) / 1000 / 60)}min` : "?";
+          const ctx = child.context ? `${child.context.slice(0, 80).replace(/\n/g, " ")}...` : "no context";
+
+          lines.push(
+            `${child.name} (${child.category}, ${statusColor}, ${elapsed})`,
+            `  Model: ${child.model || "default"} | Last signal: ${lastSignal}`,
+            `  Context: ${ctx}`,
+            "",
+          );
+        }
+
+        return client.ok(lines.join("\n"), { children, fleet: fleetResult });
       } catch (e: any) {
         return client.err(e.message);
       }

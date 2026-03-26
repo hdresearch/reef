@@ -27,6 +27,9 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       ),
       llmProxyKey: Type.Optional(Type.String({ description: "Vers LLM proxy key override (sk-vers-...)" })),
       model: Type.Optional(Type.String({ description: "Model ID for agents (default: claude-sonnet-4-6)" })),
+      context: Type.Optional(
+        Type.String({ description: "Situational context appended to inherited AGENTS.md for all workers" }),
+      ),
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
@@ -37,6 +40,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           labels: params.labels,
           llmProxyKey: params.llmProxyKey,
           model: params.model,
+          context: params.context,
         });
         return client.ok(
           `Spawned ${result.count} agent(s):\n${result.messages.join("\n")}\n\n${result.count} workers ready.`,
@@ -186,6 +190,70 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       try {
         const result = await client.api<any>("POST", "/swarm/teardown");
         return client.ok(`Swarm torn down:\n${result.results.join("\n")}`, {});
+      } catch (e: any) {
+        return client.err(e.message);
+      }
+    },
+  });
+
+  // reef_agent_spawn — spawn a single autonomous agent VM
+  pi.registerTool({
+    name: "reef_agent_spawn",
+    label: "Spawn Agent VM",
+    description: [
+      "Spawn a single autonomous agent VM that runs independently and signals when done.",
+      "Unlike swarm workers, agent VMs own their lifecycle — they decide what to do based on",
+      "their inherited AGENTS.md + context, and signal done/blocked/failed to their parent.",
+      "",
+      "Your full AGENTS.md is inherited by the agent. Provide context to tell it what to do.",
+      "The agent VM can spawn its own sub-agents (more agent VMs, swarms, resource VMs).",
+      "",
+      "Pick model and effort based on task complexity. Default: sonnet/medium.",
+    ].join("\n"),
+    parameters: Type.Object({
+      name: Type.String({ description: "Agent name (must be unique in the fleet)" }),
+      task: Type.String({ description: "The task for this agent to execute autonomously" }),
+      context: Type.Optional(Type.String({ description: "Situational context appended to inherited AGENTS.md" })),
+      directive: Type.Optional(Type.String({ description: "Hard guardrails (VERS_AGENT_DIRECTIVE)" })),
+      model: Type.Optional(Type.String({ description: "LLM model (default: claude-sonnet-4-6)" })),
+      commitId: Type.Optional(Type.String({ description: "Golden image commit (default: auto-resolved)" })),
+    }),
+    async execute(_id, params) {
+      if (!client.getBaseUrl()) return client.noUrl();
+      try {
+        // Spawn as a 1-worker swarm with agent_vm category
+        const spawnResult = await client.api<any>("POST", "/swarm/agents", {
+          count: 1,
+          labels: [params.name],
+          model: params.model || "claude-sonnet-4-6",
+          commitId: params.commitId,
+          context: params.context,
+          category: "agent_vm",
+        });
+
+        const agent = spawnResult.agents?.[0];
+        if (!agent) return client.err("Failed to spawn agent VM");
+
+        // Set directive if provided (category already set via spawn)
+        if (params.directive) {
+          try {
+            await client.api("PATCH", `/vm-tree/vms/${agent.vmId}`, { directive: params.directive });
+          } catch {
+            /* best effort */
+          }
+        }
+
+        // Send the task — agent VMs always get an initial task
+        await client.api("POST", `/swarm/agents/${params.name}/task`, { task: params.task });
+
+        const lines = [
+          `Agent VM "${params.name}" spawned on ${agent.vmId?.slice(0, 12)}`,
+          `Task: ${params.task.slice(0, 100)}${params.task.length > 100 ? "..." : ""}`,
+          params.context ? `Context: ${params.context.slice(0, 80)}...` : "",
+          "The agent runs autonomously. Check reef_inbox for its signals.",
+        ].filter(Boolean);
+
+        return client.ok(lines.join("\n"), { agent, vmId: agent.vmId, name: params.name });
       } catch (e: any) {
         return client.err(e.message);
       }

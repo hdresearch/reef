@@ -272,16 +272,39 @@ const vmTree: ServiceModule = {
 
     ctx.events.on("swarm:agent_spawned", (data: any) => {
       if (!data?.vmId) return;
+      const category = data.category || "swarm_vm";
       store.upsertVM({
         vmId: data.vmId,
         name: data.label,
         parentId: process.env.VERS_VM_ID || undefined,
-        category: "swarm_vm",
+        category,
+        context: data.context || undefined,
         reefConfig: {
-          services: ["swarm"],
+          services: category === "agent_vm" ? ["agent-context", "signals", "swarm", "store", "github"] : ["swarm"],
           capabilities: ["punkin", "reef-swarm"],
         },
       });
+
+      // v2: Acknowledge stale signals from/to this agent name (clean slate for new incarnation)
+      try {
+        const staleSignals = store.querySignals({ toAgent: data.label, acknowledged: false });
+        const staleFromSignals = store.querySignals({ fromAgent: data.label, acknowledged: false });
+        const allStale = [...staleSignals, ...staleFromSignals];
+        if (allStale.length > 0) {
+          store.acknowledgeSignals(allStale.map((s) => s.id));
+        }
+      } catch {
+        /* best effort */
+      }
+    });
+
+    ctx.events.on("swarm:agent_ready", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.updateVM(data.vmId, { status: "running", rpcStatus: "connected" });
+      } catch {
+        /* best effort */
+      }
     });
 
     ctx.events.on("swarm:agent_destroyed", (data: any) => {

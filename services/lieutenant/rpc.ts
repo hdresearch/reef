@@ -29,6 +29,7 @@ export interface RemoteRpcOptions {
   llmProxyKey?: string;
   systemPrompt?: string;
   model?: string;
+  agentsMd?: string; // v2: full AGENTS.md content to write to child VM
 }
 const versClient = new VersClient();
 
@@ -306,6 +307,15 @@ export async function startRemoteRpcAgent(vmId: string, opts: RemoteRpcOptions):
 
   await versClient.exec(vmId, buildPersistVmIdScript(vmId));
   await versClient.exec(vmId, buildPersistKeysScript(opts));
+
+  // v2: Write inherited AGENTS.md to child VM
+  if (opts.agentsMd) {
+    const safeContent = opts.agentsMd.replace(/AGENTS_MD_EOF/g, "AGENTS_MD_E0F");
+    await versClient.exec(
+      vmId,
+      `mkdir -p /root/.pi/agent && cat > /root/.pi/agent/AGENTS.md << 'AGENTS_MD_EOF'\n${safeContent}\nAGENTS_MD_EOF`,
+    );
+  }
 
   let piCommand = `${resolveAgentBinary()} --mode rpc`;
   if (opts.systemPrompt) {
