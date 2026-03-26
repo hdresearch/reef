@@ -21,6 +21,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Hono } from "hono";
 import type { FleetClient, RouteDocs, ServiceContext, ServiceModule } from "../../src/core/types.js";
+import { splitMessage, stripInternalTags, submitToReef, waitForTaskResult } from "../shared/messaging.js";
 
 const VERS_CONFIG_PATH = join(process.cwd(), "data", "vers-config.json");
 
@@ -154,6 +155,197 @@ routes.get("/_panel", async (c) => {
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// =============================================================================
+// Socket Mode — WebSocket connection for receiving messages
+// =============================================================================
+
+function resolveAppToken(): string | null {
+  return process.env.SLACK_APP_TOKEN || loadVersConfigOverride("SLACK_APP_TOKEN");
+}
+
+interface SocketState {
+  ws: WebSocket | null;
+  botUserId: string | null;
+  reconnectAttempts: number;
+  shutdownRequested: boolean;
+}
+
+const socket: SocketState = {
+  ws: null,
+  botUserId: null,
+  reconnectAttempts: 0,
+  shutdownRequested: false,
+};
+
+let slackServiceBus: ServiceContext["events"] | null = null;
+
+async function sendSlackReply(channel: string, text: string, threadTs?: string) {
+  const token = resolveToken();
+  if (!token) return;
+
+  const cleaned = stripInternalTags(text);
+  const chunks = splitMessage(cleaned);
+
+  try {
+    for (const chunk of chunks) {
+      const payload: Record<string, unknown> = { channel, text: chunk };
+      if (threadTs) payload.thread_ts = threadTs;
+      await slackRequest("chat.postMessage", token, payload);
+    }
+    console.log(`  [slack] Reply sent to ${channel} (${chunks.length} message(s))`);
+  } catch (e: any) {
+    console.error("  [slack] Failed to send reply:", e.message);
+  }
+}
+
+async function connectSocketMode() {
+  const appToken = resolveAppToken();
+  if (!appToken || socket.shutdownRequested) return;
+
+  console.log("  [slack] Connecting to Socket Mode...");
+
+  // Get a WebSocket URL from Slack
+  const res = await fetch("https://slack.com/api/apps.connections.open", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${appToken}`, "Content-Type": "application/x-www-form-urlencoded" },
+  });
+
+  if (!res.ok) {
+    console.error("  [slack] Failed to open Socket Mode connection:", res.status);
+    scheduleReconnect();
+    return;
+  }
+
+  const data = (await res.json()) as any;
+  if (!data.ok || !data.url) {
+    console.error("  [slack] Socket Mode connection failed:", data.error || "no URL returned");
+    scheduleReconnect();
+    return;
+  }
+
+  const ws = new WebSocket(data.url);
+  socket.ws = ws;
+
+  ws.onopen = () => {
+    socket.reconnectAttempts = 0;
+    console.log("  [slack] Socket Mode connected");
+  };
+
+  ws.onmessage = (event) => {
+    let payload: any;
+    try {
+      payload = JSON.parse(String(event.data));
+    } catch {
+      return;
+    }
+
+    // Acknowledge all envelopes immediately (Slack requires this)
+    if (payload.envelope_id) {
+      ws.send(JSON.stringify({ envelope_id: payload.envelope_id }));
+    }
+
+    if (payload.type === "hello") {
+      // Resolve bot user ID
+      const token = resolveToken();
+      if (token) {
+        slackRequest("auth.test", token)
+          .then((r) => {
+            socket.botUserId = r.user_id as string;
+            console.log(`  [slack] Socket Mode ready as ${r.user} (${r.user_id})`);
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    if (payload.type === "events_api" && payload.payload?.event) {
+      handleSlackEvent(payload.payload.event);
+    }
+  };
+
+  ws.onclose = () => {
+    socket.ws = null;
+    if (!socket.shutdownRequested) scheduleReconnect();
+  };
+
+  ws.onerror = () => {
+    // onclose handles reconnection
+  };
+}
+
+function scheduleReconnect() {
+  const delay = Math.min(1000 * 2 ** socket.reconnectAttempts, 30000);
+  socket.reconnectAttempts++;
+  console.log(`  [slack] Reconnecting in ${delay}ms...`);
+  setTimeout(() => connectSocketMode(), delay);
+}
+
+function handleSlackEvent(event: any) {
+  // Only handle messages (not subtypes like bot_message, message_changed, etc.)
+  if (event.type !== "message" || event.subtype) return;
+
+  // Ignore bot messages
+  if (event.bot_id) return;
+
+  // Check if the bot was mentioned or if it's a DM
+  const isDM = event.channel_type === "im";
+  const botMentioned = socket.botUserId && event.text?.includes(`<@${socket.botUserId}>`);
+
+  if (!isDM && !botMentioned) return;
+
+  // Strip bot mention
+  let text = event.text || "";
+  if (socket.botUserId) {
+    text = text.replace(new RegExp(`<@${socket.botUserId}>`, "g"), "").trim();
+  }
+  if (!text) text = "hello";
+
+  const channel = event.channel;
+  const threadTs = event.thread_ts || event.ts;
+  console.log(`  [slack] Message from ${event.user} in ${channel}: ${text.slice(0, 80)}`);
+
+  // Add reaction to acknowledge
+  const token = resolveToken();
+  if (token) {
+    slackRequest("reactions.add", token, { channel, timestamp: event.ts, name: "eyes" }).catch(() => {});
+  }
+
+  // Deterministic conversation ID per Slack channel
+  const conversationId = `slack-${channel}`;
+
+  // Tell notifications service this is external
+  if (slackServiceBus) slackServiceBus.fire("notification:external-task", { taskId: conversationId });
+
+  submitToReef(text, conversationId)
+    .then(() => waitForTaskResult(conversationId))
+    .then(async (result) => {
+      // Swap eyes → white_check_mark
+      if (token) {
+        slackRequest("reactions.remove", token, { channel, timestamp: event.ts, name: "eyes" }).catch(() => {});
+        slackRequest("reactions.add", token, { channel, timestamp: event.ts, name: "white_check_mark" }).catch(
+          () => {},
+        );
+      }
+      await sendSlackReply(channel, result, threadTs);
+    })
+    .catch(async (err) => {
+      console.error("  [slack] Error handling message:", err.message);
+      if (token) {
+        slackRequest("reactions.remove", token, { channel, timestamp: event.ts, name: "eyes" }).catch(() => {});
+        slackRequest("reactions.add", token, { channel, timestamp: event.ts, name: "x" }).catch(() => {});
+      }
+      await sendSlackReply(channel, "Sorry, I encountered an error processing your message.", threadTs).catch(() => {});
+    });
+}
+
+function disconnectSocketMode() {
+  socket.shutdownRequested = true;
+  if (socket.ws) {
+    socket.ws.close(1000, "shutting down");
+    socket.ws = null;
+  }
 }
 
 const SLACK_RULES =
@@ -295,6 +487,19 @@ const slack: ServiceModule = {
   registerTools,
 
   init(ctx: ServiceContext) {
+    slackServiceBus = ctx.events;
+
+    // Connect to Socket Mode if app token is available
+    const appToken = resolveAppToken();
+    if (appToken) {
+      console.log("  [slack] App token found, connecting to Socket Mode...");
+      connectSocketMode();
+    } else {
+      console.log(
+        "  [slack] No SLACK_APP_TOKEN set, Socket Mode disabled. Set token to enable bidirectional messaging.",
+      );
+    }
+
     // Subscribe to notification:push from the notifications service
     ctx.events.on("notification:push", (data: any) => {
       const channelId = resolveNotificationChannel();
@@ -313,8 +518,14 @@ const slack: ServiceModule = {
     }
   },
 
+  store: {
+    async close() {
+      disconnectSocketMode();
+    },
+  },
+
   dependencies: ["vers-config"],
-  capabilities: ["slack.send", "slack.channels"],
+  capabilities: ["slack.send", "slack.channels", "slack.socket-mode"],
 };
 
 export default slack;

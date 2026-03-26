@@ -26,6 +26,13 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Hono } from "hono";
 import type { FleetClient, RouteDocs, ServiceContext, ServiceModule } from "../../src/core/types.js";
+import {
+  reefBaseUrl,
+  submitToReef as sharedSubmitToReef,
+  waitForTaskResult as sharedWaitForResult,
+  splitMessage,
+  stripInternalTags,
+} from "../shared/messaging.js";
 
 const VERS_CONFIG_PATH = join(process.cwd(), "data", "vers-config.json");
 
@@ -137,124 +144,28 @@ const gateway: GatewayState = {
 // Reference to event bus for notifying the notifications service about external tasks
 let serviceBus: ServiceContext["events"] | null = null;
 
-function reefBaseUrl(): string {
-  return process.env.VERS_INFRA_URL || "http://localhost:3000";
-}
-
-function reefAuthToken(): string {
-  return process.env.VERS_AUTH_TOKEN || "";
-}
-
-async function submitToReef(prompt: string, channelId: string): Promise<string> {
-  const baseUrl = reefBaseUrl();
-  const token = reefAuthToken();
-
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers.Authorization = `Bearer ${token}`;
-
+async function submitAndWait(prompt: string, channelId: string): Promise<string> {
   // Deterministic conversation ID per Discord channel — all messages in the
   // same channel continue the same reef conversation, preserving context.
   const conversationId = `discord-${channelId}`;
-  const body: Record<string, unknown> = { task: prompt };
 
-  // Try to continue an existing conversation first
-  let res = await fetch(`${baseUrl}/reef/conversations/${conversationId}/messages`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
-
-  // If conversation doesn't exist yet, create it
-  if (res.status === 404) {
-    body.conversationId = conversationId;
-    res = await fetch(`${baseUrl}/reef/submit`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-  }
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Reef submit failed (${res.status}): ${text}`);
-  }
-
-  const data = (await res.json()) as any;
-  const taskId = data.id || data.conversationId || conversationId;
-  console.log(`  [discord] Task submitted: ${taskId} (channel: ${channelId})`);
+  await sharedSubmitToReef(prompt, conversationId);
+  console.log(`  [discord] Task submitted: ${conversationId} (channel: ${channelId})`);
 
   // Tell the notifications service this task came from Discord (skip self-notification)
   if (serviceBus) serviceBus.fire("notification:external-task", { taskId: conversationId });
 
-  // Poll for task completion
-  const result = await waitForTaskResult(baseUrl, token, conversationId);
+  const result = await sharedWaitForResult(conversationId);
   console.log("  [discord] Task result:", result.slice(0, 100));
   return result;
-}
-
-async function waitForTaskResult(baseUrl: string, token: string, taskId: string): Promise<string> {
-  const headers: Record<string, string> = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
-
-  for (let i = 0; i < 120; i++) {
-    await new Promise((r) => setTimeout(r, 2000));
-
-    try {
-      const res = await fetch(`${baseUrl}/reef/tasks`, { headers });
-      if (!res.ok) continue;
-
-      const data = (await res.json()) as any;
-      const tasks = data.tasks || [...(data.active || []), ...(data.completed || [])];
-      const task = tasks.find((t: any) => t.id === taskId || t.taskId === taskId || t.name === taskId);
-
-      if (task && (task.status === "done" || task.status === "error")) {
-        if (task.status === "error") return `Error: ${task.error || "unknown error"}`;
-
-        // Try to get full output from the conversation tree (artifacts.summary is capped at 500 chars)
-        try {
-          const convoRes = await fetch(`${baseUrl}/reef/conversations/${taskId}`, { headers });
-          if (convoRes.ok) {
-            const convo = (await convoRes.json()) as any;
-            const nodes: any[] = convo.nodes || [];
-            const lastAssistant = [...nodes].reverse().find((n: any) => n.role === "assistant");
-            if (lastAssistant?.content) return lastAssistant.content;
-          }
-        } catch {
-          // Fall back to summary
-        }
-
-        return task.artifacts?.summary || task.output || "(no output)";
-      }
-    } catch {
-      // Keep polling
-    }
-  }
-
-  return "(task timed out after 4 minutes)";
 }
 
 async function sendDiscordReply(channelId: string, content: string): Promise<void> {
   const token = resolveToken();
   if (!token) return;
 
-  // Strip internal tags (boot, squiggle) — matched pairs first, then stray tags
-  content = content.replace(/<(boot|squiggle)>[\s\S]*?<\/\1>\s*/g, "").trim();
-  content = content.replace(/<\/?(boot|squiggle)>/g, "").trim();
-  if (!content) content = "(empty response)";
-
-  // Split into chunks for Discord's 2000 char limit
-  const chunks: string[] = [];
-  while (content.length > 0) {
-    if (content.length <= 1900) {
-      chunks.push(content);
-      break;
-    }
-    // Try to break at a newline
-    let splitAt = content.lastIndexOf("\n", 1900);
-    if (splitAt < 500) splitAt = 1900;
-    chunks.push(content.slice(0, splitAt));
-    content = content.slice(splitAt).trimStart();
-  }
+  content = stripInternalTags(content);
+  const chunks = splitMessage(content);
 
   try {
     for (const chunk of chunks) {
@@ -472,7 +383,7 @@ function handleMessage(msg: any) {
   }
 
   // Submit to reef and reply (async, don't block the Gateway handler)
-  submitToReef(content, channelId)
+  submitAndWait(content, channelId)
     .then(async (result) => {
       unreact("👀");
       react("✅");
