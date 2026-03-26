@@ -1,20 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createTestHarness, type TestHarness } from "../../src/core/testing.js";
+import vmTree from "../vm-tree/index.js";
 import store from "./index.js";
 
 let t: TestHarness;
 const setup = (async () => {
-  // Clean store file from previous runs
-  try {
-    (await import("node:fs")).unlinkSync("data/store.json");
-  } catch {}
-  t = await createTestHarness({ services: [store] });
+  t = await createTestHarness({ services: [vmTree, store] });
 })();
 afterAll(() => {
   t?.cleanup();
-  try {
-    require("node:fs").unlinkSync("data/store.json");
-  } catch {}
 });
 
 const A = { auth: true };

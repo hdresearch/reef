@@ -213,6 +213,7 @@ export class LieutenantRuntime {
       await this.waitForRemoteVm(remote.vmId);
 
       const handle = await this.startRemoteHandle(remote.vmId, {
+        name,
         llmProxyKey: resolvedLlmProxyKey,
         model: resolvedModel,
         systemPrompt,

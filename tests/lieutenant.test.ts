@@ -300,7 +300,7 @@ describe("registry and vm-tree event wiring", () => {
 
     const vmTreeList = await json(app, "/vm-tree/vms?category=lieutenant", { auth: true });
     expect(vmTreeList.status).toBe(200);
-    expect(vmTreeList.data.vms.some((vm: any) => vm.vmId === vmId && vm.parentVmId === "parent-root-1")).toBe(true);
+    expect(vmTreeList.data.vms.some((vm: any) => vm.vmId === vmId && vm.parentId === "parent-root-1")).toBe(true);
 
     await events.emit("lieutenant:paused", { vmId });
     const paused = await json(app, `/registry/vms/${vmId}`, { auth: true });

@@ -25,6 +25,7 @@ export interface RpcHandle {
 }
 
 export interface RemoteRpcOptions {
+  name?: string;
   llmProxyKey?: string;
   systemPrompt?: string;
   model?: string;
@@ -127,6 +128,14 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
     process.env.PUNKIN_BIN ? `export PUNKIN_BIN='${escapeEnvValue(process.env.PUNKIN_BIN)}'` : "",
     `export PI_VERS_HOME='${escapeEnvValue(process.env.PI_VERS_HOME || "/root/pi-vers")}'`,
     `export SERVICES_DIR='${escapeEnvValue(process.env.SERVICES_DIR || "/root/reef/services-active")}'`,
+    // v2: category-based identity
+    "export REEF_CATEGORY='lieutenant'",
+    opts.name ? `export VERS_AGENT_NAME='${escapeEnvValue(opts.name)}'` : "",
+    process.env.VERS_VM_ID ? `export REEF_PARENT_VM_ID='${escapeEnvValue(process.env.VERS_VM_ID)}'` : "",
+    process.env.VERS_VM_ID
+      ? `export REEF_ROOT_VM_ID='${escapeEnvValue(process.env.REEF_ROOT_VM_ID || process.env.VERS_VM_ID)}'`
+      : "",
+    // v1 backward compat (remove once v2 is fully deployed)
     "export REEF_CHILD_AGENT='true'",
     "export VERS_AGENT_ROLE='lieutenant'",
     process.env.VERS_AGENT_NAME

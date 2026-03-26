@@ -79,7 +79,7 @@ function escapeEnvValue(value: string): string {
   return value.replace(/'/g, "'\\''");
 }
 
-function buildWorkerEnv(vmId: string, opts: { llmProxyKey?: string }): string {
+function buildWorkerEnv(vmId: string, label: string, opts: { llmProxyKey?: string }): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const exports = [
     opts.llmProxyKey
@@ -104,6 +104,14 @@ function buildWorkerEnv(vmId: string, opts: { llmProxyKey?: string }): string {
     process.env.PUNKIN_BIN ? `export PUNKIN_BIN='${escapeEnvValue(process.env.PUNKIN_BIN)}'` : "",
     `export PI_VERS_HOME='${escapeEnvValue(process.env.PI_VERS_HOME || "/root/pi-vers")}'`,
     `export SERVICES_DIR='${escapeEnvValue(process.env.SERVICES_DIR || "/root/reef/services-active")}'`,
+    // v2: category-based identity
+    "export REEF_CATEGORY='swarm_vm'",
+    `export VERS_AGENT_NAME='${escapeEnvValue(label)}'`,
+    process.env.VERS_VM_ID ? `export REEF_PARENT_VM_ID='${escapeEnvValue(process.env.VERS_VM_ID)}'` : "",
+    process.env.VERS_VM_ID
+      ? `export REEF_ROOT_VM_ID='${escapeEnvValue(process.env.REEF_ROOT_VM_ID || process.env.VERS_VM_ID)}'`
+      : "",
+    // v1 backward compat
     "export REEF_CHILD_AGENT='true'",
     "export VERS_AGENT_ROLE='worker'",
     process.env.VERS_AGENT_NAME
@@ -245,10 +253,10 @@ rm -rf ${RPC_DIR}`,
 
 export async function startWorkerRpcAgent(
   vmId: string,
-  opts: { llmProxyKey?: string; model?: string },
+  opts: { llmProxyKey?: string; model?: string; label?: string },
 ): Promise<RpcHandle> {
   const sshBaseArgs = await versClient.sshArgs(vmId);
-  const envExports = buildWorkerEnv(vmId, opts);
+  const envExports = buildWorkerEnv(vmId, opts.label || `worker-${vmId.slice(0, 8)}`, opts);
 
   await versClient.exec(vmId, buildPersistVmIdScript(vmId));
   await versClient.exec(vmId, buildPersistKeysScript(opts));
@@ -545,7 +553,7 @@ export class SwarmRuntime {
         }
 
         // Start RPC agent
-        const handle = await this.startHandle(vmId, { llmProxyKey, model });
+        const handle = await this.startHandle(vmId, { llmProxyKey, model, label });
 
         // Wait for RPC ready
         const ready = await this.waitForReady(handle, 45000);
