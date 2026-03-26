@@ -397,6 +397,125 @@ Messages are auto-acknowledged when you read them.`,
       }
     },
   });
+
+  // reef_checkpoint — snapshot VM and signal parent
+  pi.registerTool({
+    name: "reef_checkpoint",
+    label: "Checkpoint: Snapshot VM",
+    description: [
+      "Snapshot your VM at a meaningful state. Creates a Vers commit and signals your parent.",
+      "Use at phase boundaries or before risky operations. Your parent can rewind you to this checkpoint.",
+      "",
+      "Lieutenants: checkpoint at phase boundaries.",
+      "Agent VMs: checkpoint if work has clear phases.",
+      "Swarm workers: generally don't checkpoint.",
+    ].join("\n"),
+    parameters: Type.Object({
+      message: Type.String({
+        description: "What state this checkpoint captures (e.g. 'Phase 1 complete, tests pass')",
+      }),
+    }),
+    async execute(_id, params) {
+      if (!client.getBaseUrl()) return client.noUrl();
+      try {
+        const vmId = process.env.VERS_VM_ID;
+        if (!vmId) return client.err("No VERS_VM_ID — cannot checkpoint.");
+
+        // Snapshot the VM via vers_vm_commit
+        let commitId: string | undefined;
+        try {
+          const commitResult = await client.api<any>("POST", `/vers/vm/${vmId}/commit`);
+          commitId = commitResult?.commitId || commitResult?.id;
+        } catch (e: any) {
+          // Try the pi-vers extension tool path
+          return client.err(`Checkpoint snapshot failed: ${e.message}. Use vers_vm_commit manually if available.`);
+        }
+
+        // Update vm_tree with checkpoint commit
+        if (commitId) {
+          try {
+            await client.api("PATCH", `/vm-tree/vms/${vmId}`, { lastCheckpointCommit: commitId });
+          } catch {
+            /* best effort */
+          }
+        }
+
+        // Signal parent with checkpoint info
+        try {
+          const selfRes = await client.api<any>("GET", `/vm-tree/vms/${encodeURIComponent(vmId)}`);
+          const parentId = selfRes?.parentId;
+          let toAgent = "root";
+          if (parentId) {
+            const parentRes = await client.api<any>("GET", `/vm-tree/vms/${encodeURIComponent(parentId)}`);
+            toAgent = parentRes?.name || "root";
+          }
+
+          await client.api("POST", "/signals/", {
+            fromAgent: client.agentName,
+            toAgent,
+            direction: "up",
+            signalType: "checkpoint",
+            payload: { commitId, message: params.message },
+          });
+        } catch {
+          /* best effort */
+        }
+
+        return client.ok(
+          `Checkpoint created${commitId ? ` (commit: ${commitId.slice(0, 12)})` : ""}. Message: ${params.message}`,
+          { commitId, message: params.message },
+        );
+      } catch (e: any) {
+        return client.err(e.message);
+      }
+    },
+  });
+}
+
+// =============================================================================
+// Behaviors — periodic inbox check for urgent signals
+// =============================================================================
+
+function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
+  let inboxTimer: ReturnType<typeof setInterval> | null = null;
+
+  pi.on("session_start", async () => {
+    if (!client.getBaseUrl()) return;
+
+    // Poll inbox every 10 seconds for urgent signals (failed, blocked from children)
+    inboxTimer = setInterval(async () => {
+      try {
+        const qs = `to=${encodeURIComponent(client.agentName)}&acknowledged=false&direction=up`;
+        const result = await client.api<any>("GET", `/signals/?${qs}`);
+        const signals = result.signals || [];
+
+        // Check for urgent signals that should auto-trigger attention
+        const urgent = signals.filter(
+          (s: any) => s.signalType === "failed" || s.signalType === "blocked" || s.signalType === "done",
+        );
+
+        if (urgent.length > 0) {
+          // Emit on the extension event bus so the agent can react
+          for (const sig of urgent) {
+            pi.events.emit(`reef:signal:${sig.signalType}`, {
+              from: sig.fromAgent,
+              type: sig.signalType,
+              payload: sig.payload,
+            });
+          }
+        }
+      } catch {
+        /* best effort — never crash for inbox polling */
+      }
+    }, 10_000);
+  });
+
+  pi.on("session_shutdown", async () => {
+    if (inboxTimer) {
+      clearInterval(inboxTimer);
+      inboxTimer = null;
+    }
+  });
 }
 
 // =============================================================================
@@ -442,6 +561,7 @@ const signals: ServiceModule = {
   routes,
   routeDocs,
   registerTools,
+  registerBehaviors,
 
   init(ctx: ServiceContext) {
     // Get the shared vm-tree store via the exposed vmTreeStore getter

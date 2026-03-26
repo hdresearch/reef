@@ -100,12 +100,8 @@ function profileContext(): string {
 
 let taskCounter = 0;
 export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6";
-// Prefer vers proxy if LLM_PROXY_KEY exists, fallback to direct anthropic key
-const ROOT_REEF_PROVIDER: string = process.env.LLM_PROXY_KEY
-  ? "vers"
-  : process.env.ANTHROPIC_API_KEY?.startsWith("sk-ant-")
-    ? "anthropic"
-    : "vers";
+// Always use vers provider — requires LLM_PROXY_KEY with credits on the Vers account
+const ROOT_REEF_PROVIDER = "vers";
 
 function conversationPayload(tree: ConversationTree, id: string) {
   const info = tree.getTask(id);
@@ -220,7 +216,7 @@ function spawnTask(
     if ((event.type === "message_end" || event.type === "turn_end") && event.message?.errorMessage && !output) {
       const raw = event.message.errorMessage;
       if (raw.includes("no-credits") || raw.includes("no credits")) {
-        output = "Error: No credits available on the Vers account. Please add credits to continue.";
+        output = "Error: No credits available on your Vers account. Please add credits at vers.sh to continue.";
       } else {
         output = `Error: ${raw}`;
       }
@@ -289,10 +285,12 @@ export async function createReef(config: ReefConfig = {}) {
 
   // Only add system prompt if tree is empty (fresh start)
   if (tree.size() === 0) {
-    const systemPrompt =
-      config.agent?.systemPrompt ??
-      process.env.REEF_SYSTEM_PROMPT ??
-      "You are a reef agent. You have tools to manage VMs, spawn swarms, deploy services, and store state. When given a task, decide the best approach — do it yourself, delegate to a swarm, or decompose it. You build your own tools.";
+    // v2: Load AGENTS.md as the system prompt
+    let systemPrompt = config.agent?.systemPrompt ?? process.env.REEF_SYSTEM_PROMPT ?? "";
+    if (!systemPrompt) {
+      const { readParentAgentsMd } = await import("./core/agents-md.js");
+      systemPrompt = readParentAgentsMd();
+    }
     const sysNode = tree.add(null, "system", systemPrompt);
     tree.setRef("main", sysNode.id);
   }

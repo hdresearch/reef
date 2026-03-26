@@ -10,8 +10,9 @@ dist
 coverage
 *.lcov
 
-# logs
-logs
+# logs (but not services/logs/)
+/logs
+!services/logs/
 _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 

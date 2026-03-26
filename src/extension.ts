@@ -34,20 +34,20 @@ export function resolveClientServiceSelection(env: NodeJS.ProcessEnv = process.e
       return undefined; // all services
 
     case "lieutenant":
-      return ["agent-context", "signals", "swarm", "store", "github", "vm-tree", "registry"];
+      return ["agent-context", "signals", "swarm", "store", "github", "logs", "vm-tree", "registry"];
 
     case "agent_vm":
-      return ["agent-context", "signals", "swarm", "store", "github"];
+      return ["agent-context", "signals", "swarm", "store", "github", "logs"];
 
     case "swarm_vm":
-      return ["agent-context", "signals", "swarm", "store", "github"];
+      return ["agent-context", "signals", "swarm", "store", "github", "logs"];
 
     case "resource_vm":
       return []; // no agent, no services
 
     default:
       // Unknown category — fallback to child-safe set
-      return ["agent-context", "signals", "swarm", "store", "github"];
+      return ["agent-context", "signals", "swarm", "store", "github", "logs"];
   }
 }
 

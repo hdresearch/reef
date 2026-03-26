@@ -152,7 +152,7 @@ When spawning sub-agents, pick model and effort based on the task:
 
 | Task type | Model | Effort | When to use |
 |-----------|-------|--------|-------------|
-| Simple, well-defined | `claude-haiku-4-5` | `low` | Run tests, grep, format check, file operations |
+| Simple, well-defined | `claude-haiku-4-5-20251001` | `low` | Run tests, grep, format check, file operations |
 | Moderate, clear scope | `claude-sonnet-4-6` | `medium` | Fix a bug, write a function, review a PR |
 | Complex, multi-step | `claude-opus-4-6` | `medium` | Feature work, multi-file changes |
 | Deep reasoning needed | `claude-opus-4-6` | `medium` | Architectural decisions, fleet coordination |

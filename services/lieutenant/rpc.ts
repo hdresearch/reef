@@ -150,10 +150,7 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
   return exports;
 }
 
-function resolveModelProvider(): "vers" | "anthropic" {
-  // Prefer vers proxy if LLM_PROXY_KEY exists, fallback to direct anthropic key
-  if (process.env.LLM_PROXY_KEY) return "vers";
-  if (process.env.ANTHROPIC_API_KEY?.startsWith("sk-ant-")) return "anthropic";
+function resolveModelProvider(): "vers" {
   return "vers";
 }
 
@@ -318,7 +315,11 @@ export async function startRemoteRpcAgent(vmId: string, opts: RemoteRpcOptions):
   }
 
   let piCommand = `${resolveAgentBinary()} --mode rpc`;
-  if (opts.systemPrompt) {
+  if (opts.agentsMd) {
+    // v2: Use AGENTS.md as the system prompt (it includes inherited context)
+    piCommand += " --system-prompt /root/.pi/agent/AGENTS.md";
+  } else if (opts.systemPrompt) {
+    // v1 fallback: use the old system prompt
     const escapedPrompt = escapeEnvValue(opts.systemPrompt);
     await versClient.exec(
       vmId,

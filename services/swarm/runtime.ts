@@ -90,14 +90,12 @@ function buildWorkerEnv(vmId: string, label: string, opts: { llmProxyKey?: strin
       : process.env.LLM_PROXY_KEY
         ? `export LLM_PROXY_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
         : "",
-    // ANTHROPIC_API_KEY: prefer vers proxy key, fallback to direct anthropic key
+    // ANTHROPIC_API_KEY aliased to LLM_PROXY_KEY for vers provider
     opts.llmProxyKey
       ? `export ANTHROPIC_API_KEY='${escapeEnvValue(opts.llmProxyKey)}'`
       : process.env.LLM_PROXY_KEY
         ? `export ANTHROPIC_API_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
-        : process.env.ANTHROPIC_API_KEY
-          ? `export ANTHROPIC_API_KEY='${escapeEnvValue(process.env.ANTHROPIC_API_KEY)}'`
-          : "",
+        : "",
     versApiKey ? `export VERS_API_KEY='${escapeEnvValue(versApiKey)}'` : "",
     process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
     process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
@@ -267,7 +265,17 @@ export async function startWorkerRpcAgent(
   await versClient.exec(vmId, buildPersistVmIdScript(vmId));
   await versClient.exec(vmId, buildPersistKeysScript(opts));
 
-  const piCommand = `${resolveAgentBinary()} --mode rpc --no-session`;
+  // v2: Check if AGENTS.md was copied, add --system-prompt flag if so
+  let agentsMdFlag = "";
+  try {
+    const check = await versClient.exec(vmId, "test -f /root/.pi/agent/AGENTS.md && echo yes || echo no");
+    if (check.stdout.trim() === "yes") {
+      agentsMdFlag = "--system-prompt /root/.pi/agent/AGENTS.md";
+    }
+  } catch {
+    /* best effort */
+  }
+  const piCommand = `${resolveAgentBinary()} --mode rpc --no-session ${agentsMdFlag}`.trim();
 
   const startScript = `
 set -e
@@ -290,11 +298,8 @@ tmux has-session -t pi-rpc 2>/dev/null && echo daemon_started || echo daemon_fai
 
   const handle = createRemoteHandle(vmId, sshBaseArgs, false);
   if (opts.model) {
-    // Provider: prefer vers if LLM_PROXY_KEY exists, fallback to anthropic if direct key
-    const hasVersProxy = !!(opts.llmProxyKey || process.env.LLM_PROXY_KEY);
-    const hasDirectKey = process.env.ANTHROPIC_API_KEY?.startsWith("sk-ant-");
-    const provider = hasVersProxy ? "vers" : hasDirectKey ? "anthropic" : "vers";
-    handle.send({ type: "set_model", provider, modelId: opts.model });
+    // Always use vers provider
+    handle.send({ type: "set_model", provider: "vers", modelId: opts.model });
   }
   return handle;
 }
@@ -524,9 +529,8 @@ export class SwarmRuntime {
     const resolved = await this.resolveCommitId(params.commitId);
     const llmProxyKey = params.llmProxyKey || process.env.LLM_PROXY_KEY || "";
     const model = params.model?.trim() || DEFAULT_SWARM_MODEL;
-    // v2: accept either LLM_PROXY_KEY (vers) or ANTHROPIC_API_KEY (direct) for spawning
-    if (!llmProxyKey && !process.env.ANTHROPIC_API_KEY) {
-      throw new Error("LLM_PROXY_KEY or ANTHROPIC_API_KEY is required to spawn swarm agents.");
+    if (!llmProxyKey) {
+      throw new Error("LLM_PROXY_KEY is required to spawn agents. Add credits to your Vers account at vers.sh.");
     }
 
     let rootVmId = "";
