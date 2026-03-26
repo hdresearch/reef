@@ -87,11 +87,14 @@ function buildWorkerEnv(vmId: string, label: string, opts: { llmProxyKey?: strin
       : process.env.LLM_PROXY_KEY
         ? `export LLM_PROXY_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
         : "",
+    // ANTHROPIC_API_KEY: prefer vers proxy key, fallback to direct anthropic key
     opts.llmProxyKey
       ? `export ANTHROPIC_API_KEY='${escapeEnvValue(opts.llmProxyKey)}'`
       : process.env.LLM_PROXY_KEY
         ? `export ANTHROPIC_API_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
-        : "",
+        : process.env.ANTHROPIC_API_KEY
+          ? `export ANTHROPIC_API_KEY='${escapeEnvValue(process.env.ANTHROPIC_API_KEY)}'`
+          : "",
     versApiKey ? `export VERS_API_KEY='${escapeEnvValue(versApiKey)}'` : "",
     process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
     process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
@@ -284,7 +287,11 @@ tmux has-session -t pi-rpc 2>/dev/null && echo daemon_started || echo daemon_fai
 
   const handle = createRemoteHandle(vmId, sshBaseArgs, false);
   if (opts.model) {
-    handle.send({ type: "set_model", provider: "vers", modelId: opts.model });
+    // Provider: prefer vers if LLM_PROXY_KEY exists, fallback to anthropic if direct key
+    const hasVersProxy = !!(opts.llmProxyKey || process.env.LLM_PROXY_KEY);
+    const hasDirectKey = process.env.ANTHROPIC_API_KEY?.startsWith("sk-ant-");
+    const provider = hasVersProxy ? "vers" : hasDirectKey ? "anthropic" : "vers";
+    handle.send({ type: "set_model", provider, modelId: opts.model });
   }
   return handle;
 }

@@ -100,7 +100,12 @@ function profileContext(): string {
 
 let taskCounter = 0;
 export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6";
-const ROOT_REEF_PROVIDER = "vers";
+// Prefer vers proxy if LLM_PROXY_KEY exists, fallback to direct anthropic key
+const ROOT_REEF_PROVIDER: string = process.env.LLM_PROXY_KEY
+  ? "vers"
+  : process.env.ANTHROPIC_API_KEY?.startsWith("sk-ant-")
+    ? "anthropic"
+    : "vers";
 
 function conversationPayload(tree: ConversationTree, id: string) {
   const info = tree.getTask(id);

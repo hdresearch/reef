@@ -149,7 +149,10 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
   return exports;
 }
 
-function resolveModelProvider(): "vers" {
+function resolveModelProvider(): "vers" | "anthropic" {
+  // Prefer vers proxy if LLM_PROXY_KEY exists, fallback to direct anthropic key
+  if (process.env.LLM_PROXY_KEY) return "vers";
+  if (process.env.ANTHROPIC_API_KEY?.startsWith("sk-ant-")) return "anthropic";
   return "vers";
 }
 
