@@ -52,11 +52,9 @@ export function readParentAgentsMd(): string {
 export function buildChildAgentsMd(parentAgentsMd: string, parentName: string, context?: string): string {
   if (!context) return parentAgentsMd;
 
-  // Ensure context starts with the header
+  // Always use the standard header for traceability
   const header = `## Context from ${parentName}`;
-  const contextBlock = context.startsWith("##") ? context : `${header}\n\n${context}`;
-
-  return `${parentAgentsMd}\n\n${contextBlock}`;
+  return `${parentAgentsMd}\n\n${header}\n\n${context}`;
 }
 
 /**
