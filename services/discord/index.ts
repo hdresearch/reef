@@ -132,23 +132,34 @@ function reefAuthToken(): string {
   return process.env.VERS_AUTH_TOKEN || "";
 }
 
-async function submitToReef(prompt: string, _channelId: string): Promise<string> {
+async function submitToReef(prompt: string, channelId: string): Promise<string> {
   const baseUrl = reefBaseUrl();
   const token = reefAuthToken();
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  // Each Discord message becomes a fresh reef task.
-  // The reef conversation tree provides cross-task context.
+  // Deterministic conversation ID per Discord channel — all messages in the
+  // same channel continue the same reef conversation, preserving context.
+  const conversationId = `discord-${channelId}`;
   const body: Record<string, unknown> = { task: prompt };
-  const endpoint = `${baseUrl}/reef/submit`;
 
-  const res = await fetch(endpoint, {
+  // Try to continue an existing conversation first
+  let res = await fetch(`${baseUrl}/reef/conversations/${conversationId}/messages`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
   });
+
+  // If conversation doesn't exist yet, create it
+  if (res.status === 404) {
+    body.conversationId = conversationId;
+    res = await fetch(`${baseUrl}/reef/submit`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  }
 
   if (!res.ok) {
     const text = await res.text();
@@ -156,14 +167,14 @@ async function submitToReef(prompt: string, _channelId: string): Promise<string>
   }
 
   const data = (await res.json()) as any;
-  const taskId = data.id || data.conversationId;
-  console.log("  [discord] Task submitted:", taskId);
+  const taskId = data.id || data.conversationId || conversationId;
+  console.log(`  [discord] Task submitted: ${taskId} (channel: ${channelId})`);
 
   // Tag so we skip self-notification
-  if (taskId) discordSubmittedTasks.add(taskId);
+  discordSubmittedTasks.add(conversationId);
 
   // Poll for task completion
-  const result = await waitForTaskResult(baseUrl, token, taskId);
+  const result = await waitForTaskResult(baseUrl, token, conversationId);
   console.log("  [discord] Task result:", result.slice(0, 100));
   return result;
 }
