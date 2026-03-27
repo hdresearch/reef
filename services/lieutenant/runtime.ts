@@ -48,6 +48,8 @@ interface CreateParams {
   commitId?: string;
   context?: string; // v2: situational context appended to inherited AGENTS.md
   directive?: string; // v2: hard guardrails (VERS_AGENT_DIRECTIVE)
+  parentVmId?: string | null;
+  spawnedBy?: string;
 }
 
 export const DEFAULT_LIEUTENANT_MODEL = "claude-opus-4-6";
@@ -72,6 +74,8 @@ function readProfileContext(): string {
 
 export class LieutenantRuntime {
   private readonly handles = new Map<string, RpcHandle>();
+  private readonly usageStatsInflight = new Map<string, Promise<void>>();
+  private readonly usageStatsLastPulledAt = new Map<string, number>();
   private readonly events: ServiceEventBus;
   private readonly store: LieutenantStore;
   private readonly vmTreeStore?: VMTreeStore;
@@ -110,7 +114,7 @@ export class LieutenantRuntime {
       role: lt.role,
       address: `${lt.vmId}.vm.vers.sh`,
       createdAt: lt.createdAt,
-      parentVmId: process.env.VERS_VM_ID || null,
+      parentVmId: ((extra.parentVmId as string | null | undefined) ?? process.env.VERS_VM_ID) || null,
       ...extra,
     };
   }
@@ -137,6 +141,43 @@ export class LieutenantRuntime {
 
     await this.waitForRemoteSession(lt.vmId);
     return this.reconnectLieutenantHandle(name, lt.vmId);
+  }
+
+  private requestUsageSnapshot(
+    name: string,
+    lt: Lieutenant,
+    options: { force?: boolean; provider?: string | null; model?: string | null; taskId?: string | null } = {},
+  ): void {
+    const handle = this.handles.get(name);
+    if (!handle?.isAlive()) return;
+
+    const now = Date.now();
+    const lastPulledAt = this.usageStatsLastPulledAt.get(name) || 0;
+    if (!options.force) {
+      if (this.usageStatsInflight.has(name)) return;
+      if (now - lastPulledAt < 5000) return;
+    }
+
+    const run = (async () => {
+      try {
+        const stats = await handle.getSessionStats();
+        this.usageStatsLastPulledAt.set(name, Date.now());
+        this.events.fire("usage:stats", {
+          agentId: lt.vmId,
+          agentName: lt.name,
+          taskId: options.taskId || null,
+          provider: options.provider || null,
+          model: options.model || null,
+          stats,
+        });
+      } catch {
+        // Best effort: raw per-message usage still exists as a fallback.
+      } finally {
+        this.usageStatsInflight.delete(name);
+      }
+    })();
+
+    this.usageStatsInflight.set(name, run);
   }
 
   private async syncRemoteLieutenant(input: string | Lieutenant): Promise<Lieutenant | undefined> {
@@ -228,11 +269,18 @@ export class LieutenantRuntime {
           vmId,
           name,
           category: "lieutenant",
-          parentId: process.env.VERS_VM_ID || null,
+          parentId: (params.parentVmId ?? process.env.VERS_VM_ID) || null,
           context: params.context,
           directive: params.directive,
           model: resolvedModel,
-          spawnedBy: process.env.VERS_AGENT_NAME || "reef",
+          spawnedBy: params.spawnedBy || process.env.VERS_AGENT_NAME || "reef",
+          discovery: {
+            registeredVia: "lieutenant:create",
+            agentLabel: name,
+            reconnectKind: "lieutenant",
+            commitId: resolved.commitId,
+            roleHint: role,
+          },
         });
       } catch (err) {
         console.warn(
@@ -262,6 +310,8 @@ export class LieutenantRuntime {
         systemPrompt,
         agentsMd,
         directive: params.directive,
+        parentVmId: params.parentVmId || process.env.VERS_VM_ID || undefined,
+        parentAgent: params.spawnedBy || process.env.VERS_AGENT_NAME || "reef",
       });
       this.handles.set(name, handle);
 
@@ -296,6 +346,7 @@ export class LieutenantRuntime {
           commitIdSource: resolvedCommit.source,
           model,
           llmProxyKeyProvided: !!llmProxyKey,
+          parentVmId: (params.parentVmId ?? process.env.VERS_VM_ID) || null,
         }),
       );
       return created;
@@ -517,29 +568,18 @@ export class LieutenantRuntime {
       if (lt.vmId) candidates.set(lt.name, lt);
     }
 
-    const infraUrl = process.env.VERS_INFRA_URL;
-    const authToken = process.env.VERS_AUTH_TOKEN;
-    if (infraUrl && authToken) {
-      try {
-        const res = await fetch(`${infraUrl}/registry/vms?role=lieutenant`, {
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
-        if (res.ok) {
-          const data = (await res.json()) as { vms?: Array<Record<string, any>> };
-          for (const vm of data.vms || []) {
-            const name = vm.metadata?.agentId || vm.name;
-            if (candidates.has(name)) continue;
-            const lt = this.store.create({
-              name,
-              role: vm.metadata?.role || "recovered lieutenant",
-              vmId: vm.id,
-            });
-            candidates.set(name, lt);
-          }
-        }
-      } catch {
-        // Registry discovery is best-effort; fall back to the local store.
-      }
+    const discovered = (this.vmTreeStore?.listVMs({ category: "lieutenant" }) || []).filter(
+      (vm) => vm.status !== "destroyed" && vm.status !== "rewound",
+    );
+    for (const vm of discovered) {
+      const name = vm.discovery?.agentLabel || vm.name;
+      if (candidates.has(name)) continue;
+      const lt = this.store.create({
+        name,
+        role: vm.discovery?.roleHint || "recovered lieutenant",
+        vmId: vm.vmId,
+      });
+      candidates.set(name, lt);
     }
 
     for (const [name, candidate] of candidates) {
@@ -581,6 +621,10 @@ export class LieutenantRuntime {
         this.store.update(name, { status: "idle" });
 
         const completed = this.store.getByName(name);
+        this.requestUsageSnapshot(name, completed || lt, {
+          force: true,
+          model: completed?.model || lt.model || null,
+        });
         const rawOutput = completed?.outputHistory.at(-1)?.trim() || lt.lastOutput.trim();
         const summary = rawOutput.length > 200 ? `...${rawOutput.slice(-200)}` : rawOutput;
         const hasError = /\b(error|failed|exception|fatal)\b/i.test(rawOutput.slice(-500));
@@ -590,6 +634,20 @@ export class LieutenantRuntime {
           status: hasError ? "error" : "success",
           summary,
           taskCount: completed?.taskCount ?? lt.taskCount,
+        });
+        return;
+      }
+
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        this.events.fire("usage:message", {
+          agentId: lt.vmId,
+          agentName: lt.name,
+          taskId: null,
+          message: event.message,
+        });
+        this.requestUsageSnapshot(name, lt, {
+          provider: event.message.provider || event.message.api || null,
+          model: event.message.model || lt.model || null,
         });
         return;
       }

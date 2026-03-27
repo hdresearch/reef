@@ -864,7 +864,7 @@ async function updateStatus() {
   try {
     const [stateRes, vmsRes, ltsRes, sessionRes] = await Promise.all([
       fetch(`${API}/reef/state`),
-      fetch(`${API}/registry/vms`).catch(() => null),
+      fetch(`${API}/vm-tree/fleet/status`).catch(() => null),
       fetch(`${API}/lieutenant/lieutenants`).catch(() => null),
       fetch('/ui/session').catch(() => null),
     ]);
@@ -875,7 +875,7 @@ async function updateStatus() {
     let vmCount = 1; // root reef VM is always running
     if (vmsRes?.ok) {
       const vmsData = await vmsRes.json();
-      vmCount = Math.max(1, vmsData.count || 0);
+      vmCount = Math.max(1, vmsData.alive || 0);
     }
 
     let ltCount = 0;
@@ -922,7 +922,7 @@ const loadedPanels = new Map();
 let activePanel = null;
 
 // v2: Friendly display names for tabs
-const TAB_LABELS = { 'vm-tree': 'fleet', 'github': 'github', 'signals': 'signals', 'logs': 'logs', 'store': 'store', 'cron': 'cron' };
+const TAB_LABELS = { 'vm-tree': 'fleet', 'github': 'github', 'signals': 'signals', 'logs': 'logs', 'store': 'store', 'cron': 'cron', 'usage': 'usage' };
 
 async function fetchPanel(name) {
   const response = await fetch(`${API}/${name}/_panel`);
@@ -975,7 +975,7 @@ async function discoverPanels() {
     const panels = results.filter((result) => result.status === 'fulfilled' && result.value).map((result) => result.value);
 
     // v2: Sort panels in a sensible order
-    const TAB_ORDER = ['vm-tree', 'signals', 'logs', 'store', 'commits', 'github', 'cron'];
+    const TAB_ORDER = ['vm-tree', 'usage', 'signals', 'logs', 'store', 'commits', 'github', 'cron'];
     panels.sort((a, b) => {
       const ai = TAB_ORDER.indexOf(a.name);
       const bi = TAB_ORDER.indexOf(b.name);

@@ -113,13 +113,37 @@ function resolveRootProvider(): "vers" | "anthropic" {
   return ROOT_REEF_PROVIDER;
 }
 
-function isCreditExhaustedError(raw: string) {
+export function isCreditExhaustedError(raw: string) {
   const normalized = raw.toLowerCase();
   return (
     (normalized.includes("429") && (normalized.includes("credit") || normalized.includes("quota"))) ||
     normalized.includes("no-credits") ||
     normalized.includes("no credits") ||
     normalized.includes("out of credits")
+  );
+}
+
+export function isTransientProviderError(raw: string) {
+  const normalized = raw.toLowerCase();
+  return (
+    normalized.includes("internal server error") ||
+    normalized.includes("server error") ||
+    normalized.includes("internal error") ||
+    normalized.includes("service unavailable") ||
+    normalized.includes("overloaded") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("connection error") ||
+    normalized.includes("connection refused") ||
+    normalized.includes("other side closed") ||
+    normalized.includes("upstream connect") ||
+    normalized.includes("reset before headers") ||
+    normalized.includes("terminated") ||
+    normalized.includes("retry delay") ||
+    normalized.includes("too many requests") ||
+    normalized.includes("rate limit") ||
+    /\b(?:429|500|502|503|504)\b/.test(normalized) ||
+    (normalized.includes("api_error") &&
+      (normalized.includes("internal") || normalized.includes("server") || normalized.includes("overloaded")))
   );
 }
 
@@ -170,6 +194,27 @@ function spawnTask(
     attachments?: Attachment[];
     onChild?: (child: ChildProcess) => void;
     onEvent: (event: any) => void;
+    onUsageStats?: (payload: {
+      provider?: string | null;
+      model?: string | null;
+      stats: {
+        sessionFile?: string;
+        sessionId: string;
+        userMessages: number;
+        assistantMessages: number;
+        toolCalls: number;
+        toolResults: number;
+        totalMessages: number;
+        tokens: {
+          input: number;
+          output: number;
+          cacheRead: number;
+          cacheWrite: number;
+          total: number;
+        };
+        cost: number;
+      };
+    }) => void;
     onDone: (output: string) => void;
     onError: (err: string) => void;
   },
@@ -198,7 +243,23 @@ function spawnTask(
     let prompted = false;
     let modelConfigured = !opts.model;
     let modelSelectionRequested = false;
+    let autoRetryConfigured = false;
+    let autoRetryRequested = false;
     let fallingBack = false;
+    let finished = false;
+    let requestCounter = 0;
+    let lastUsageStatsPullAt = 0;
+    let usageStatsInflight: Promise<void> | null = null;
+    let lastUsageProvider: string | null = provider;
+    let lastUsageModel: string | null = opts.model || null;
+    const pending = new Map<
+      string,
+      {
+        resolve: (value: any) => void;
+        reject: (error: Error) => void;
+        timeout: ReturnType<typeof setTimeout>;
+      }
+    >();
 
     const readyCheck = setInterval(() => {
       try {
@@ -209,12 +270,17 @@ function spawnTask(
     }, 1000);
 
     const maybeFallbackToAnthropic = (raw: string) => {
+      const reason = isCreditExhaustedError(raw)
+        ? "credit_exhausted"
+        : isTransientProviderError(raw)
+          ? "transient_provider_error"
+          : null;
       if (
         fallingBack ||
         attemptId !== activeAttempt ||
         provider !== ROOT_REEF_PROVIDER ||
         !hasAnthropicFallbackKey() ||
-        !isCreditExhaustedError(raw)
+        !reason
       ) {
         return false;
       }
@@ -226,7 +292,7 @@ function spawnTask(
         type: "provider_fallback",
         from: ROOT_REEF_PROVIDER,
         to: ANTHROPIC_PROVIDER,
-        reason: "credit_exhausted",
+        reason,
       });
       try {
         child.kill("SIGTERM");
@@ -237,10 +303,75 @@ function spawnTask(
       return true;
     };
 
-    function handleEvent(event: any) {
+    const rejectPending = (message: string) => {
+      for (const [id, entry] of pending) {
+        clearTimeout(entry.timeout);
+        entry.reject(new Error(message));
+        pending.delete(id);
+      }
+    };
+
+    const requestSessionStats = async (
+      options: { force?: boolean; provider?: string | null; model?: string | null } = {},
+    ) => {
+      if (!opts.onUsageStats) return;
+      if (child.killed) return;
+
+      const now = Date.now();
+      if (!options.force) {
+        if (usageStatsInflight) return usageStatsInflight;
+        if (now - lastUsageStatsPullAt < 5000) return;
+      }
+
+      const requestId = `usage-stats-${++requestCounter}`;
+      const run = (async () => {
+        try {
+          const stats = await new Promise<any>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              pending.delete(requestId);
+              reject(new Error("Timed out waiting for get_session_stats response"));
+            }, 5000);
+            pending.set(requestId, { resolve, reject, timeout });
+            child.stdin.write(`${JSON.stringify({ id: requestId, type: "get_session_stats" })}\n`);
+          });
+          lastUsageStatsPullAt = Date.now();
+          opts.onUsageStats?.({
+            provider: options.provider ?? lastUsageProvider ?? null,
+            model: options.model ?? lastUsageModel ?? null,
+            stats,
+          });
+        } catch {
+          // Best effort: raw message-level usage remains available as fallback.
+        } finally {
+          if (usageStatsInflight === run) usageStatsInflight = null;
+        }
+      })();
+
+      usageStatsInflight = run;
+      return run;
+    };
+
+    async function handleEvent(event: any) {
       if (attemptId !== activeAttempt) return;
 
+      if (event.type === "response" && event.id && pending.has(event.id)) {
+        const entry = pending.get(event.id)!;
+        clearTimeout(entry.timeout);
+        pending.delete(event.id);
+        if (event.success === false)
+          entry.reject(new Error(event.error || `RPC command ${event.command || event.id} failed`));
+        else entry.resolve(event.data);
+        return;
+      }
+
       if (!prompted && event.type === "response" && event.command === "get_state") {
+        if (!autoRetryConfigured && !autoRetryRequested) {
+          autoRetryRequested = true;
+          clearInterval(readyCheck);
+          child.stdin.write(`${JSON.stringify({ id: "set-auto-retry", type: "set_auto_retry", enabled: true })}\n`);
+          return;
+        }
+
         if (!modelConfigured && !modelSelectionRequested && opts.model) {
           modelSelectionRequested = true;
           clearInterval(readyCheck);
@@ -252,6 +383,22 @@ function spawnTask(
 
         prompted = true;
         clearInterval(readyCheck);
+        const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+        child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
+      }
+
+      if (!prompted && event.type === "response" && event.command === "set_auto_retry") {
+        autoRetryConfigured = true;
+
+        if (!modelConfigured && !modelSelectionRequested && opts.model) {
+          modelSelectionRequested = true;
+          child.stdin.write(
+            `${JSON.stringify({ id: "set-model", type: "set_model", provider, modelId: opts.model, thinkingLevel: "high" })}\n`,
+          );
+          return;
+        }
+
+        prompted = true;
         const rpcMessage = buildRpcMessage(prompt, opts.attachments);
         child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
       }
@@ -269,17 +416,35 @@ function spawnTask(
         output += event.assistantMessageEvent.delta;
       }
 
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        lastUsageProvider = event.message.provider || event.message.api || lastUsageProvider || null;
+        lastUsageModel = event.message.model || lastUsageModel || null;
+        void requestSessionStats({
+          provider: lastUsageProvider,
+          model: lastUsageModel,
+        });
+      }
+
       if ((event.type === "message_end" || event.type === "turn_end") && event.message?.errorMessage && !output) {
         const raw = event.message.errorMessage;
         if (maybeFallbackToAnthropic(raw)) return;
         if (isCreditExhaustedError(raw)) {
           output = "Error: No credits available on your Vers account and Anthropic fallback was not available.";
+        } else if (isTransientProviderError(raw)) {
+          output = `Error: Provider request failed after retries: ${raw}`;
         } else {
           output = `Error: ${raw}`;
         }
       }
 
       if (event.type === "agent_end") {
+        if (finished) return;
+        finished = true;
+        await requestSessionStats({
+          force: true,
+          provider: lastUsageProvider,
+          model: lastUsageModel,
+        });
         child.kill("SIGTERM");
         opts.onDone(output);
       }
@@ -293,7 +458,7 @@ function spawnTask(
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          handleEvent(JSON.parse(line));
+          void handleEvent(JSON.parse(line));
         } catch {
           /* not JSON */
         }
@@ -308,14 +473,22 @@ function spawnTask(
 
     child.on("error", (err) => {
       clearInterval(readyCheck);
+      rejectPending(`RPC process error: ${err.message}`);
       if (attemptId !== activeAttempt) return;
+      if (finished) return;
+      finished = true;
       opts.onError(`Failed to spawn pi: ${err.message}`);
     });
 
     child.on("close", (code) => {
       clearInterval(readyCheck);
+      rejectPending(code && code !== 0 ? `RPC process exited with code ${code}` : "RPC process closed");
       if (attemptId !== activeAttempt || fallingBack) return;
-      if (code && code !== 0) opts.onError(`pi exited with code ${code}`);
+      if (finished) return;
+      if (code && code !== 0) {
+        finished = true;
+        opts.onError(`pi exited with code ${code}`);
+      }
     });
 
     return child;
@@ -486,7 +659,26 @@ export async function createReef(config: ReefConfig = {}) {
             return;
           }
 
+          if (event.type === "message_end" && event.message?.role === "assistant") {
+            events.fire("usage:message", {
+              agentId: process.env.VERS_VM_ID || "root",
+              agentName: process.env.VERS_AGENT_NAME || "root-reef",
+              taskId,
+              message: event.message,
+            });
+          }
+
           broadcast({ taskId, ...event });
+        },
+        onUsageStats(payload) {
+          events.fire("usage:stats", {
+            agentId: process.env.VERS_VM_ID || "root",
+            agentName: process.env.VERS_AGENT_NAME || "root-reef",
+            taskId,
+            provider: payload.provider || null,
+            model: payload.model || null,
+            stats: payload.stats,
+          });
         },
         onDone(output) {
           task.status = "done";

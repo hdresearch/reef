@@ -60,6 +60,8 @@ export interface SpawnParams {
   category?: string; // v2: override category (default: swarm_vm, agent_vm for reef_agent_spawn)
   directive?: string; // v2: hard guardrails (VERS_AGENT_DIRECTIVE)
   effort?: string; // v2: thinking effort level (low, medium, high)
+  parentVmId?: string | null;
+  spawnedBy?: string;
 }
 
 // =============================================================================
@@ -115,7 +117,7 @@ function escapeEnvValue(value: string): string {
 function buildWorkerEnv(
   vmId: string,
   label: string,
-  opts: { llmProxyKey?: string; directive?: string; category?: string },
+  opts: { llmProxyKey?: string; directive?: string; category?: string; parentVmId?: string; parentAgent?: string },
 ): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY || opts.llmProxyKey || process.env.LLM_PROXY_KEY || "";
@@ -141,13 +143,15 @@ function buildWorkerEnv(
     // v2: category-based identity
     `export REEF_CATEGORY='${escapeEnvValue(opts.category || "swarm_vm")}'`,
     `export VERS_AGENT_NAME='${escapeEnvValue(label)}'`,
-    process.env.VERS_VM_ID ? `export REEF_PARENT_VM_ID='${escapeEnvValue(process.env.VERS_VM_ID)}'` : "",
-    process.env.VERS_VM_ID
-      ? `export REEF_ROOT_VM_ID='${escapeEnvValue(process.env.REEF_ROOT_VM_ID || process.env.VERS_VM_ID)}'`
+    opts.parentVmId || process.env.VERS_VM_ID
+      ? `export REEF_PARENT_VM_ID='${escapeEnvValue(opts.parentVmId || process.env.VERS_VM_ID || "")}'`
+      : "",
+    opts.parentVmId || process.env.VERS_VM_ID
+      ? `export REEF_ROOT_VM_ID='${escapeEnvValue(process.env.REEF_ROOT_VM_ID || process.env.VERS_VM_ID || "")}'`
       : "",
     opts.directive ? `export VERS_AGENT_DIRECTIVE='${escapeEnvValue(opts.directive)}'` : "",
-    process.env.VERS_AGENT_NAME
-      ? `export VERS_PARENT_AGENT='${escapeEnvValue(process.env.VERS_AGENT_NAME)}'`
+    opts.parentAgent || process.env.VERS_AGENT_NAME
+      ? `export VERS_PARENT_AGENT='${escapeEnvValue(opts.parentAgent || process.env.VERS_AGENT_NAME || "")}'`
       : "export VERS_PARENT_AGENT='reef'",
     process.env.REEF_MODEL_PROVIDER
       ? `export REEF_MODEL_PROVIDER='${escapeEnvValue(process.env.REEF_MODEL_PROVIDER)}'`
@@ -190,13 +194,26 @@ function createHandlerSet() {
 
 function createRemoteHandle(vmId: string, sshBaseArgs: string[], skipExistingOutput: boolean): RpcHandle {
   const handlers = createHandlerSet();
+  const pending = new Map<
+    string,
+    { resolve: (value: any) => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> }
+  >();
   let tailChild: ReturnType<typeof import("node:child_process").spawn> | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let killed = false;
   let lineBuffer = "";
   let linesProcessed = skipExistingOutput ? -1 : 0;
+  let requestCounter = 0;
 
   const { spawn } = require("node:child_process");
+
+  const rejectPending = (message: string) => {
+    for (const [id, entry] of pending) {
+      clearTimeout(entry.timeout);
+      entry.reject(new Error(message));
+      pending.delete(id);
+    }
+  };
 
   const startTail = () => {
     if (killed) return;
@@ -217,7 +234,18 @@ function createRemoteHandle(vmId: string, sshBaseArgs: string[], skipExistingOut
         linesProcessed++;
         if (!line.trim()) continue;
         try {
-          handlers.emit(JSON.parse(line));
+          const event = JSON.parse(line);
+          if (event?.type === "response" && typeof event.id === "string" && pending.has(event.id)) {
+            const entry = pending.get(event.id)!;
+            clearTimeout(entry.timeout);
+            pending.delete(event.id);
+            if (event.success === false) {
+              entry.reject(new Error(event.error || `${event.command || "rpc"} failed`));
+            } else {
+              entry.resolve(event.data);
+            }
+          }
+          handlers.emit(event);
         } catch {
           // Ignore non-JSON output.
         }
@@ -227,6 +255,7 @@ function createRemoteHandle(vmId: string, sshBaseArgs: string[], skipExistingOut
     tailChild.on("close", () => {
       if (killed) return;
       lineBuffer = "";
+      rejectPending(`RPC tail closed for VM ${vmId}`);
       reconnectTimer = setTimeout(() => startTail(), 3000);
     });
   };
@@ -260,9 +289,26 @@ function createRemoteHandle(vmId: string, sshBaseArgs: string[], skipExistingOut
     onEvent(handler: EventHandler) {
       return handlers.subscribe(handler);
     },
+    getSessionStats() {
+      if (killed) return Promise.reject(new Error(`RPC handle for VM ${vmId} is closed`));
+      const id = `usage-stats-${vmId}-${++requestCounter}`;
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`Timed out waiting for get_session_stats from VM ${vmId}`));
+        }, 15000);
+        pending.set(id, { resolve, reject, timeout });
+        const writer = spawn("ssh", [...sshBaseArgs, `cat > ${RPC_IN}`], {
+          stdio: ["pipe", "ignore", "ignore"],
+        });
+        writer.stdin.write(`${JSON.stringify({ id, type: "get_session_stats" })}\n`);
+        writer.stdin.end();
+      });
+    },
     async kill() {
       killed = true;
       suspendTail();
+      rejectPending(`RPC handle for VM ${vmId} was killed`);
       try {
         await versClient.exec(
           vmId,
@@ -301,6 +347,8 @@ export async function startWorkerRpcAgent(
     directive?: string;
     category?: string;
     effort?: string;
+    parentVmId?: string;
+    parentAgent?: string;
   },
 ): Promise<RpcHandle> {
   const sshBaseArgs = await versClient.sshArgs(vmId);
@@ -359,84 +407,14 @@ export async function reconnectWorkerRpcAgent(vmId: string): Promise<RpcHandle> 
 }
 
 // =============================================================================
-// Registry helpers — register/deregister swarm workers with the reef registry
-// =============================================================================
-
-async function registryPost(entry: {
-  id: string;
-  name: string;
-  role: string;
-  address: string;
-  registeredBy: string;
-  metadata?: Record<string, unknown>;
-}): Promise<void> {
-  const infraUrl = process.env.VERS_INFRA_URL || process.env.VERS_VM_REGISTRY_URL;
-  const authToken = process.env.VERS_AUTH_TOKEN;
-  if (!infraUrl || !authToken) return;
-  try {
-    await fetch(`${infraUrl}/registry/vms`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${authToken}`,
-      },
-      body: JSON.stringify(entry),
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch (err) {
-    console.warn(`[swarm] registry post failed for ${entry.name}: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
-async function registryDelete(vmId: string): Promise<void> {
-  const infraUrl = process.env.VERS_INFRA_URL || process.env.VERS_VM_REGISTRY_URL;
-  const authToken = process.env.VERS_AUTH_TOKEN;
-  if (!infraUrl || !authToken) return;
-  try {
-    await fetch(`${infraUrl}/registry/vms/${encodeURIComponent(vmId)}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${authToken}` },
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch {
-    /* best effort */
-  }
-}
-
-async function registryList(): Promise<
-  Array<{
-    id: string;
-    name: string;
-    role: string;
-    address: string;
-    registeredBy: string;
-    metadata?: Record<string, unknown>;
-  }>
-> {
-  const infraUrl = process.env.VERS_INFRA_URL || process.env.VERS_VM_REGISTRY_URL;
-  const authToken = process.env.VERS_AUTH_TOKEN;
-  if (!infraUrl || !authToken) return [];
-  try {
-    const res = await fetch(`${infraUrl}/registry/vms`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${authToken}` },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) return [];
-    const data = (await res.json()) as any;
-    return Array.isArray(data) ? data : data.vms || [];
-  } catch {
-    return [];
-  }
-}
-
-// =============================================================================
 // Swarm Runtime
 // =============================================================================
 
 export class SwarmRuntime {
   private readonly agents = new Map<string, SwarmAgent>();
   private readonly handles = new Map<string, RpcHandle>();
+  private readonly usageStatsInflight = new Map<string, Promise<void>>();
+  private readonly usageStatsLastPulledAt = new Map<string, number>();
   private readonly events: ServiceEventBus;
   private readonly vmTreeStore?: VMTreeStore;
   private readonly resolveCommitId: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
@@ -516,6 +494,42 @@ export class SwarmRuntime {
     if (agent.lifecycle.length > 50) agent.lifecycle.shift();
   }
 
+  private requestUsageSnapshot(
+    agent: SwarmAgent,
+    options: { force?: boolean; provider?: string | null; model?: string | null; taskId?: string | null } = {},
+  ): void {
+    const handle = this.handles.get(agent.id);
+    if (!handle?.isAlive()) return;
+
+    const now = Date.now();
+    const lastPulledAt = this.usageStatsLastPulledAt.get(agent.id) || 0;
+    if (!options.force) {
+      if (this.usageStatsInflight.has(agent.id)) return;
+      if (now - lastPulledAt < 5000) return;
+    }
+
+    const run = (async () => {
+      try {
+        const stats = await handle.getSessionStats();
+        this.usageStatsLastPulledAt.set(agent.id, Date.now());
+        this.events.fire("usage:stats", {
+          agentId: agent.vmId,
+          agentName: agent.label,
+          taskId: options.taskId || null,
+          provider: options.provider || null,
+          model: options.model || null,
+          stats,
+        });
+      } catch {
+        // Best effort; raw message usage remains available for fallback/detail.
+      } finally {
+        this.usageStatsInflight.delete(agent.id);
+      }
+    })();
+
+    this.usageStatsInflight.set(agent.id, run);
+  }
+
   private wireAgentEvents(agent: SwarmAgent, handle: RpcHandle): void {
     handle.onEvent((event) => {
       agent.events.push(JSON.stringify(event));
@@ -528,6 +542,7 @@ export class SwarmRuntime {
         const elapsed = agent.taskStartedAt ? Math.round((Date.now() - agent.taskStartedAt) / 1000) : 0;
         agent.status = "done";
         this.clearWatchdog(agent.id);
+        this.requestUsageSnapshot(agent, { force: true });
         this.pushLifecycle(agent, {
           type: "completed",
           timestamp: Date.now(),
@@ -546,6 +561,17 @@ export class SwarmRuntime {
           source: "swarm",
           name: agent.label,
           vmId: agent.vmId,
+        });
+      } else if (event.type === "message_end" && event.message?.role === "assistant") {
+        this.events.fire("usage:message", {
+          agentId: agent.vmId,
+          agentName: agent.label,
+          taskId: null,
+          message: event.message,
+        });
+        this.requestUsageSnapshot(agent, {
+          provider: event.message.provider || event.message.api || null,
+          model: event.message.model || null,
         });
       } else if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
         agent.lastOutput += event.assistantMessageEvent.delta;
@@ -608,12 +634,19 @@ export class SwarmRuntime {
             vmId,
             name: label,
             category,
-            parentId: process.env.VERS_VM_ID || null,
+            parentId: (params.parentVmId ?? process.env.VERS_VM_ID) || null,
             context: params.context,
             directive: params.directive,
             model,
             effort: params.effort,
-            spawnedBy: process.env.VERS_AGENT_NAME || "reef",
+            spawnedBy: params.spawnedBy || process.env.VERS_AGENT_NAME || "reef",
+            discovery: {
+              registeredVia: "swarm:spawn",
+              agentLabel: label,
+              parentSession: true,
+              reconnectKind: category === "agent_vm" ? "agent_vm" : "swarm",
+              commitId: resolved.commitId,
+            },
           });
         } catch (err) {
           console.warn(
@@ -670,6 +703,8 @@ export class SwarmRuntime {
           directive: params.directive,
           category: params.category,
           effort: params.effort,
+          parentVmId: params.parentVmId || process.env.VERS_VM_ID || undefined,
+          parentAgent: params.spawnedBy || process.env.VERS_AGENT_NAME || "reef",
         });
 
         // Step 7: Wait for RPC ready
@@ -724,16 +759,6 @@ export class SwarmRuntime {
           metadata: { vmId, commitId: resolved.commitId, durationMs: Date.now() - spawnStart },
         });
 
-        // Register in coordination registry (backward compat)
-        await registryPost({
-          id: vmId,
-          name: label,
-          role: "worker",
-          address: `${vmId}.vm.vers.sh`,
-          registeredBy: "reef-swarm",
-          metadata: { agentId: label, commitId: resolved.commitId, parentSession: true },
-        });
-
         // Fire events (notification-only — vm_tree already updated directly)
         this.events.fire("swarm:agent_spawned", {
           vmId,
@@ -742,6 +767,8 @@ export class SwarmRuntime {
           commitId: resolved.commitId,
           category,
           context: params.context,
+          parentVmId: (params.parentVmId ?? process.env.VERS_VM_ID) || null,
+          spawnedBy: params.spawnedBy || process.env.VERS_AGENT_NAME || "reef",
         });
         this.events.fire("swarm:agent_ready", { vmId, label });
 
@@ -1057,7 +1084,6 @@ export class SwarmRuntime {
       detail: `Destroyed VM ${agent.vmId.slice(0, 12)}`,
     });
 
-    await registryDelete(agent.vmId);
     this.events.fire("swarm:agent_destroyed", { vmId: agent.vmId, label: agentId });
     this.events.fire("reef:event", {
       type: "swarm_agent_destroyed",
@@ -1085,15 +1111,20 @@ export class SwarmRuntime {
   }
 
   async discover(): Promise<string[]> {
-    const entries = await registryList();
-    const swarmEntries = entries.filter((e) => e.registeredBy === "reef-swarm" && e.metadata?.parentSession === true);
+    const entries = (this.vmTreeStore?.listVMs() || []).filter((vm) => {
+      if (vm.status === "destroyed" || vm.status === "rewound") return false;
+      return (
+        vm.discovery?.parentSession === true &&
+        (vm.discovery?.reconnectKind === "swarm" || vm.discovery?.reconnectKind === "agent_vm")
+      );
+    });
 
-    if (swarmEntries.length === 0) return ["No swarm agents found in registry."];
+    if (entries.length === 0) return ["No swarm agents found in vm-tree."];
 
     const settled = await Promise.allSettled(
-      swarmEntries.map(async (entry): Promise<string> => {
-        const vmId = entry.id;
-        const label = (entry.metadata?.agentId as string) || entry.name;
+      entries.map(async (entry): Promise<string> => {
+        const vmId = entry.vmId;
+        const label = entry.discovery?.agentLabel || entry.name;
 
         if (this.agents.has(label)) return `${label}: already connected`;
 

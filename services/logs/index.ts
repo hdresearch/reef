@@ -17,9 +17,53 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Hono } from "hono";
 import type { FleetClient, RouteDocs, ServiceContext, ServiceModule } from "../../src/core/types.js";
-import type { VMTreeStore } from "../vm-tree/store.js";
+import type { VMNode, VMTreeStore } from "../vm-tree/store.js";
 
 let vmTreeStore: VMTreeStore | null = null;
+
+type RequestActor = {
+  agentName: string | null;
+  vmId: string | null;
+  category: string | null;
+  vm: VMNode | null;
+};
+
+function resolveRequestActor(req: Request): RequestActor {
+  const agentName = req.headers.get("X-Reef-Agent-Name");
+  const vmId = req.headers.get("X-Reef-VM-ID");
+  const category = req.headers.get("X-Reef-Category");
+  const vm = vmId ? vmTreeStore?.getVM(vmId) || null : agentName ? vmTreeStore?.getVMByName(agentName) || null : null;
+  return { agentName, vmId, category, vm };
+}
+
+function isOperatorRequest(actor: RequestActor): boolean {
+  return !actor.agentName && !actor.vmId;
+}
+
+function isRootActor(actor: RequestActor): boolean {
+  return !!actor.vm && actor.vm.category === "infra_vm" && !actor.vm.parentId;
+}
+
+function requestIdentityError(actor: RequestActor): string | null {
+  if (isOperatorRequest(actor)) return null;
+  if (!actor.vm) return "requesting agent is not registered in vm-tree";
+  if (actor.agentName && actor.vm.name !== actor.agentName) {
+    return `request agent mismatch: header agent "${actor.agentName}" does not match vm-tree name "${actor.vm.name}"`;
+  }
+  if (actor.vmId && actor.vm.vmId !== actor.vmId) {
+    return `request VM mismatch: header VM "${actor.vmId}" does not match vm-tree VM "${actor.vm.vmId}"`;
+  }
+  return null;
+}
+
+function canReadTargetLogs(actor: RequestActor, target: VMNode): boolean {
+  if (isOperatorRequest(actor) || isRootActor(actor)) return true;
+  if (!actor.vm) return false;
+  if (target.vmId === actor.vm.vmId) return true;
+  if (actor.vm.parentId === target.vmId) return true;
+  if (actor.vm.parentId && target.parentId && actor.vm.parentId === target.parentId) return true;
+  return vmTreeStore?.descendants(actor.vm.vmId).some((vm) => vm.vmId === target.vmId) || false;
+}
 
 // =============================================================================
 // Routes
@@ -58,12 +102,42 @@ routes.post("/", async (c) => {
 routes.get("/", (c) => {
   if (!vmTreeStore) return c.json({ error: "vm-tree store not available" }, 503);
 
-  const agentName = c.req.query("agent");
-  const agentId = c.req.query("agentId");
+  const actor = resolveRequestActor(c.req.raw);
+  const identityError = requestIdentityError(actor);
+  if (identityError) {
+    return c.json({ error: identityError }, 403);
+  }
+
+  const requestedAgentName = c.req.query("agent");
+  const requestedAgentId = c.req.query("agentId");
   const level = c.req.query("level");
   const category = c.req.query("category");
   const since = c.req.query("since");
   const limit = c.req.query("limit");
+
+  let agentName = requestedAgentName || undefined;
+  let agentId = requestedAgentId || undefined;
+
+  if (!isOperatorRequest(actor) && !isRootActor(actor)) {
+    if (!agentName && !agentId) {
+      agentName = actor.vm?.name || actor.agentName || undefined;
+      agentId = actor.vm?.vmId || actor.vmId || undefined;
+    }
+
+    const target =
+      (agentId ? vmTreeStore.getVM(agentId) : null) || (agentName ? vmTreeStore.getVMByName(agentName) : null) || null;
+
+    if (!target) {
+      return c.json({ error: "target agent is not registered in vm-tree" }, 404);
+    }
+
+    if (!canReadTargetLogs(actor, target)) {
+      return c.json({ error: `log access to "${target.name}" is outside the requester's scope` }, 403);
+    }
+
+    agentName = target.name;
+    agentId = target.vmId;
+  }
 
   const logs = vmTreeStore.queryLogs({
     agentName: agentName || undefined,

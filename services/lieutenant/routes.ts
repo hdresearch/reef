@@ -14,7 +14,7 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
   routes.post("/lieutenants", async (c) => {
     try {
       const body = await c.req.json();
-      const { name, role, model, commitId, llmProxyKey } = body;
+      const { name, role, model, commitId, llmProxyKey, parentVmId, spawnedBy } = body;
 
       if (!name || typeof name !== "string") return c.json({ error: "name is required" }, 400);
       if (!role || typeof role !== "string") return c.json({ error: "role is required" }, 400);
@@ -25,6 +25,8 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
         model,
         commitId,
         llmProxyKey,
+        parentVmId,
+        spawnedBy,
       });
       return c.json(lt, 201);
     } catch (e) {
@@ -170,7 +172,7 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
     return c.json({ results });
   });
 
-  // POST /lieutenants/discover — discover lieutenants from registry
+  // POST /lieutenants/discover — discover lieutenants from vm-tree
   routes.post("/lieutenants/discover", async (c) => {
     const results = await getRuntime().discover();
     return c.json({ results });

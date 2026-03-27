@@ -13,7 +13,7 @@
  *   reef_lt_pause    — Pause a VM lieutenant (preserves state)
  *   reef_lt_resume   — Resume a paused lieutenant
  *   reef_lt_destroy  — Tear down a lieutenant (or all)
- *   reef_lt_discover — Recover lieutenants from registry
+ *   reef_lt_discover — Recover lieutenants from vm-tree
  *
  * State: data/lieutenants.sqlite (via LieutenantStore)
  * Events: lieutenant:created, lieutenant:completed, lieutenant:paused,
@@ -99,6 +99,8 @@ const lieutenant: ServiceModule = {
           description: "Golden image commit ID (optional if a default golden is configured)",
         },
         llmProxyKey: { type: "string", description: "Vers LLM proxy key override (defaults to server env)" },
+        parentVmId: { type: "string", description: "Logical parent VM ID for lineage (defaults to caller/root)" },
+        spawnedBy: { type: "string", description: "Logical spawning agent name for provenance" },
       },
       response: "The created lieutenant object",
     },
@@ -156,7 +158,7 @@ const lieutenant: ServiceModule = {
       summary: "Destroy all lieutenants",
     },
     "POST /lieutenants/discover": {
-      summary: "Discover lieutenants from the registry",
+      summary: "Discover lieutenants from vm-tree",
       response: "{ results: [...] }",
     },
     "GET /_panel": {

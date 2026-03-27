@@ -13,7 +13,19 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
   routes.post("/agents", async (c) => {
     try {
       const body = await c.req.json();
-      const { commitId, count, labels, llmProxyKey, model, context, category, directive, effort } = body;
+      const {
+        commitId,
+        count,
+        labels,
+        llmProxyKey,
+        model,
+        context,
+        category,
+        directive,
+        effort,
+        parentVmId,
+        spawnedBy,
+      } = body;
 
       if (!count || typeof count !== "number" || count < 1) {
         return c.json({ error: "count is required and must be >= 1" }, 400);
@@ -29,6 +41,8 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
         category,
         directive,
         effort,
+        parentVmId,
+        spawnedBy,
       });
       return c.json(
         {
@@ -126,7 +140,7 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
     return c.json(result);
   });
 
-  // POST /discover — discover agents from registry
+  // POST /discover — discover agents from vm-tree
   routes.post("/discover", async (c) => {
     const results = await getRuntime().discover();
     return c.json({

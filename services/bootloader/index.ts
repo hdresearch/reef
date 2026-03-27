@@ -189,19 +189,6 @@ if ! curl -sf http://localhost:3000/health > /dev/null 2>&1; then
   exit 1
 fi
 
-# ===== 10. Register in root registry =====
-curl -sf -X POST "${roofUrl}/registry/vms" \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer \${VERS_AUTH_TOKEN:-}" \\
-  -d '{
-    "id": "${req.vmId}",
-    "name": "${req.name}",
-    "role": "infra",
-    "address": "${req.vmId}.vm.vers.sh",
-    "registeredBy": "bootloader",
-    "reefConfig": ${JSON.stringify({ services: profile.services, capabilities: profile.capabilities })}
-  }' 2>/dev/null || true
-
 echo "[boot] Bootstrap complete for ${req.name}"
 exit 0
 `;

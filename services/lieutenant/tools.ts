@@ -48,6 +48,8 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           model: params.model,
           commitId: params.commitId,
           llmProxyKey: params.llmProxyKey,
+          parentVmId: client.vmId,
+          spawnedBy: client.agentName,
         });
         const loc = `[VM: ${result.vmId}]`;
         return client.ok(
@@ -232,7 +234,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   registerNamedTool(pi, ["reef_lt_discover"], {
     label: "Discover Lieutenants",
     description:
-      "Discover running lieutenants from the registry and reconnect to them. Use after session restart to recover lieutenant state.",
+      "Discover running lieutenants from vm-tree and reconnect to them. Use after session restart to recover lieutenant state.",
     parameters: Type.Object({}),
     async execute() {
       if (!client.getBaseUrl()) return client.noUrl();

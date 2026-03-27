@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { createReef } from "./reef.js";
+import { createReef, isCreditExhaustedError, isTransientProviderError } from "./reef.js";
 import type { ConversationTree } from "./tree.js";
 
 const TOKEN = "test-token-reef";
@@ -322,5 +322,20 @@ describe("reef", () => {
     const { data } = await json("/reef/state");
     expect(data.totalTasks).toBeGreaterThan(0);
     expect(data.totalNodes).toBeGreaterThan(1);
+  });
+
+  test("classifies credit exhaustion errors", () => {
+    expect(isCreditExhaustedError("429 out of credits on vers account")).toBe(true);
+    expect(isCreditExhaustedError("Error: quota exceeded")).toBe(false);
+  });
+
+  test("classifies transient provider errors", () => {
+    expect(
+      isTransientProviderError(
+        'Error: {"type":"error","error":{"details":null,"type":"api_error","message":"Internal server error"}}',
+      ),
+    ).toBe(true);
+    expect(isTransientProviderError("503 service unavailable")).toBe(true);
+    expect(isTransientProviderError("No API key found for anthropic")).toBe(false);
   });
 });

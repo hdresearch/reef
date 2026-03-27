@@ -11,7 +11,7 @@
  *   reef_swarm_status   — Overview of all swarm workers
  *   reef_swarm_read     — Read a worker's latest output
  *   reef_swarm_wait     — Block until workers finish, return results
- *   reef_swarm_discover — Recover workers from registry
+ *   reef_swarm_discover — Recover workers from vm-tree
  *   reef_swarm_teardown — Destroy all workers and VMs
  *
  * Events: swarm:agent_spawned, swarm:agent_destroyed, swarm:agent_task_sent,
@@ -83,6 +83,8 @@ const swarm: ServiceModule = {
         labels: { type: "string[]", description: "Labels for each agent" },
         llmProxyKey: { type: "string", description: "Vers LLM proxy key override" },
         model: { type: "string", description: "Model ID (default: claude-sonnet-4-6)" },
+        parentVmId: { type: "string", description: "Logical parent VM ID for lineage (defaults to caller/root)" },
+        spawnedBy: { type: "string", description: "Logical spawning agent name for provenance" },
       },
       response: "{ agents, messages, count }",
     },
@@ -116,7 +118,7 @@ const swarm: ServiceModule = {
       response: "{ elapsed, timedOut, agents }",
     },
     "POST /discover": {
-      summary: "Discover workers from registry",
+      summary: "Discover workers from vm-tree",
       response: "{ results, summary }",
     },
     "DELETE /agents/:id": {

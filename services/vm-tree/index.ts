@@ -31,6 +31,21 @@ function currentReefConfig(ctx: ServiceContext) {
   };
 }
 
+function serializeVm(vm: any) {
+  return {
+    ...vm,
+    parentVmId: vm.parentId ?? null,
+  };
+}
+
+function serializeTree(view: any): any {
+  return {
+    ...view,
+    vm: serializeVm(view.vm),
+    children: Array.isArray(view.children) ? view.children.map(serializeTree) : [],
+  };
+}
+
 // =============================================================================
 // Routes
 // =============================================================================
@@ -47,7 +62,7 @@ routes.get("/vms", (c) => {
     parentId: parentId || undefined,
     status: status || undefined,
   });
-  return c.json({ vms, count: vms.length });
+  return c.json({ vms: vms.map(serializeVm), count: vms.length });
 });
 
 // POST /vms — register a VM in the tree
@@ -58,7 +73,7 @@ routes.post("/vms", async (c) => {
     if (body.parentVmId && !body.parentId) body.parentId = body.parentVmId;
     if (body.vmId && !body.id) body.id = body.vmId;
     const vm = store.upsertVM({ ...body, vmId: body.id || body.vmId });
-    return c.json(vm, 201);
+    return c.json(serializeVm(vm), 201);
   } catch (e: any) {
     return c.json({ error: e.message }, 400);
   }
@@ -68,7 +83,7 @@ routes.post("/vms", async (c) => {
 routes.get("/vms/:id", (c) => {
   const vm = store.getVM(c.req.param("id"));
   if (!vm) return c.json({ error: "VM not found" }, 404);
-  return c.json(vm);
+  return c.json(serializeVm(vm));
 });
 
 // PATCH /vms/:id — update a VM
@@ -77,7 +92,7 @@ routes.patch("/vms/:id", async (c) => {
     const body = await c.req.json();
     if (body.parentVmId !== undefined && body.parentId === undefined) body.parentId = body.parentVmId;
     const vm = store.updateVM(c.req.param("id"), body);
-    return c.json(vm);
+    return c.json(serializeVm(vm));
   } catch (e: any) {
     return c.json({ error: e.message }, 400);
   }
@@ -111,28 +126,28 @@ routes.post("/vms/:id/heartbeat", (c) => {
 routes.get("/tree", (c) => {
   const rootId = c.req.query("root");
   const tree = store.tree(rootId || undefined);
-  return c.json({ tree, count: store.count() });
+  return c.json({ tree: tree.map(serializeTree), count: store.count() });
 });
 
 // GET /vms/:id/ancestors — path to root
 routes.get("/vms/:id/ancestors", (c) => {
   const vm = store.getVM(c.req.param("id"));
   if (!vm) return c.json({ error: "VM not found" }, 404);
-  return c.json({ ancestors: store.ancestors(c.req.param("id")) });
+  return c.json({ ancestors: store.ancestors(c.req.param("id")).map(serializeVm) });
 });
 
 // GET /vms/:id/descendants — all descendants (BFS)
 routes.get("/vms/:id/descendants", (c) => {
   const vm = store.getVM(c.req.param("id"));
   if (!vm) return c.json({ error: "VM not found" }, 404);
-  return c.json({ descendants: store.descendants(c.req.param("id")) });
+  return c.json({ descendants: store.descendants(c.req.param("id")).map(serializeVm) });
 });
 
 // GET /vms/:id/children — direct children
 routes.get("/vms/:id/children", (c) => {
   const vm = store.getVM(c.req.param("id"));
   if (!vm) return c.json({ error: "VM not found" }, 404);
-  return c.json({ children: store.children(c.req.param("id")) });
+  return c.json({ children: store.children(c.req.param("id")).map(serializeVm) });
 });
 
 // GET /vms/:a/diff/:b — config diff
@@ -273,10 +288,45 @@ const vmTree: ServiceModule = {
         parentId: data.parentVmId || undefined,
         category: "lieutenant",
         reefConfig: {
-          services: ["lieutenant"],
+          services: ["agent-context", "signals", "swarm", "store", "github", "logs", "probe", "vm-tree"],
           capabilities: ["punkin", "vers-lieutenant", "vers-vm", "vers-vm-copy", "reef-swarm"],
         },
+        spawnedBy: data.spawnedBy || data.parentAgent || process.env.VERS_AGENT_NAME || "reef",
+        discovery: {
+          registeredVia: "lieutenant:created",
+          agentLabel: data.name,
+          reconnectKind: "lieutenant",
+          commitId: data.commitId,
+          roleHint: data.role,
+        },
       });
+    });
+
+    ctx.events.on("lieutenant:paused", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.updateVM(data.vmId, { status: "paused" });
+      } catch {
+        /* best effort */
+      }
+    });
+
+    ctx.events.on("lieutenant:resumed", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.updateVM(data.vmId, { status: "running" });
+      } catch {
+        /* best effort */
+      }
+    });
+
+    ctx.events.on("lieutenant:destroyed", (data: any) => {
+      if (!data?.vmId) return;
+      try {
+        store.updateVM(data.vmId, { status: "destroyed" });
+      } catch {
+        /* best effort */
+      }
     });
 
     ctx.events.on("swarm:agent_spawned", (data: any) => {
@@ -285,12 +335,23 @@ const vmTree: ServiceModule = {
       store.upsertVM({
         vmId: data.vmId,
         name: data.label,
-        parentId: process.env.VERS_VM_ID || undefined,
+        parentId: data.parentVmId || process.env.VERS_VM_ID || undefined,
         category,
         context: data.context || undefined,
         reefConfig: {
-          services: category === "agent_vm" ? ["agent-context", "signals", "swarm", "store", "github"] : ["swarm"],
+          services:
+            category === "agent_vm"
+              ? ["agent-context", "signals", "swarm", "store", "github", "logs", "probe"]
+              : ["agent-context", "signals", "swarm", "store", "github", "logs", "probe"],
           capabilities: ["punkin", "reef-swarm"],
+        },
+        spawnedBy: data.spawnedBy || process.env.VERS_AGENT_NAME || "reef",
+        discovery: {
+          registeredVia: "swarm:agent_spawned",
+          agentLabel: data.label,
+          parentSession: true,
+          reconnectKind: category === "agent_vm" ? "agent_vm" : "swarm",
+          commitId: data.commitId,
         },
       });
 
@@ -407,6 +468,7 @@ const vmTree: ServiceModule = {
         ),
         parentVmId: Type.Optional(Type.String({ description: "Parent VM ID in the lineage tree" })),
         vmId: Type.Optional(Type.String({ description: "VM ID (auto-generated if not provided)" })),
+        spawnedBy: Type.Optional(Type.String({ description: "Spawning agent/service provenance" })),
         reefConfig: Type.Optional(
           Type.Object(
             {
@@ -414,6 +476,16 @@ const vmTree: ServiceModule = {
               capabilities: Type.Array(Type.String(), { description: "Extension capabilities" }),
             },
             { description: "VM DNA" },
+          ),
+        ),
+        serviceEndpoints: Type.Optional(
+          Type.Array(
+            Type.Object({
+              name: Type.String({ description: "Service name" }),
+              port: Type.Number({ description: "Port number" }),
+              protocol: Type.Optional(Type.String({ description: "Protocol, e.g. http or https" })),
+            }),
+            { description: "Structured service discovery endpoints" },
           ),
         ),
       }),
@@ -494,7 +566,9 @@ const vmTree: ServiceModule = {
         name: { type: "string", required: true, description: "VM name (must be unique among active VMs)" },
         category: { type: "string", required: true, description: "VM category" },
         parentId: { type: "string", description: "Parent VM ID" },
+        spawnedBy: { type: "string", description: "Spawning agent/service provenance" },
         reefConfig: { type: "object", description: "{ services: [...], capabilities: [...] }" },
+        serviceEndpoints: { type: "object[]", description: "Structured service discovery endpoints" },
       },
       response: "The created VM node",
     },

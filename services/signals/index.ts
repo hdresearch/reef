@@ -19,10 +19,112 @@ import { Type } from "@sinclair/typebox";
 import { Hono } from "hono";
 import type { ServiceEventBus } from "../../src/core/events.js";
 import type { FleetClient, RouteDocs, ServiceContext, ServiceModule } from "../../src/core/types.js";
-import type { VMTreeStore } from "../vm-tree/store.js";
+import type { VMNode, VMTreeStore } from "../vm-tree/store.js";
 
 let vmTreeStore: VMTreeStore | null = null;
 let events: ServiceEventBus | null = null;
+
+type RequestActor = {
+  agentName: string | null;
+  vmId: string | null;
+  category: string | null;
+  vm: VMNode | null;
+};
+
+function resolveRequestActor(req: Request): RequestActor {
+  const agentName = req.headers.get("X-Reef-Agent-Name");
+  const vmId = req.headers.get("X-Reef-VM-ID");
+  const category = req.headers.get("X-Reef-Category");
+  const vm = vmId ? vmTreeStore?.getVM(vmId) || null : agentName ? vmTreeStore?.getVMByName(agentName) || null : null;
+  return { agentName, vmId, category, vm };
+}
+
+function isOperatorRequest(actor: RequestActor): boolean {
+  return !actor.agentName && !actor.vmId;
+}
+
+function isRootActor(actor: RequestActor): boolean {
+  return !!actor.vm && actor.vm.category === "infra_vm" && !actor.vm.parentId;
+}
+
+function requestIdentityError(actor: RequestActor): string | null {
+  if (isOperatorRequest(actor)) return null;
+  if (!actor.vm) return "requesting agent is not registered in vm-tree";
+  if (actor.agentName && actor.vm.name !== actor.agentName) {
+    return `request agent mismatch: header agent "${actor.agentName}" does not match vm-tree name "${actor.vm.name}"`;
+  }
+  if (actor.vmId && actor.vm.vmId !== actor.vmId) {
+    return `request VM mismatch: header VM "${actor.vmId}" does not match vm-tree VM "${actor.vm.vmId}"`;
+  }
+  return null;
+}
+
+function isDescendant(parentVmId: string, childVmId: string): boolean {
+  if (!vmTreeStore) return false;
+  return vmTreeStore.descendants(parentVmId).some((vm) => vm.vmId === childVmId);
+}
+
+function ensureSwarmCompletionSignal(data: {
+  vmId?: string;
+  label?: string;
+  task?: string;
+  outputLength?: number;
+  elapsed?: number;
+}) {
+  if (!vmTreeStore || !data.vmId || !data.label) return;
+
+  const child = vmTreeStore.getVM(data.vmId);
+  if (!child || !child.parentId) return;
+
+  const parent = vmTreeStore.getVM(child.parentId);
+  if (!parent?.name) return;
+
+  try {
+    vmTreeStore.updateVM(child.vmId, { status: "stopped", rpcStatus: "disconnected" });
+  } catch {
+    /* best effort */
+  }
+
+  try {
+    vmTreeStore.insertAgentEvent(child.vmId, "task_completed", {
+      source: "swarm",
+      task: data.task,
+      outputLength: data.outputLength,
+      elapsed: data.elapsed,
+    });
+  } catch {
+    /* best effort */
+  }
+
+  const existing = vmTreeStore.querySignals({
+    fromAgent: data.label,
+    toAgent: parent.name,
+    direction: "up",
+    signalType: "done",
+    since: Date.now() - 60_000,
+    limit: 1,
+  });
+  if (existing.length > 0) return;
+
+  const payload: Record<string, unknown> = {
+    summary: `Swarm worker "${data.label}" completed${typeof data.elapsed === "number" ? ` in ${data.elapsed}s` : ""}.`,
+    source: "swarm_runtime",
+  };
+  if (data.task) payload.task = data.task;
+  if (typeof data.outputLength === "number") payload.outputLength = data.outputLength;
+  if (typeof data.elapsed === "number") payload.elapsed = data.elapsed;
+
+  const signal = vmTreeStore.insertSignal({
+    fromAgent: data.label,
+    toAgent: parent.name,
+    direction: "up",
+    signalType: "done",
+    payload,
+  });
+
+  events?.emit("signal:done", signal);
+  events?.emit("signal:new", signal);
+}
 
 // =============================================================================
 // Routes
@@ -37,9 +139,46 @@ routes.post("/", async (c) => {
   try {
     const body = await c.req.json();
     const { fromAgent, toAgent, direction, signalType, payload } = body;
+    const actor = resolveRequestActor(c.req.raw);
 
     if (!fromAgent || !toAgent || !direction || !signalType) {
       return c.json({ error: "fromAgent, toAgent, direction, and signalType are required" }, 400);
+    }
+
+    const identityError = requestIdentityError(actor);
+    if (identityError) {
+      return c.json({ error: identityError }, 403);
+    }
+
+    if (!isOperatorRequest(actor) && actor.vm) {
+      if (fromAgent !== actor.vm.name) {
+        return c.json({ error: `fromAgent must match requesting agent "${actor.vm.name}"` }, 403);
+      }
+
+      if (direction === "up") {
+        const parent = actor.vm.parentId ? vmTreeStore.getVM(actor.vm.parentId) : null;
+        const expectedParent = parent?.name || null;
+        if (!expectedParent || toAgent !== expectedParent) {
+          return c.json(
+            {
+              error: expectedParent
+                ? `upward signals may only target direct parent "${expectedParent}"`
+                : "this agent has no parent to signal upward to",
+            },
+            403,
+          );
+        }
+      }
+
+      if (direction === "down" && !isRootActor(actor)) {
+        const target = vmTreeStore.getVMByName(toAgent);
+        if (!target) {
+          return c.json({ error: `target agent "${toAgent}" not found in vm-tree` }, 404);
+        }
+        if (!isDescendant(actor.vm.vmId, target.vmId)) {
+          return c.json({ error: `target agent "${toAgent}" is outside the requester's subtree` }, 403);
+        }
+      }
     }
 
     const signal = vmTreeStore.insertSignal({
@@ -602,6 +741,10 @@ const signals: ServiceModule = {
       vmTreeStore = storeHandle.vmTreeStore as VMTreeStore;
     }
     events = ctx.events as any;
+
+    ctx.events.on("swarm:agent_completed", (data: any) => {
+      ensureSwarmCompletionSignal(data || {});
+    });
   },
 
   dependencies: ["vm-tree"],

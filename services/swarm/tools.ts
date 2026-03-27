@@ -9,6 +9,67 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import type { FleetClient } from "../../src/core/types.js";
+import { createVersVmFromCommit, deleteVersVm } from "../lieutenant/rpc.js";
+
+export async function spawnResourceVm(
+  client: FleetClient,
+  params: { name: string; commitId?: string },
+  ops: {
+    createVm: (commitId: string) => Promise<{ vmId: string }>;
+    deleteVm: (vmId: string) => Promise<void>;
+  } = {
+    createVm: createVersVmFromCommit,
+    deleteVm: deleteVersVm,
+  },
+) {
+  let vmId: string | undefined;
+
+  try {
+    const commitId = params.commitId || process.env.VERS_GOLDEN_COMMIT_ID;
+    if (!commitId) {
+      return client.err("No commit ID provided and VERS_GOLDEN_COMMIT_ID not set.");
+    }
+
+    const created = await ops.createVm(commitId);
+    vmId = created?.vmId;
+    if (!vmId) return client.err("Failed to create resource VM — no vmId returned.");
+
+    await client.api("POST", "/vm-tree/vms", {
+      vmId,
+      name: params.name,
+      category: "resource_vm",
+      parentId: process.env.VERS_VM_ID,
+      status: "running",
+      address: `${vmId}.vm.vers.sh`,
+      lastHeartbeat: Date.now(),
+      spawnedBy: client.agentName,
+      discovery: {
+        registeredVia: "resource:spawn",
+        agentLabel: params.name,
+        reconnectKind: "resource_vm",
+      },
+    });
+
+    return client.ok(
+      `Resource VM "${params.name}" created.\nVM ID: ${vmId}\nSSH: vers_vm_use with vmId ${vmId}\nAddress: ${vmId}.vm.vers.sh`,
+      { vmId, name: params.name, address: `${vmId}.vm.vers.sh` },
+    );
+  } catch (e: any) {
+    if (vmId) {
+      try {
+        await client.api("PATCH", `/vm-tree/vms/${vmId}`, { status: "error" });
+      } catch {
+        /* ok */
+      }
+      try {
+        await ops.deleteVm(vmId);
+      } catch {
+        /* ok */
+      }
+    }
+    return client.err(e.message);
+  }
+}
 
 export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
@@ -41,6 +102,8 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           llmProxyKey: params.llmProxyKey,
           model: params.model,
           context: params.context,
+          parentVmId: client.vmId,
+          spawnedBy: client.agentName,
         });
         return client.ok(
           `Spawned ${result.count} agent(s):\n${result.messages.join("\n")}\n\n${result.count} workers ready.`,
@@ -165,7 +228,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     name: "reef_swarm_discover",
     label: "Discover Swarm Workers",
     description:
-      "Discover running swarm workers from the registry and reconnect to them. Use after session restart to recover swarm state.",
+      "Discover running swarm workers from vm-tree and reconnect to them. Use after session restart to recover swarm state.",
     parameters: Type.Object({}),
     async execute() {
       if (!client.getBaseUrl()) return client.noUrl();
@@ -230,6 +293,8 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           context: params.context,
           category: "agent_vm",
           directive: params.directive,
+          parentVmId: client.vmId,
+          spawnedBy: client.agentName,
         });
 
         const agent = spawnResult.agents?.[0];
@@ -268,50 +333,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
-      let vmId: string | undefined;
-      try {
-        // Resolve commit ID
-        const commitId = params.commitId || process.env.VERS_GOLDEN_COMMIT_ID;
-        if (!commitId) {
-          return client.err("No commit ID provided and VERS_GOLDEN_COMMIT_ID not set.");
-        }
-
-        // Step 1: Create VM via vers API
-        const createResult = await client.api<any>("POST", "/vers/vm/from_commit", { commitId });
-        vmId = createResult?.vmId || createResult?.id;
-        if (!vmId) return client.err("Failed to create resource VM — no vmId returned.");
-
-        // Step 2: Register in vm_tree as running once Vers has returned the VM id.
-        await client.api("POST", "/vm-tree/vms", {
-          vmId,
-          name: params.name,
-          category: "resource_vm",
-          parentId: process.env.VERS_VM_ID,
-          status: "running",
-          address: `${vmId}.vm.vers.sh`,
-          lastHeartbeat: Date.now(),
-        });
-
-        return client.ok(
-          `Resource VM "${params.name}" created.\nVM ID: ${vmId}\nSSH: vers_vm_use with vmId ${vmId}\nAddress: ${vmId}.vm.vers.sh`,
-          { vmId, name: params.name, address: `${vmId}.vm.vers.sh` },
-        );
-      } catch (e: any) {
-        // Cleanup: mark error + delete leaked VM
-        if (vmId) {
-          try {
-            await client.api("PATCH", `/vm-tree/vms/${vmId}`, { status: "error" });
-          } catch {
-            /* ok */
-          }
-          try {
-            await client.api("DELETE", `/vers/vm/${vmId}`);
-          } catch {
-            /* ok */
-          }
-        }
-        return client.err(e.message);
-      }
+      return spawnResourceVm(client, params);
     },
   });
 }
