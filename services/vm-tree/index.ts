@@ -254,6 +254,15 @@ const vmTree: ServiceModule = {
         category: "infra_vm",
         reefConfig: currentReefConfig(ctx),
       });
+      try {
+        store.updateVM(currentVmId, {
+          status: "running",
+          address: `${currentVmId}.vm.vers.sh`,
+          lastHeartbeat: Date.now(),
+        });
+      } catch {
+        /* best effort */
+      }
     }
 
     ctx.events.on("lieutenant:created", (data: any) => {

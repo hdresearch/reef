@@ -80,6 +80,8 @@ export interface CreateVMInput {
   parentId?: string | null;
   category: VMCategory;
   address?: string;
+  status?: VMStatus;
+  lastHeartbeat?: number;
   context?: string;
   directive?: string;
   model?: string;
@@ -340,8 +342,8 @@ export class VMTreeStore {
     const now = Date.now();
 
     this.db.run(
-      `INSERT INTO vm_tree (id, name, parent_id, category, address, context, directive, model, effort, grants, reef_config, status, spawned_by, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?, ?)`,
+      `INSERT INTO vm_tree (id, name, parent_id, category, address, context, directive, model, effort, grants, reef_config, status, last_heartbeat, spawned_by, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         vmId,
         input.name.trim(),
@@ -354,6 +356,8 @@ export class VMTreeStore {
         input.effort || null,
         input.grants ? JSON.stringify(input.grants) : null,
         JSON.stringify(normalizeReefConfig(input.reefConfig || DEFAULT_CONFIG)),
+        input.status || "creating",
+        input.lastHeartbeat || null,
         input.spawnedBy || null,
         now,
         now,
@@ -455,6 +459,8 @@ export class VMTreeStore {
       parentId: input.parentId ?? existing.parentId,
       category: input.category,
       address: input.address ?? existing.address,
+      status: input.status,
+      lastHeartbeat: input.lastHeartbeat,
       context: input.context ?? existing.context,
       directive: input.directive ?? existing.directive,
       model: input.model ?? existing.model,

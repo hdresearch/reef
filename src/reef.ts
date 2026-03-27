@@ -100,8 +100,28 @@ function profileContext(): string {
 
 let taskCounter = 0;
 export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6";
-// Always use vers provider — requires LLM_PROXY_KEY with credits on the Vers account
 const ROOT_REEF_PROVIDER = "vers";
+const ANTHROPIC_PROVIDER = "anthropic";
+
+function hasAnthropicFallbackKey() {
+  return !!process.env.ANTHROPIC_API_KEY?.trim();
+}
+
+function resolveRootProvider(): "vers" | "anthropic" {
+  if (process.env.REEF_MODEL_PROVIDER === ANTHROPIC_PROVIDER) return ANTHROPIC_PROVIDER;
+  if (!process.env.LLM_PROXY_KEY?.trim() && hasAnthropicFallbackKey()) return ANTHROPIC_PROVIDER;
+  return ROOT_REEF_PROVIDER;
+}
+
+function isCreditExhaustedError(raw: string) {
+  const normalized = raw.toLowerCase();
+  return (
+    (normalized.includes("429") && (normalized.includes("credit") || normalized.includes("quota"))) ||
+    normalized.includes("no-credits") ||
+    normalized.includes("no credits") ||
+    normalized.includes("out of credits")
+  );
+}
 
 function conversationPayload(tree: ConversationTree, id: string) {
   const info = tree.getTask(id);
@@ -148,6 +168,7 @@ function spawnTask(
   opts: {
     model?: string;
     attachments?: Attachment[];
+    onChild?: (child: ChildProcess) => void;
     onEvent: (event: any) => void;
     onDone: (output: string) => void;
     onError: (err: string) => void;
@@ -155,109 +176,152 @@ function spawnTask(
 ): ChildProcess {
   const piPath = resolveAgentBinary();
   const cwd = process.env.REEF_DIR ?? process.cwd();
+  let activeAttempt = 0;
 
-  const child = spawn(piPath, ["--mode", "rpc", "--no-session", "--append-system-prompt", treeContext], {
-    stdio: ["pipe", "pipe", "pipe"],
-    cwd,
-    env: {
-      ...process.env,
-      PI_PATH: process.env.PI_PATH || piPath,
-      ...(opts.model ? { PI_MODEL: opts.model } : {}),
-    },
-  });
+  const startAttempt = (provider: "vers" | "anthropic"): ChildProcess => {
+    activeAttempt += 1;
+    const attemptId = activeAttempt;
+    const child = spawn(piPath, ["--mode", "rpc", "--no-session", "--append-system-prompt", treeContext], {
+      stdio: ["pipe", "pipe", "pipe"],
+      cwd,
+      env: {
+        ...process.env,
+        PI_PATH: process.env.PI_PATH || piPath,
+        ...(opts.model ? { PI_MODEL: opts.model } : {}),
+      },
+    });
 
-  let lineBuf = "";
-  let output = "";
-  let prompted = false;
-  let modelConfigured = !opts.model;
-  let modelSelectionRequested = false;
+    opts.onChild?.(child);
 
-  // Poll for pi readiness, then send the prompt
-  const readyCheck = setInterval(() => {
-    try {
-      child.stdin.write(`${JSON.stringify({ id: "ready-check", type: "get_state" })}\n`);
-    } catch {
-      clearInterval(readyCheck);
-    }
-  }, 1000);
+    let lineBuf = "";
+    let output = "";
+    let prompted = false;
+    let modelConfigured = !opts.model;
+    let modelSelectionRequested = false;
+    let fallingBack = false;
 
-  function handleEvent(event: any) {
-    // Wait for ready response before selecting the model and sending the prompt.
-    if (!prompted && event.type === "response" && event.command === "get_state") {
-      if (!modelConfigured && !modelSelectionRequested && opts.model) {
-        modelSelectionRequested = true;
-        clearInterval(readyCheck);
-        child.stdin.write(
-          `${JSON.stringify({ id: "set-model", type: "set_model", provider: ROOT_REEF_PROVIDER, modelId: opts.model, thinkingLevel: "high" })}\n`,
-        );
-        return;
-      }
-
-      prompted = true;
-      clearInterval(readyCheck);
-      const rpcMessage = buildRpcMessage(prompt, opts.attachments);
-      child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
-    }
-
-    if (!prompted && event.type === "response" && event.command === "set_model") {
-      modelConfigured = true;
-      prompted = true;
-      const rpcMessage = buildRpcMessage(prompt, opts.attachments);
-      child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
-    }
-
-    opts.onEvent(event);
-
-    if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-      output += event.assistantMessageEvent.delta;
-    }
-
-    // Capture LLM errors (e.g. 429 no credits) so they surface to the user
-    if ((event.type === "message_end" || event.type === "turn_end") && event.message?.errorMessage && !output) {
-      const raw = event.message.errorMessage;
-      if (raw.includes("no-credits") || raw.includes("no credits")) {
-        output = "Error: No credits available on your Vers account. Please add credits at vers.sh to continue.";
-      } else {
-        output = `Error: ${raw}`;
-      }
-    }
-
-    if (event.type === "agent_end") {
-      child.kill("SIGTERM");
-      opts.onDone(output);
-    }
-  }
-
-  child.stdout.on("data", (data: Buffer) => {
-    lineBuf += data.toString();
-    const lines = lineBuf.split("\n");
-    lineBuf = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
+    const readyCheck = setInterval(() => {
       try {
-        handleEvent(JSON.parse(line));
+        child.stdin.write(`${JSON.stringify({ id: "ready-check", type: "get_state" })}\n`);
       } catch {
-        /* not JSON */
+        clearInterval(readyCheck);
+      }
+    }, 1000);
+
+    const maybeFallbackToAnthropic = (raw: string) => {
+      if (
+        fallingBack ||
+        attemptId !== activeAttempt ||
+        provider !== ROOT_REEF_PROVIDER ||
+        !hasAnthropicFallbackKey() ||
+        !isCreditExhaustedError(raw)
+      ) {
+        return false;
+      }
+
+      fallingBack = true;
+      clearInterval(readyCheck);
+      process.env.REEF_MODEL_PROVIDER = ANTHROPIC_PROVIDER;
+      opts.onEvent({
+        type: "provider_fallback",
+        from: ROOT_REEF_PROVIDER,
+        to: ANTHROPIC_PROVIDER,
+        reason: "credit_exhausted",
+      });
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+      startAttempt(ANTHROPIC_PROVIDER);
+      return true;
+    };
+
+    function handleEvent(event: any) {
+      if (attemptId !== activeAttempt) return;
+
+      if (!prompted && event.type === "response" && event.command === "get_state") {
+        if (!modelConfigured && !modelSelectionRequested && opts.model) {
+          modelSelectionRequested = true;
+          clearInterval(readyCheck);
+          child.stdin.write(
+            `${JSON.stringify({ id: "set-model", type: "set_model", provider, modelId: opts.model, thinkingLevel: "high" })}\n`,
+          );
+          return;
+        }
+
+        prompted = true;
+        clearInterval(readyCheck);
+        const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+        child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
+      }
+
+      if (!prompted && event.type === "response" && event.command === "set_model") {
+        modelConfigured = true;
+        prompted = true;
+        const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+        child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
+      }
+
+      opts.onEvent(event);
+
+      if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+        output += event.assistantMessageEvent.delta;
+      }
+
+      if ((event.type === "message_end" || event.type === "turn_end") && event.message?.errorMessage && !output) {
+        const raw = event.message.errorMessage;
+        if (maybeFallbackToAnthropic(raw)) return;
+        if (isCreditExhaustedError(raw)) {
+          output = "Error: No credits available on your Vers account and Anthropic fallback was not available.";
+        } else {
+          output = `Error: ${raw}`;
+        }
+      }
+
+      if (event.type === "agent_end") {
+        child.kill("SIGTERM");
+        opts.onDone(output);
       }
     }
-  });
 
-  child.stderr.on("data", (data: Buffer) => {
-    const msg = data.toString().trim();
-    if (msg) console.error(`  [pi] ${msg}`);
-  });
+    child.stdout.on("data", (data: Buffer) => {
+      if (attemptId !== activeAttempt) return;
+      lineBuf += data.toString();
+      const lines = lineBuf.split("\n");
+      lineBuf = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          handleEvent(JSON.parse(line));
+        } catch {
+          /* not JSON */
+        }
+      }
+    });
 
-  child.on("error", (err) => {
-    clearInterval(readyCheck);
-    opts.onError(`Failed to spawn pi: ${err.message}`);
-  });
+    child.stderr.on("data", (data: Buffer) => {
+      if (attemptId !== activeAttempt) return;
+      const msg = data.toString().trim();
+      if (msg) console.error(`  [pi] ${msg}`);
+    });
 
-  child.on("close", (code) => {
-    clearInterval(readyCheck);
-    if (code && code !== 0) opts.onError(`pi exited with code ${code}`);
-  });
+    child.on("error", (err) => {
+      clearInterval(readyCheck);
+      if (attemptId !== activeAttempt) return;
+      opts.onError(`Failed to spawn pi: ${err.message}`);
+    });
 
-  return child;
+    child.on("close", (code) => {
+      clearInterval(readyCheck);
+      if (attemptId !== activeAttempt || fallingBack) return;
+      if (code && code !== 0) opts.onError(`pi exited with code ${code}`);
+    });
+
+    return child;
+  };
+
+  return startAttempt(resolveRootProvider());
 }
 
 // =============================================================================
@@ -375,6 +439,9 @@ export async function createReef(config: ReefConfig = {}) {
       task.child = spawnTask(task.prompt, treeContext, {
         model: agentModel,
         attachments,
+        onChild(child) {
+          task.child = child;
+        },
         onEvent(event) {
           task.events.push(event);
           if (task.events.length > 500) task.events.shift();

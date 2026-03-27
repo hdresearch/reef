@@ -318,6 +318,7 @@ describe("registry and vm-tree event wiring", () => {
     expect(afterDestroy.data.vms.some((vm: any) => vm.id === vmId)).toBe(false);
 
     for (const mod of liveModules.values()) {
+      if (mod.name === "vm-tree") continue;
       if (mod.store?.close) await mod.store.close();
     }
   });

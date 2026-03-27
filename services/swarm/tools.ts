@@ -281,18 +281,15 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
         vmId = createResult?.vmId || createResult?.id;
         if (!vmId) return client.err("Failed to create resource VM — no vmId returned.");
 
-        // Step 2: Register in vm_tree immediately (status: creating)
+        // Step 2: Register in vm_tree as running once Vers has returned the VM id.
         await client.api("POST", "/vm-tree/vms", {
           vmId,
           name: params.name,
           category: "resource_vm",
           parentId: process.env.VERS_VM_ID,
-        });
-
-        // Step 3: Update to running
-        await client.api("PATCH", `/vm-tree/vms/${vmId}`, {
           status: "running",
           address: `${vmId}.vm.vers.sh`,
+          lastHeartbeat: Date.now(),
         });
 
         return client.ok(

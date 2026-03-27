@@ -118,18 +118,14 @@ function buildWorkerEnv(
   opts: { llmProxyKey?: string; directive?: string; category?: string },
 ): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || opts.llmProxyKey || process.env.LLM_PROXY_KEY || "";
   const exports = [
     opts.llmProxyKey
       ? `export LLM_PROXY_KEY='${escapeEnvValue(opts.llmProxyKey)}'`
       : process.env.LLM_PROXY_KEY
         ? `export LLM_PROXY_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
         : "",
-    // ANTHROPIC_API_KEY aliased to LLM_PROXY_KEY for vers provider
-    opts.llmProxyKey
-      ? `export ANTHROPIC_API_KEY='${escapeEnvValue(opts.llmProxyKey)}'`
-      : process.env.LLM_PROXY_KEY
-        ? `export ANTHROPIC_API_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
-        : "",
+    anthropicApiKey ? `export ANTHROPIC_API_KEY='${escapeEnvValue(anthropicApiKey)}'` : "",
     versApiKey ? `export VERS_API_KEY='${escapeEnvValue(versApiKey)}'` : "",
     process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
     process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
@@ -153,6 +149,9 @@ function buildWorkerEnv(
     process.env.VERS_AGENT_NAME
       ? `export VERS_PARENT_AGENT='${escapeEnvValue(process.env.VERS_AGENT_NAME)}'`
       : "export VERS_PARENT_AGENT='reef'",
+    process.env.REEF_MODEL_PROVIDER
+      ? `export REEF_MODEL_PROVIDER='${escapeEnvValue(process.env.REEF_MODEL_PROVIDER)}'`
+      : "",
     "export GIT_EDITOR=true",
   ]
     .filter(Boolean)
@@ -287,6 +286,12 @@ rm -rf ${RPC_DIR}`,
   };
 }
 
+function resolveModelProvider(): "vers" | "anthropic" {
+  if (process.env.REEF_MODEL_PROVIDER === "anthropic") return "anthropic";
+  if (!process.env.LLM_PROXY_KEY && process.env.ANTHROPIC_API_KEY) return "anthropic";
+  return "vers";
+}
+
 export async function startWorkerRpcAgent(
   vmId: string,
   opts: {
@@ -337,8 +342,7 @@ tmux has-session -t pi-rpc 2>/dev/null && echo daemon_started || echo daemon_fai
 
   const handle = createRemoteHandle(vmId, sshBaseArgs, false);
   if (opts.model) {
-    // Always use vers provider. Pass effort as thinkingLevel for opus adaptive thinking.
-    const setModelMsg: any = { type: "set_model", provider: "vers", modelId: opts.model };
+    const setModelMsg: any = { type: "set_model", provider: resolveModelProvider(), modelId: opts.model };
     if (opts.effort) setModelMsg.thinkingLevel = opts.effort;
     handle.send(setModelMsg);
   }
@@ -855,7 +859,13 @@ export class SwarmRuntime {
 
     const cutoff = Date.now() - 5 * 60 * 1000;
     const allVMs = this.vmTreeStore.listVMs({ status: "creating" as any });
-    const orphans = allVMs.filter((vm) => vm.createdAt < cutoff);
+    const orphans = allVMs.filter(
+      (vm) =>
+        vm.createdAt < cutoff &&
+        vm.parentId !== null &&
+        vm.category !== "infra_vm" &&
+        vm.vmId !== process.env.VERS_VM_ID,
+    );
 
     const cleaned: string[] = [];
     const errors: string[] = [];

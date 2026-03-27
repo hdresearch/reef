@@ -80,16 +80,20 @@ fi`;
  */
 export function buildPersistKeysScript(opts: RemoteRpcOptions): string {
   const llmKey = opts.llmProxyKey || process.env.LLM_PROXY_KEY || "";
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || llmKey;
   const versKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const infraUrl = process.env.VERS_INFRA_URL || "";
   const goldenCommitId = process.env.VERS_GOLDEN_COMMIT_ID || "";
+  const provider = process.env.REEF_MODEL_PROVIDER || "";
   const lines: string[] = ["mkdir -p /etc/profile.d", "touch /etc/profile.d/reef-agent.sh"];
 
   for (const [envName, value] of [
     ["LLM_PROXY_KEY", llmKey],
+    ["ANTHROPIC_API_KEY", anthropicKey],
     ["VERS_API_KEY", versKey],
     ["VERS_INFRA_URL", infraUrl],
     ["VERS_GOLDEN_COMMIT_ID", goldenCommitId],
+    ["REEF_MODEL_PROVIDER", provider],
   ] as const) {
     if (!value) continue;
     const escaped = escapeEnvValue(value);
@@ -107,18 +111,14 @@ export function buildPersistKeysScript(opts: RemoteRpcOptions): string {
 
 export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || opts.llmProxyKey || process.env.LLM_PROXY_KEY || "";
   const exports = [
     opts.llmProxyKey
       ? `export LLM_PROXY_KEY='${escapeEnvValue(opts.llmProxyKey)}'`
       : process.env.LLM_PROXY_KEY
         ? `export LLM_PROXY_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
         : "",
-    // Alias ANTHROPIC_API_KEY to LLM_PROXY_KEY so punkin's AI package initializes
-    opts.llmProxyKey
-      ? `export ANTHROPIC_API_KEY='${escapeEnvValue(opts.llmProxyKey)}'`
-      : process.env.LLM_PROXY_KEY
-        ? `export ANTHROPIC_API_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
-        : "",
+    anthropicApiKey ? `export ANTHROPIC_API_KEY='${escapeEnvValue(anthropicApiKey)}'` : "",
     versApiKey ? `export VERS_API_KEY='${escapeEnvValue(versApiKey)}'` : "",
     process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
     process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
@@ -142,6 +142,9 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
     process.env.VERS_AGENT_NAME
       ? `export VERS_PARENT_AGENT='${escapeEnvValue(process.env.VERS_AGENT_NAME)}'`
       : "export VERS_PARENT_AGENT='reef'",
+    process.env.REEF_MODEL_PROVIDER
+      ? `export REEF_MODEL_PROVIDER='${escapeEnvValue(process.env.REEF_MODEL_PROVIDER)}'`
+      : "",
     "export GIT_EDITOR=true",
   ]
     .filter(Boolean)
@@ -150,7 +153,9 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
   return exports;
 }
 
-function resolveModelProvider(): "vers" {
+function resolveModelProvider(): "vers" | "anthropic" {
+  if (process.env.REEF_MODEL_PROVIDER === "anthropic") return "anthropic";
+  if (!process.env.LLM_PROXY_KEY && process.env.ANTHROPIC_API_KEY) return "anthropic";
   return "vers";
 }
 
