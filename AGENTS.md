@@ -108,7 +108,7 @@ reef_inbox({ from: "worker-3" })          // only from a specific child
 reef_inbox({ from: "worker-3", type: "done" })  // combined filters
 ```
 
-**Check your inbox periodically.** Your parent may steer or abort you at any time. Your children may signal done, blocked, or failed. The behavior timer checks every 30 seconds, but you should also check before starting new work and after completing a major step.
+**Check your inbox periodically.** Your parent may steer or abort you at any time. Your children may signal done, blocked, or failed. The behavior timer checks every 10 seconds, but you should also check before starting new work and after completing a major step.
 
 **No cross-branch communication.** If you need something from another branch of the tree, signal upward and let the common ancestor coordinate.
 
