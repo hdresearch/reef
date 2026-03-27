@@ -31,6 +31,7 @@ export interface RemoteRpcOptions {
   model?: string;
   agentsMd?: string; // v2: full AGENTS.md content to write to child VM
   directive?: string; // v2: hard guardrails (VERS_AGENT_DIRECTIVE)
+  effort?: string; // v2: thinking effort level (low, medium, high)
 }
 const versClient = new VersClient();
 
@@ -350,7 +351,9 @@ tmux has-session -t pi-rpc 2>/dev/null && echo daemon_started || echo daemon_fai
 
   const handle = createRemoteHandle(vmId, sshBaseArgs, false);
   if (opts.model) {
-    handle.send({ type: "set_model", provider: resolveModelProvider(), modelId: opts.model });
+    const setModelMsg: any = { type: "set_model", provider: resolveModelProvider(), modelId: opts.model };
+    if (opts.effort) setModelMsg.thinkingLevel = opts.effort;
+    handle.send(setModelMsg);
   }
   return handle;
 }

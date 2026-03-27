@@ -54,15 +54,47 @@ routes.post("/", async (c) => {
     events?.emit(`signal:${signalType}`, signal);
     events?.emit("signal:new", signal);
 
-    // v2: Update sender's vm_tree status based on signal type
+    // v2: Update sender's vm_tree status and take completion snapshot on done/failed
     if (direction === "up" && vmTreeStore) {
       try {
         const sender = vmTreeStore.getVMByName(fromAgent);
         if (sender) {
           if (signalType === "done" || signalType === "failed") {
             vmTreeStore.updateVM(sender.vmId, { status: "stopped" });
+            // Completion snapshot — best effort, non-blocking
+            // Note: actual vers_vm_commit would require pi-vers VersClient access
+            // which the signals service doesn't have. Log the intent as an agent_event.
+            vmTreeStore.insertAgentEvent(sender.vmId, signalType === "done" ? "task_completed" : "error", {
+              summary: payload?.summary || payload?.error || signalType,
+            });
           }
         }
+      } catch {
+        /* best effort */
+      }
+    }
+
+    // v2: Auto-trigger root task on urgent signals from direct children
+    if (
+      direction === "up" &&
+      (signalType === "failed" || signalType === "blocked") &&
+      toAgent === (process.env.VERS_AGENT_NAME || "root-reef")
+    ) {
+      try {
+        const payloadSummary = payload?.reason || payload?.error || payload?.message || signalType;
+        const infraUrl = process.env.VERS_INFRA_URL || `http://localhost:${process.env.PORT || 3000}`;
+        const authToken = process.env.VERS_AUTH_TOKEN;
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (authToken) headers.Authorization = `Bearer ${authToken}`;
+        fetch(`${infraUrl}/reef/submit`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            task: `URGENT: Agent "${fromAgent}" signaled ${signalType}. Reason: ${payloadSummary}. Check reef_inbox and reef_fleet_status, then decide how to respond.`,
+          }),
+        }).catch(() => {
+          /* best effort — don't block signal delivery */
+        });
       } catch {
         /* best effort */
       }

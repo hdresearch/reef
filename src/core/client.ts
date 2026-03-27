@@ -30,7 +30,13 @@ export function createFleetClient(): FleetClient {
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      "X-Reef-Agent-Name": agentName,
+      "X-Reef-Category": agentCategory,
     };
+
+    if (vmId) {
+      headers["X-Reef-VM-ID"] = vmId;
+    }
 
     const token = process.env.VERS_AUTH_TOKEN;
     if (token) {

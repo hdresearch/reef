@@ -58,6 +58,7 @@ export interface SpawnParams {
   context?: string; // v2: situational context appended to inherited AGENTS.md
   category?: string; // v2: override category (default: swarm_vm, agent_vm for reef_agent_spawn)
   directive?: string; // v2: hard guardrails (VERS_AGENT_DIRECTIVE)
+  effort?: string; // v2: thinking effort level (low, medium, high)
 }
 
 export interface SwarmRuntimeOptions {
@@ -260,7 +261,14 @@ rm -rf ${RPC_DIR}`,
 
 export async function startWorkerRpcAgent(
   vmId: string,
-  opts: { llmProxyKey?: string; model?: string; label?: string; directive?: string; category?: string },
+  opts: {
+    llmProxyKey?: string;
+    model?: string;
+    label?: string;
+    directive?: string;
+    category?: string;
+    effort?: string;
+  },
 ): Promise<RpcHandle> {
   const sshBaseArgs = await versClient.sshArgs(vmId);
   const envExports = buildWorkerEnv(vmId, opts.label || `worker-${vmId.slice(0, 8)}`, opts);
@@ -301,8 +309,10 @@ tmux has-session -t pi-rpc 2>/dev/null && echo daemon_started || echo daemon_fai
 
   const handle = createRemoteHandle(vmId, sshBaseArgs, false);
   if (opts.model) {
-    // Always use vers provider
-    handle.send({ type: "set_model", provider: "vers", modelId: opts.model });
+    // Always use vers provider. Pass effort as thinkingLevel for opus adaptive thinking.
+    const setModelMsg: any = { type: "set_model", provider: "vers", modelId: opts.model };
+    if (opts.effort) setModelMsg.thinkingLevel = opts.effort;
+    handle.send(setModelMsg);
   }
   return handle;
 }
@@ -588,6 +598,7 @@ export class SwarmRuntime {
           label,
           directive: params.directive,
           category: params.category,
+          effort: params.effort,
         });
 
         // Wait for RPC ready
@@ -645,6 +656,16 @@ export class SwarmRuntime {
           context: params.context,
         });
         this.events.fire("swarm:agent_ready", { vmId, label });
+
+        // v2: Baseline snapshot — best effort, non-blocking
+        try {
+          const commit = await versClient.commit(vmId);
+          if (commit?.commitId || commit?.id) {
+            this.events.fire("swarm:agent_baseline", { vmId, label, commitId: commit.commitId || commit.id });
+          }
+        } catch {
+          /* baseline snapshot is insurance, not critical */
+        }
         this.events.fire("reef:event", {
           type: "swarm_agent_spawned",
           source: "swarm",

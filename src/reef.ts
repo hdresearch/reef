@@ -188,7 +188,7 @@ function spawnTask(
         modelSelectionRequested = true;
         clearInterval(readyCheck);
         child.stdin.write(
-          `${JSON.stringify({ id: "set-model", type: "set_model", provider: ROOT_REEF_PROVIDER, modelId: opts.model })}\n`,
+          `${JSON.stringify({ id: "set-model", type: "set_model", provider: ROOT_REEF_PROVIDER, modelId: opts.model, thinkingLevel: "high" })}\n`,
         );
         return;
       }

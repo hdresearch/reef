@@ -112,17 +112,44 @@ app.get("/:key", (c) => {
   return c.json({ key, value: entry.value, createdAt: entry.createdAt, updatedAt: entry.updatedAt });
 });
 
-// PUT /store/:key — set a value
+// PUT /store/:key — set a value (server-side namespace enforcement)
 app.put("/:key", async (c) => {
   const key = c.req.param("key");
+  const callerCategory = c.req.header("X-Reef-Category") || "infra_vm";
+  const callerName = c.req.header("X-Reef-Agent-Name");
+
+  // v2: Server-side namespace enforcement — non-root agents must prefix keys with their name
+  if (callerCategory !== "infra_vm" && callerName) {
+    const prefix = `${callerName}:`;
+    if (!key.startsWith(prefix)) {
+      return c.json(
+        { error: `Store namespacing: key must start with "${prefix}" (your agent name). Got "${key}".` },
+        403,
+      );
+    }
+  }
+
   const body = await c.req.json();
   const result = storePut(key, body.value);
   return c.json({ key, value: body.value, updatedAt: result.updatedAt });
 });
 
-// DELETE /store/:key — delete a key
+// DELETE /store/:key — delete a key (server-side namespace enforcement)
 app.delete("/:key", (c) => {
   const key = c.req.param("key");
+  const callerCategory = c.req.header("X-Reef-Category") || "infra_vm";
+  const callerName = c.req.header("X-Reef-Agent-Name");
+
+  if (callerCategory !== "infra_vm" && callerName) {
+    const prefix = `${callerName}:`;
+    if (!key.startsWith(prefix)) {
+      return c.json(
+        { error: `Store namespacing: key must start with "${prefix}" (your agent name). Got "${key}".` },
+        403,
+      );
+    }
+  }
+
   if (!storeGet(key)) return c.json({ error: "not found" }, 404);
   storeDelete(key);
   return c.json({ deleted: key });
@@ -259,6 +286,16 @@ const mod: ServiceModule = {
       async execute(_id, params) {
         if (!client.getBaseUrl()) return client.noUrl();
         try {
+          // v2: Enforce namespacing — non-root agents can only write keys prefixed with their name
+          const category = client.agentCategory;
+          if (category !== "infra_vm") {
+            const prefix = `${client.agentName}:`;
+            if (!params.key.startsWith(prefix)) {
+              return client.err(
+                `Store namespacing: key must start with "${prefix}" (your agent name). Got "${params.key}".`,
+              );
+            }
+          }
           await client.api("PUT", `/store/${encodeURIComponent(params.key)}`, { value: params.value });
           return client.ok(`Stored "${params.key}".`);
         } catch (e: any) {

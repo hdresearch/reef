@@ -324,6 +324,47 @@ ${GITHUB_RULES}`,
       if (!client.getBaseUrl()) return client.noUrl();
 
       try {
+        // v2: Check grants — enforce repo scope and profile limits
+        let grantedRepos: string[] | undefined;
+        let grantedProfile: string | undefined;
+        try {
+          const vmId = process.env.VERS_VM_ID;
+          if (vmId) {
+            const self = await client.api<any>("GET", `/vm-tree/vms/${encodeURIComponent(vmId)}`);
+            const grants = self?.grants;
+            if (grants?.repos?.length) grantedRepos = grants.repos;
+            if (grants?.githubProfile) grantedProfile = grants.githubProfile;
+          }
+        } catch {
+          /* grants check is best-effort */
+        }
+
+        // Enforce repo grants
+        let requestedRepos = params.repositories;
+        if (grantedRepos && requestedRepos) {
+          const unauthorized = requestedRepos.filter((r: string) => !grantedRepos!.includes(r));
+          if (unauthorized.length > 0) {
+            return client.err(
+              `Grant violation: repos [${unauthorized.join(", ")}] not in your grants [${grantedRepos.join(", ")}]`,
+            );
+          }
+        } else if (grantedRepos && !requestedRepos) {
+          // If agent has repo grants but didn't scope, auto-scope to granted repos
+          requestedRepos = grantedRepos;
+        }
+
+        // Enforce profile grants
+        const profileOrder = ["read", "develop", "ci"];
+        if (grantedProfile && params.profile) {
+          const grantedIdx = profileOrder.indexOf(grantedProfile);
+          const requestedIdx = profileOrder.indexOf(params.profile);
+          if (requestedIdx > grantedIdx && grantedIdx >= 0) {
+            return client.err(
+              `Grant violation: profile "${params.profile}" exceeds your granted profile "${grantedProfile}"`,
+            );
+          }
+        }
+
         let permissions = params.permissions;
         if (params.profile && TOKEN_PROFILES[params.profile as TokenProfile]) {
           permissions = TOKEN_PROFILES[params.profile as TokenProfile].permissions;
@@ -335,7 +376,7 @@ ${GITHUB_RULES}`,
           permissions: Record<string, string>;
           repositories?: string[];
         }>("POST", "/github/token", {
-          repositories: params.repositories,
+          repositories: requestedRepos,
           permissions,
           profile: params.profile,
         });

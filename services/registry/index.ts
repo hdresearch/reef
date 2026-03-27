@@ -231,6 +231,9 @@ const registry: ServiceModule = {
       }
     },
   },
+  // v2: registry runs alongside vm_tree. vm_tree is the source of truth for v2 agents.
+  // Full migration (registry becomes a thin layer over vm_tree) is planned but not yet complete.
+  dependencies: [],
 };
 
 export default registry;

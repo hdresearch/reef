@@ -307,6 +307,16 @@ const vmTree: ServiceModule = {
       }
     });
 
+    ctx.events.on("swarm:agent_baseline", (data: any) => {
+      if (!data?.vmId || !data?.commitId) return;
+      try {
+        store.updateVM(data.vmId, { baselineCommit: data.commitId });
+        store.insertAgentEvent(data.vmId, "baseline_snapshot", { commitId: data.commitId });
+      } catch {
+        /* best effort */
+      }
+    });
+
     ctx.events.on("swarm:agent_destroyed", (data: any) => {
       if (!data?.vmId) return;
       try {
