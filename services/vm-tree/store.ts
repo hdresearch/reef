@@ -24,10 +24,11 @@ import { ulid } from "ulid";
 
 export type VMCategory = "infra_vm" | "lieutenant" | "agent_vm" | "swarm_vm" | "resource_vm";
 export type VMStatus = "creating" | "running" | "paused" | "stopped" | "error" | "destroyed" | "rewound";
-export type SignalDirection = "up" | "down";
+export type SignalDirection = "up" | "down" | "peer";
 export type UpwardSignalType = "done" | "blocked" | "failed" | "progress" | "need-resources" | "checkpoint";
 export type DownwardCommandType = "abort" | "pause" | "resume" | "steer";
-export type SignalType = UpwardSignalType | DownwardCommandType;
+export type PeerSignalType = "info" | "request" | "artifact" | "warning" | "handoff";
+export type SignalType = UpwardSignalType | DownwardCommandType | PeerSignalType;
 
 export interface ReefConfig {
   services: string[];

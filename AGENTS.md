@@ -22,6 +22,7 @@ Your category determines what tools you have access to. Categories: `infra_vm` (
 | `reef_self` | Your identity: name, category, grants, parent, directive, model, effort |
 | `reef_signal` | Send a signal upward to your parent: done, blocked, failed, progress, need-resources, checkpoint |
 | `reef_command` | Send a command downward to a child: steer, abort, pause, resume |
+| `reef_peer_signal` | Send a coordination message to a same-parent sibling: info, request, artifact, warning, handoff |
 | `reef_inbox` | Read your inbox — signals from children AND commands from your parent (see Inbox below) |
 | `reef_checkpoint` | Snapshot your VM at a meaningful state (creates a Vers commit) |
 | `reef_github_token` | Mint scoped GitHub tokens — profiles: read, develop, ci |
@@ -83,8 +84,23 @@ Any agent can self-organize with compute. If you need to parallelize, decompose,
 - Log significant decisions via `reef_log` so future agents (or handoff replacements) can understand your reasoning
 - Read `VERS_AGENT_DIRECTIVE` — it contains hard constraints that override everything else
 - Take ownership of your task — self-organize, figure it out, ask for help only when genuinely stuck
+- Use `reef_command` to control work you own
+- Use `reef_peer_signal` to coordinate with siblings
+- If sibling coordination conflicts with parent direction, escalate upward
 
 ## Communication
+
+There are three distinct communication modes in reef:
+
+1. **Upward** — `reef_signal`
+   - child -> parent
+   - escalation, completion, blocked, failed, progress, checkpoint
+2. **Downward** — `reef_command`
+   - ancestor -> descendant
+   - authoritative control only
+3. **Lateral** — `reef_peer_signal`
+   - same-parent siblings
+   - coordination only, not control
 
 **Sending upward** — use `reef_signal`:
 - Your parent is auto-resolved from your identity
@@ -92,7 +108,16 @@ Any agent can self-organize with compute. If you need to parallelize, decompose,
 - Your parent decides what to surface to their parent
 
 **Sending downward** — use `reef_command`:
-- Send steer, abort, pause, resume to any of your direct children by name
+- Use this to control work you own
+- Send steer, abort, pause, resume to descendants in your subtree by name
+- Downward commands are authoritative; children should treat parent direction as control, not a suggestion
+
+**Sending laterally** — use `reef_peer_signal`:
+- Use this to coordinate with siblings
+- Send coordination messages to same-parent siblings
+- Use this for sharing artifacts, requests, warnings, and handoffs
+- Do not use peer signals to control another agent; peers can coordinate but not override parent authority
+- If sibling coordination conflicts with parent direction, escalate upward rather than arguing laterally
 
 **Reading your inbox** — use `reef_inbox`:
 
@@ -101,6 +126,7 @@ Your inbox is a unified stream of everything addressed to you — commands from 
 ```
 reef_inbox()                              // all unacknowledged messages
 reef_inbox({ direction: "down" })         // only commands from your parent
+reef_inbox({ direction: "peer" })         // only coordination messages from your siblings
 reef_inbox({ direction: "up" })           // only signals from your children
 reef_inbox({ type: "done" })              // only done signals (from children)
 reef_inbox({ type: "steer" })             // only steer commands (from parent)
@@ -202,6 +228,7 @@ Check `reef_inbox({ direction: "down" })` periodically. Your parent may send:
 - If existing set of logs, signals and events being recorded is leaving you with blind spots and not enough to accomplish the assigned goal, have the reef chat communicate that with the person/api driving the reef chat so they know how they can help you and why you need them to do this for you
 - Don't hold context for your children's work — they have their own AGENTS.md
 - Don't micromanage — tell them what to do, not how to do it (but you can guide them)
+- Don't use peer coordination as a backdoor command channel
 - Don't go silent — if you're stuck, signal `blocked`. If you failed, signal `failed`. Silence is the worst signal
 - Don't fake work — if you didn't read the file, don't say you did. If the test didn't pass, don't say it did. If you're not sure, say you're not sure
 - Don't loop — same approach failed twice with no new insight? Change strategy or escalate. Three identical retries is a bug, not persistence

@@ -55,6 +55,8 @@ function seedHierarchy(store: VMTreeStore, suffix: string) {
     ltName: `lineage-lt-${suffix}`,
     agentVmId: `agent-1-${suffix}`,
     agentName: `lineage-agent-${suffix}`,
+    siblingAgentVmId: `agent-1b-${suffix}`,
+    siblingAgentName: `lineage-agent-sibling-${suffix}`,
     swarmVmId: `swarm-1-${suffix}`,
     swarmName: `agent-1-worker-${suffix}`,
     otherLtVmId: `lt-2-${suffix}`,
@@ -74,6 +76,13 @@ function seedHierarchy(store: VMTreeStore, suffix: string) {
   store.upsertVM({
     vmId: ids.agentVmId,
     name: ids.agentName,
+    category: "agent_vm",
+    status: "running",
+    parentId: ids.ltVmId,
+  });
+  store.upsertVM({
+    vmId: ids.siblingAgentVmId,
+    name: ids.siblingAgentName,
     category: "agent_vm",
     status: "running",
     parentId: ids.ltVmId,
@@ -189,6 +198,61 @@ describe("authority model", () => {
     expect(rootToAnyone.status).toBe(201);
   });
 
+  test("reef_peer_signal allows same-parent siblings but denies cross-branch peers", async () => {
+    const server = await createServer({ modules: [vmTree, signals] });
+    const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
+    expect(store).toBeDefined();
+    const ids = seedHierarchy(store!, `${Date.now()}-peer`);
+
+    const agentHeaders = authHeaders({
+      "X-Reef-Agent-Name": ids.agentName,
+      "X-Reef-VM-ID": ids.agentVmId,
+      "X-Reef-Category": "agent_vm",
+    });
+
+    const siblingPeer = await json(server.app, "/signals/", {
+      method: "POST",
+      headers: agentHeaders,
+      body: {
+        fromAgent: ids.agentName,
+        toAgent: ids.siblingAgentName,
+        direction: "peer",
+        signalType: "artifact",
+        payload: { summary: "branch ready", branch: "feat/lineage-agent/demo" },
+      },
+    });
+    expect(siblingPeer.status).toBe(201);
+
+    const inbox = await json(
+      server.app,
+      `/signals/?to=${encodeURIComponent(ids.siblingAgentName)}&direction=peer&acknowledged=false&limit=10`,
+      {
+        headers: authHeaders({
+          "X-Reef-Agent-Name": ids.siblingAgentName,
+          "X-Reef-VM-ID": ids.siblingAgentVmId,
+          "X-Reef-Category": "agent_vm",
+        }),
+      },
+    );
+    expect(inbox.status).toBe(200);
+    expect(inbox.data.count).toBe(1);
+    expect(inbox.data.signals[0].signalType).toBe("artifact");
+    expect(inbox.data.signals[0].fromAgent).toBe(ids.agentName);
+
+    const crossBranchPeer = await json(server.app, "/signals/", {
+      method: "POST",
+      headers: agentHeaders,
+      body: {
+        fromAgent: ids.agentName,
+        toAgent: ids.otherAgentName,
+        direction: "peer",
+        signalType: "request",
+        payload: { summary: "send me your branch" },
+      },
+    });
+    expect(crossBranchPeer.status).toBe(403);
+  });
+
   test("reef_logs is scoped to self, direct parent, descendants, same-parent siblings, and root override", async () => {
     const server = await createServer({ modules: [vmTree, logs] });
     const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
@@ -197,6 +261,12 @@ describe("authority model", () => {
 
     store!.insertLog({ agentId: ids.ltVmId, agentName: ids.ltName, level: "info", message: "lt log" });
     store!.insertLog({ agentId: ids.agentVmId, agentName: ids.agentName, level: "info", message: "agent log" });
+    store!.insertLog({
+      agentId: ids.siblingAgentVmId,
+      agentName: ids.siblingAgentName,
+      level: "info",
+      message: "sibling agent log",
+    });
     store!.insertLog({ agentId: ids.swarmVmId, agentName: ids.swarmName, level: "info", message: "swarm log" });
     store!.insertLog({ agentId: ids.otherAgentVmId, agentName: ids.otherAgentName, level: "info", message: "other log" });
 
@@ -231,13 +301,13 @@ describe("authority model", () => {
     expect(agentReadsDefaultSelf.data.count).toBe(1);
     expect(agentReadsDefaultSelf.data.logs[0].agentName).toBe(ids.agentName);
 
-    const swarmHeaders = authHeaders({
-      "X-Reef-Agent-Name": ids.swarmName,
-      "X-Reef-VM-ID": ids.swarmVmId,
-      "X-Reef-Category": "swarm_vm",
+    const siblingHeaders = authHeaders({
+      "X-Reef-Agent-Name": ids.siblingAgentName,
+      "X-Reef-VM-ID": ids.siblingAgentVmId,
+      "X-Reef-Category": "agent_vm",
     });
     const siblingReadsSibling = await json(server.app, `/logs/?agent=${encodeURIComponent(ids.agentName)}&limit=10`, {
-      headers: swarmHeaders,
+      headers: siblingHeaders,
     });
     expect(siblingReadsSibling.status).toBe(200);
     expect(siblingReadsSibling.data.count).toBe(1);

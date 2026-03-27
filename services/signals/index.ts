@@ -64,6 +64,10 @@ function isDescendant(parentVmId: string, childVmId: string): boolean {
   return vmTreeStore.descendants(parentVmId).some((vm) => vm.vmId === childVmId);
 }
 
+function areSameParentSiblings(left: VMNode, right: VMNode): boolean {
+  return !!left.parentId && !!right.parentId && left.parentId === right.parentId;
+}
+
 function ensureSwarmCompletionSignal(data: {
   vmId?: string;
   label?: string;
@@ -179,6 +183,16 @@ routes.post("/", async (c) => {
           return c.json({ error: `target agent "${toAgent}" is outside the requester's subtree` }, 403);
         }
       }
+
+      if (direction === "peer" && !isRootActor(actor)) {
+        const target = vmTreeStore.getVMByName(toAgent);
+        if (!target) {
+          return c.json({ error: `target agent "${toAgent}" not found in vm-tree` }, 404);
+        }
+        if (!areSameParentSiblings(actor.vm, target)) {
+          return c.json({ error: `peer target "${toAgent}" is not a same-parent sibling` }, 403);
+        }
+      }
     }
 
     const signal = vmTreeStore.insertSignal({
@@ -251,7 +265,7 @@ routes.get("/", (c) => {
 
   const toAgent = c.req.query("to");
   const fromAgent = c.req.query("from");
-  const direction = c.req.query("direction") as "up" | "down" | undefined;
+  const direction = c.req.query("direction") as "up" | "down" | "peer" | undefined;
   const signalType = c.req.query("type") as any;
   const acknowledged = c.req.query("acknowledged");
   const since = c.req.query("since");
@@ -302,7 +316,7 @@ routes.get("/_panel", (c) => {
 
   const rows = recent
     .map((s) => {
-      const dir = s.direction === "up" ? "&#x2191;" : "&#x2193;";
+      const dir = s.direction === "up" ? "&#x2191;" : s.direction === "down" ? "&#x2193;" : "&#x2194;";
       const ack = s.acknowledged
         ? '<span style="color:#4f9">&#x2713;</span>'
         : '<span style="color:#ff9800">&#x25cf;</span>';
@@ -450,6 +464,56 @@ Command types:
     },
   });
 
+  // reef_peer_signal — send bounded coordination to a sibling
+  pi.registerTool({
+    name: "reef_peer_signal",
+    label: "Peer Signal: Coordinate With Sibling",
+    description: `Send a bounded coordination signal to a same-parent sibling.
+
+Peer signals are for collaboration, not control.
+
+Signal types:
+  - "info"    — share a discovery or status update
+  - "request" — ask for an artifact, schema, branch, or clarification
+  - "artifact" — announce a branch, commit, file path, or other work product
+  - "warning" — flag an integration risk or important constraint
+  - "handoff" — indicate a task boundary or dependency handoff`,
+    parameters: Type.Object({
+      to: Type.String({ description: "Sibling agent name to signal" }),
+      type: Type.Union(
+        [
+          Type.Literal("info"),
+          Type.Literal("request"),
+          Type.Literal("artifact"),
+          Type.Literal("warning"),
+          Type.Literal("handoff"),
+        ],
+        { description: "Peer signal type" },
+      ),
+      payload: Type.Optional(
+        Type.Record(Type.String(), Type.Any(), {
+          description: "Peer signal payload (summary, artifacts, requestAck, warnings, etc.)",
+        }),
+      ),
+    }),
+    async execute(_id, params) {
+      if (!client.getBaseUrl()) return client.noUrl();
+      try {
+        const result = await client.api<any>("POST", "/signals/", {
+          fromAgent: client.agentName,
+          toAgent: params.to,
+          direction: "peer",
+          signalType: params.type,
+          payload: params.payload,
+        });
+
+        return client.ok(`Peer signal "${params.type}" sent to ${params.to}.`, { signal: result });
+      } catch (e: any) {
+        return client.err(e.message);
+      }
+    },
+  });
+
   // reef_inbox — unified inbox with filters
   pi.registerTool({
     name: "reef_inbox",
@@ -457,14 +521,16 @@ Command types:
     description: `Read your unified inbox — signals from your children AND commands from your parent. Returns unacknowledged messages by default.
 
 Filters:
-  - direction: "up" (signals from children) or "down" (commands from parent)
+  - direction: "up" (signals from children), "down" (commands from parent), or "peer" (coordination from siblings)
   - type: filter by signal/command type (e.g. "done", "steer", "abort")
   - from: filter by sender agent name
 
 Messages are auto-acknowledged when you read them.`,
     parameters: Type.Object({
       direction: Type.Optional(
-        Type.Union([Type.Literal("up"), Type.Literal("down")], { description: "Filter by direction" }),
+        Type.Union([Type.Literal("up"), Type.Literal("down"), Type.Literal("peer")], {
+          description: "Filter by direction",
+        }),
       ),
       type: Type.Optional(Type.String({ description: "Filter by signal/command type" })),
       from: Type.Optional(Type.String({ description: "Filter by sender agent name" })),
@@ -491,7 +557,7 @@ Messages are auto-acknowledged when you read them.`,
         }
 
         const lines = signals.map((s: any) => {
-          const dir = s.direction === "up" ? "↑" : "↓";
+          const dir = s.direction === "up" ? "↑" : s.direction === "down" ? "↓" : "↔";
           const payload = s.payload ? ` — ${JSON.stringify(s.payload).slice(0, 200)}` : "";
           return `${dir} [${s.signalType}] from ${s.fromAgent}${payload}`;
         });
@@ -699,8 +765,8 @@ const routeDocs: Record<string, RouteDocs> = {
     body: {
       fromAgent: { type: "string", required: true, description: "Sender agent name" },
       toAgent: { type: "string", required: true, description: "Recipient agent name" },
-      direction: { type: "string", required: true, description: "up | down" },
-      signalType: { type: "string", required: true, description: "Signal or command type" },
+      direction: { type: "string", required: true, description: "up | down | peer" },
+      signalType: { type: "string", required: true, description: "Signal, command, or peer message type" },
       payload: { type: "object", description: "Signal/command payload" },
     },
     response: "The created signal object",
@@ -710,8 +776,8 @@ const routeDocs: Record<string, RouteDocs> = {
     query: {
       to: { type: "string", description: "Filter by recipient" },
       from: { type: "string", description: "Filter by sender" },
-      direction: { type: "string", description: "up | down" },
-      type: { type: "string", description: "Signal/command type" },
+      direction: { type: "string", description: "up | down | peer" },
+      type: { type: "string", description: "Signal, command, or peer message type" },
       acknowledged: { type: "string", description: "true | false" },
       since: { type: "string", description: "Epoch ms timestamp" },
       limit: { type: "string", description: "Max results" },
@@ -748,7 +814,7 @@ const signals: ServiceModule = {
   },
 
   dependencies: ["vm-tree"],
-  capabilities: ["agent.signal", "agent.command", "agent.inbox"],
+  capabilities: ["agent.signal", "agent.command", "agent.inbox", "agent.peer_signal"],
 };
 
 export default signals;
