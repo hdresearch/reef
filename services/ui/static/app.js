@@ -574,7 +574,7 @@ function reconnectSSE() {
   // Catch up on any state changes that happened while disconnected
   syncConversationList();
   updateStatus();
-  if (activePanel && LIVE_REFRESH_PANELS.has(activePanel)) {
+  if (activePanel) {
     refreshPanel(activePanel).catch(() => {});
   }
   connectSSE();
@@ -970,12 +970,12 @@ async function discoverPanels() {
     const data = await response.json();
     const services = data.modules || data.services || [];
     // v2: Skip v1 holdovers and internal services — vm-tree is the fleet view
-    const SKIP_PANELS = new Set(['ui', 'agent-context', 'bootloader', 'vers-config', 'installer', 'registry', 'lieutenant', 'swarm', 'commits', 'docs', 'services']);
+    const SKIP_PANELS = new Set(['ui', 'agent-context', 'bootloader', 'vers-config', 'installer', 'registry', 'lieutenant', 'swarm', 'docs', 'services']);
     const results = await Promise.allSettled(services.filter((service) => !SKIP_PANELS.has(service.name)).map((service) => fetchPanel(service.name)));
     const panels = results.filter((result) => result.status === 'fulfilled' && result.value).map((result) => result.value);
 
     // v2: Sort panels in a sensible order
-    const TAB_ORDER = ['vm-tree', 'signals', 'logs', 'store', 'github', 'cron'];
+    const TAB_ORDER = ['vm-tree', 'signals', 'logs', 'store', 'commits', 'github', 'cron'];
     panels.sort((a, b) => {
       const ai = TAB_ORDER.indexOf(a.name);
       const bi = TAB_ORDER.indexOf(b.name);
@@ -1352,7 +1352,7 @@ Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   loadProfilePanel();
   discoverPanels();
   setInterval(discoverPanels, 30000);
-  setInterval(refreshActivePanel, 5000);
+  setInterval(refreshActivePanel, 2000);
   setInterval(updateStatus, 10000);
   // Periodically sync conversation list to catch changes from other clients
   setInterval(syncConversationList, 15000);
