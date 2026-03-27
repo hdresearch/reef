@@ -541,12 +541,12 @@ export class VMTreeStore {
     return row ? rowToVMNode(row) : undefined;
   }
 
-  getVMByName(name: string): VMNode | undefined {
-    const row = this.db
-      .query(
-        "SELECT * FROM vm_tree WHERE name = ? AND status IN ('creating', 'running', 'paused') ORDER BY created_at DESC LIMIT 1",
-      )
-      .get(name) as any;
+  getVMByName(name: string, opts: { activeOnly?: boolean } = {}): VMNode | undefined {
+    const activeOnly = opts.activeOnly ?? true;
+    const sql = activeOnly
+      ? "SELECT * FROM vm_tree WHERE name = ? AND status IN ('creating', 'running', 'paused') ORDER BY created_at DESC LIMIT 1"
+      : "SELECT * FROM vm_tree WHERE name = ? ORDER BY created_at DESC LIMIT 1";
+    const row = this.db.query(sql).get(name) as any;
     return row ? rowToVMNode(row) : undefined;
   }
 

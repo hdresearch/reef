@@ -68,6 +68,10 @@ function areSameParentSiblings(left: VMNode, right: VMNode): boolean {
   return !!left.parentId && !!right.parentId && left.parentId === right.parentId;
 }
 
+function isActiveSignalTarget(target: VMNode): boolean {
+  return target.status === "creating" || target.status === "running" || target.status === "paused";
+}
+
 function ensureSwarmCompletionSignal(data: {
   vmId?: string;
   label?: string;
@@ -175,9 +179,12 @@ routes.post("/", async (c) => {
       }
 
       if (direction === "down" && !isRootActor(actor)) {
-        const target = vmTreeStore.getVMByName(toAgent);
+        const target = vmTreeStore.getVMByName(toAgent, { activeOnly: false });
         if (!target) {
           return c.json({ error: `target agent "${toAgent}" not found in vm-tree` }, 404);
+        }
+        if (!isActiveSignalTarget(target)) {
+          return c.json({ error: `target agent "${toAgent}" is not active (status: ${target.status})` }, 409);
         }
         if (!isDescendant(actor.vm.vmId, target.vmId)) {
           return c.json({ error: `target agent "${toAgent}" is outside the requester's subtree` }, 403);
@@ -185,9 +192,12 @@ routes.post("/", async (c) => {
       }
 
       if (direction === "peer" && !isRootActor(actor)) {
-        const target = vmTreeStore.getVMByName(toAgent);
+        const target = vmTreeStore.getVMByName(toAgent, { activeOnly: false });
         if (!target) {
           return c.json({ error: `target agent "${toAgent}" not found in vm-tree` }, 404);
+        }
+        if (!isActiveSignalTarget(target)) {
+          return c.json({ error: `peer target "${toAgent}" is not active (status: ${target.status})` }, 409);
         }
         if (!areSameParentSiblings(actor.vm, target)) {
           return c.json({ error: `peer target "${toAgent}" is not a same-parent sibling` }, 403);
@@ -210,7 +220,7 @@ routes.post("/", async (c) => {
     // v2: Update sender's vm_tree status and take completion snapshot on done/failed
     if (direction === "up" && vmTreeStore) {
       try {
-        const sender = vmTreeStore.getVMByName(fromAgent);
+        const sender = vmTreeStore.getVMByName(fromAgent, { activeOnly: false });
         if (sender) {
           if (signalType === "done" || signalType === "failed") {
             vmTreeStore.updateVM(sender.vmId, { status: "stopped" });
@@ -726,10 +736,10 @@ function registerBehaviors(pi: ExtensionAPI, client: FleetClient) {
         const result = await client.api<any>("GET", `/signals/?${qs}`);
         const signals = result.signals || [];
 
-        // Check for urgent signals that should auto-trigger attention
-        const urgent = signals.filter(
-          (s: any) => s.signalType === "failed" || s.signalType === "blocked" || s.signalType === "done",
-        );
+        // Check for urgent signals that should auto-trigger attention.
+        // "done" stays in the inbox for the parent to read explicitly; it should
+        // not keep re-triggering background reminders.
+        const urgent = signals.filter((s: any) => s.signalType === "failed" || s.signalType === "blocked");
 
         if (urgent.length > 0) {
           // Emit on the extension event bus so the agent can react

@@ -150,6 +150,19 @@ describe("authority model", () => {
     });
     expect(lieutenantToGrandchild.status).toBe(201);
 
+    store!.updateVM(ids.agentVmId, { status: "stopped" });
+    const lieutenantToStoppedChild = await json(server.app, "/signals/", {
+      method: "POST",
+      headers: lieutenantHeaders,
+      body: {
+        fromAgent: ids.ltName,
+        toAgent: ids.agentName,
+        direction: "down",
+        signalType: "steer",
+      },
+    });
+    expect(lieutenantToStoppedChild.status).toBe(409);
+
     const agentHeaders = authHeaders({
       "X-Reef-Agent-Name": ids.agentName,
       "X-Reef-VM-ID": ids.agentVmId,
@@ -251,6 +264,20 @@ describe("authority model", () => {
       },
     });
     expect(crossBranchPeer.status).toBe(403);
+
+    store!.updateVM(ids.siblingAgentVmId, { status: "stopped" });
+    const stoppedSiblingPeer = await json(server.app, "/signals/", {
+      method: "POST",
+      headers: agentHeaders,
+      body: {
+        fromAgent: ids.agentName,
+        toAgent: ids.siblingAgentName,
+        direction: "peer",
+        signalType: "warning",
+        payload: { summary: "late coordination attempt" },
+      },
+    });
+    expect(stoppedSiblingPeer.status).toBe(409);
   });
 
   test("reef_logs is scoped to self, direct parent, descendants, same-parent siblings, and root override", async () => {
@@ -281,6 +308,14 @@ describe("authority model", () => {
     expect(ltReadsDescendant.status).toBe(200);
     expect(ltReadsDescendant.data.count).toBe(1);
     expect(ltReadsDescendant.data.logs[0].agentName).toBe(ids.agentName);
+
+    store!.updateVM(ids.agentVmId, { status: "stopped" });
+    const ltReadsStoppedDescendant = await json(server.app, `/logs/?agent=${encodeURIComponent(ids.agentName)}&limit=10`, {
+      headers: lieutenantHeaders,
+    });
+    expect(ltReadsStoppedDescendant.status).toBe(200);
+    expect(ltReadsStoppedDescendant.data.count).toBe(1);
+    expect(ltReadsStoppedDescendant.data.logs[0].agentName).toBe(ids.agentName);
 
     const agentHeaders = authHeaders({
       "X-Reef-Agent-Name": ids.agentName,

@@ -287,6 +287,7 @@ const vmTree: ServiceModule = {
         name: data.name,
         parentId: data.parentVmId || undefined,
         category: "lieutenant",
+        status: "running",
         reefConfig: {
           services: ["agent-context", "signals", "swarm", "store", "github", "logs", "probe", "vm-tree"],
           capabilities: ["punkin", "vers-lieutenant", "vers-vm", "vers-vm-copy", "reef-swarm"],
@@ -300,6 +301,11 @@ const vmTree: ServiceModule = {
           roleHint: data.role,
         },
       });
+      try {
+        store.updateVM(data.vmId, { status: "running", rpcStatus: "connected" });
+      } catch {
+        /* best effort */
+      }
     });
 
     ctx.events.on("lieutenant:paused", (data: any) => {

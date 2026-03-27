@@ -32,7 +32,11 @@ function resolveRequestActor(req: Request): RequestActor {
   const agentName = req.headers.get("X-Reef-Agent-Name");
   const vmId = req.headers.get("X-Reef-VM-ID");
   const category = req.headers.get("X-Reef-Category");
-  const vm = vmId ? vmTreeStore?.getVM(vmId) || null : agentName ? vmTreeStore?.getVMByName(agentName) || null : null;
+  const vm = vmId
+    ? vmTreeStore?.getVM(vmId) || null
+    : agentName
+      ? vmTreeStore?.getVMByName(agentName, { activeOnly: true }) || null
+      : null;
   return { agentName, vmId, category, vm };
 }
 
@@ -125,7 +129,9 @@ routes.get("/", (c) => {
     }
 
     const target =
-      (agentId ? vmTreeStore.getVM(agentId) : null) || (agentName ? vmTreeStore.getVMByName(agentName) : null) || null;
+      (agentId ? vmTreeStore.getVM(agentId) : null) ||
+      (agentName ? vmTreeStore.getVMByName(agentName, { activeOnly: false }) : null) ||
+      null;
 
     if (!target) {
       return c.json({ error: "target agent is not registered in vm-tree" }, 404);
