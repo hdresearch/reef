@@ -918,8 +918,11 @@ async function updateStatus() {
 // =============================================================================
 
 const loadedPanels = new Map();
-const LIVE_REFRESH_PANELS = new Set(['registry', 'vm-tree', 'lieutenant', 'commits', 'store', 'installer', 'signals', 'logs', 'swarm', 'cron']);
+// v2: ALL panels live-refresh — no whitelist needed
 let activePanel = null;
+
+// v2: Friendly display names for tabs
+const TAB_LABELS = { 'vm-tree': 'fleet', 'github': 'github', 'signals': 'signals', 'logs': 'logs', 'store': 'store', 'cron': 'cron' };
 
 async function fetchPanel(name) {
   const response = await fetch(`${API}/${name}/_panel`);
@@ -966,9 +969,18 @@ async function discoverPanels() {
     if (!response.ok) return;
     const data = await response.json();
     const services = data.modules || data.services || [];
-    const SKIP_PANELS = new Set(['ui', 'agent-context', 'bootloader', 'vers-config', 'installer']);
+    // v2: Skip v1 holdovers and internal services — vm-tree is the fleet view
+    const SKIP_PANELS = new Set(['ui', 'agent-context', 'bootloader', 'vers-config', 'installer', 'registry', 'lieutenant', 'swarm', 'commits', 'docs', 'services']);
     const results = await Promise.allSettled(services.filter((service) => !SKIP_PANELS.has(service.name)).map((service) => fetchPanel(service.name)));
     const panels = results.filter((result) => result.status === 'fulfilled' && result.value).map((result) => result.value);
+
+    // v2: Sort panels in a sensible order
+    const TAB_ORDER = ['vm-tree', 'signals', 'logs', 'store', 'github', 'cron'];
+    panels.sort((a, b) => {
+      const ai = TAB_ORDER.indexOf(a.name);
+      const bi = TAB_ORDER.indexOf(b.name);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
 
     for (const panel of panels) {
       if (loadedPanels.has(panel.name) || panel.name === 'feed') continue;
@@ -976,7 +988,7 @@ async function discoverPanels() {
       const button = document.createElement('button');
       button.className = 'tab';
       button.dataset.view = panel.name;
-      button.textContent = panel.name;
+      button.textContent = TAB_LABELS[panel.name] || panel.name;
       button.addEventListener('click', () => togglePanel(panel.name));
       $('tabs').appendChild(button);
 
@@ -1002,12 +1014,12 @@ function togglePanel(name) {
   $('panel-area').className = 'open';
   document.querySelectorAll('.panel-view').forEach((view) => view.classList.toggle('active', view.id === `panel-${name}`));
   $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === name));
-  // Always refresh immediately when switching to a live panel
-  if (LIVE_REFRESH_PANELS.has(name)) refreshPanel(name).catch(() => {});
+  // v2: Always refresh immediately when switching panels
+  refreshPanel(name).catch(() => {});
 }
 
 function refreshActivePanel() {
-  if (!activePanel || !LIVE_REFRESH_PANELS.has(activePanel)) return;
+  if (!activePanel) return;
   refreshPanel(activePanel).catch(() => {});
 }
 
@@ -1340,7 +1352,7 @@ Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   loadProfilePanel();
   discoverPanels();
   setInterval(discoverPanels, 30000);
-  setInterval(refreshActivePanel, 10000);
+  setInterval(refreshActivePanel, 5000);
   setInterval(updateStatus, 10000);
   // Periodically sync conversation list to catch changes from other clients
   setInterval(syncConversationList, 15000);
