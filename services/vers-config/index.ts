@@ -134,6 +134,15 @@ routes.put("/:key", async (c) => {
     "VERS_AGENT_NAME",
     "VERS_VM_ID",
     "VERS_AGENT_ROLE",
+    "SLACK_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN",
+    "DISCORD_NOTIFICATION_CHANNEL_ID",
+    "DISCORD_NOTIFICATIONS_MUTED",
+    "NOTIFICATION_MUTE",
+    "NOTIFICATION_MIN_DURATION_MS",
+    "SLACK_NOTIFICATION_CHANNEL",
+    "SLACK_APP_TOKEN",
+    "DISCORD_APP_ID",
   ]);
 
   if (!validKeys.has(key)) {
