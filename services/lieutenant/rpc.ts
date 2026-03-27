@@ -120,7 +120,6 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
         ? `export ANTHROPIC_API_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
         : "",
     versApiKey ? `export VERS_API_KEY='${escapeEnvValue(versApiKey)}'` : "",
-    process.env.GITHUB_TOKEN ? `export GITHUB_TOKEN='${escapeEnvValue(process.env.GITHUB_TOKEN)}'` : "",
     process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
     process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
     process.env.VERS_AUTH_TOKEN ? `export VERS_AUTH_TOKEN='${escapeEnvValue(process.env.VERS_AUTH_TOKEN)}'` : "",
