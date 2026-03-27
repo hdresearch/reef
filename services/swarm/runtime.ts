@@ -23,6 +23,7 @@ import {
   waitForRpcReady,
   waitForSshReady,
 } from "../lieutenant/rpc.js";
+import type { VMCategory, VMTreeStore } from "../vm-tree/store.js";
 
 // =============================================================================
 // Types
@@ -61,8 +62,35 @@ export interface SpawnParams {
   effort?: string; // v2: thinking effort level (low, medium, high)
 }
 
+// =============================================================================
+// Spawn result types
+// =============================================================================
+
+export type SpawnStepName =
+  | "resolve_commit"
+  | "create_vm"
+  | "register_vm_tree"
+  | "wait_ssh"
+  | "inject_identity"
+  | "copy_agents_md"
+  | "start_rpc"
+  | "wait_rpc_ready"
+  | "validate"
+  | "baseline_snapshot";
+
+export type AgentSpawnResult =
+  | { ok: true; vmId: string; name: string }
+  | { ok: false; error: string; step: SpawnStepName; vmId?: string };
+
+export interface SpawnResult {
+  results: AgentSpawnResult[];
+  agents: SwarmAgent[];
+  messages: string[];
+}
+
 export interface SwarmRuntimeOptions {
   events: ServiceEventBus;
+  vmTreeStore?: VMTreeStore;
   resolveCommitId?: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
   createVm?: typeof createVersVmFromCommit;
   deleteVm?: typeof deleteVersVm;
@@ -406,6 +434,7 @@ export class SwarmRuntime {
   private readonly agents = new Map<string, SwarmAgent>();
   private readonly handles = new Map<string, RpcHandle>();
   private readonly events: ServiceEventBus;
+  private readonly vmTreeStore?: VMTreeStore;
   private readonly resolveCommitId: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
   private readonly createVm: typeof createVersVmFromCommit;
   private readonly deleteVm: typeof deleteVersVm;
@@ -419,11 +448,15 @@ export class SwarmRuntime {
   private static readonly ACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
   private static readonly ACTIVITY_CHECK_INTERVAL_MS = 30 * 1000;
 
+  // Orphan cleanup timer
+  private orphanTimer?: ReturnType<typeof setInterval>;
+
   // Watchdog timers per agent
   private readonly watchdogs = new Map<string, ReturnType<typeof setInterval>>();
 
   constructor(opts: SwarmRuntimeOptions) {
     this.events = opts.events;
+    this.vmTreeStore = opts.vmTreeStore;
     this.resolveCommitId = opts.resolveCommitId ?? ((id) => resolveGoldenCommit({ commitId: id, ensure: true }));
     this.createVm = opts.createVm ?? createVersVmFromCommit;
     this.deleteVm = opts.deleteVm ?? deleteVersVm;
@@ -538,7 +571,7 @@ export class SwarmRuntime {
     return `Swarm (${this.agents.size} agents):\n${lines.join("\n")}`;
   }
 
-  async spawn(params: SpawnParams): Promise<{ agents: SwarmAgent[]; messages: string[] }> {
+  async spawn(params: SpawnParams): Promise<SpawnResult> {
     const resolved = await this.resolveCommitId(params.commitId);
     const llmProxyKey = params.llmProxyKey || process.env.LLM_PROXY_KEY || "";
     const model = params.model?.trim() || DEFAULT_SWARM_MODEL;
@@ -548,19 +581,48 @@ export class SwarmRuntime {
 
     let rootVmId = "";
     const messages: string[] = [];
+    const results: AgentSpawnResult[] = [];
+    const category = (params.category || "swarm_vm") as VMCategory;
 
     for (let i = 0; i < params.count; i++) {
       const label = params.labels?.[i] || `agent-${i + 1}`;
+      let vmId: string | undefined;
+      let currentStep: SpawnStepName = "create_vm";
+      const spawnStart = Date.now();
 
       try {
-        // Restore VM from golden commit
-        const { vmId } = await this.createVm(resolved.commitId);
+        // Step 1: Create VM
+        currentStep = "create_vm";
+        const created = await this.createVm(resolved.commitId);
+        vmId = created.vmId;
         if (i === 0) rootVmId = vmId;
 
-        // Wait for boot
+        // Step 2: Register in vm_tree immediately (status: creating)
+        currentStep = "register_vm_tree";
+        try {
+          this.vmTreeStore?.upsertVM({
+            vmId,
+            name: label,
+            category,
+            parentId: process.env.VERS_VM_ID || null,
+            context: params.context,
+            directive: params.directive,
+            model,
+            effort: params.effort,
+            spawnedBy: process.env.VERS_AGENT_NAME || "reef",
+          });
+        } catch (err) {
+          console.warn(
+            `  [swarm] vm_tree pre-register failed for ${label}: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+
+        // Step 3: Wait for SSH
+        currentStep = "wait_ssh";
         await this.waitForVm(vmId);
 
-        // Inject identity
+        // Step 4: Inject identity
+        currentStep = "inject_identity";
         const identity = JSON.stringify({
           vmId,
           agentId: label,
@@ -580,7 +642,8 @@ export class SwarmRuntime {
           await versClient.exec(vmId, `mkdir -p /root/.swarm/status && echo '{"vms":[]}' > /root/.swarm/registry.json`);
         }
 
-        // v2: Copy parent's AGENTS.md with inherited context to child VM
+        // Step 5: Copy parent's AGENTS.md with inherited context
+        currentStep = "copy_agents_md";
         try {
           const parentMd = readParentAgentsMd();
           const parentName = process.env.VERS_AGENT_NAME || "reef";
@@ -588,10 +651,14 @@ export class SwarmRuntime {
           await versClient.execScript(vmId, buildAgentsMdWriteScript(childMd));
         } catch (err) {
           console.error(`  [swarm] AGENTS.md copy failed for ${label}: ${err instanceof Error ? err.message : err}`);
-          // Non-fatal — worker can still function without inherited context
+          // Non-fatal unless context was explicitly provided
+          if (params.context) {
+            throw new Error(`AGENTS.md injection failed: ${err instanceof Error ? err.message : err}`);
+          }
         }
 
-        // Start RPC agent
+        // Step 6: Start RPC agent
+        currentStep = "start_rpc";
         const handle = await this.startHandle(vmId, {
           llmProxyKey,
           model,
@@ -601,15 +668,35 @@ export class SwarmRuntime {
           effort: params.effort,
         });
 
-        // Wait for RPC ready
+        // Step 7: Wait for RPC ready
+        currentStep = "wait_rpc_ready";
         const ready = await this.waitForReady(handle, 45000);
         if (!ready) {
           await handle.kill();
-          messages.push(`${label}: VM ${vmId.slice(0, 12)} booted but pi RPC failed to start`);
-          continue;
+          throw new Error("pi RPC failed to start within 45s");
         }
 
-        // Create agent record
+        // Step 8: Validate injection
+        currentStep = "validate";
+        await this.validateInjection(vmId, label, {
+          expectAgentsMd: !!params.context,
+          expectedEnvVars: ["REEF_CATEGORY", "VERS_AGENT_NAME"],
+        });
+
+        // === Success path ===
+
+        // Update vm_tree to running
+        try {
+          this.vmTreeStore?.updateVM(vmId, {
+            status: "running",
+            address: `${vmId}.vm.vers.sh`,
+            rpcStatus: "connected",
+          });
+        } catch {
+          /* event handlers also update this */
+        }
+
+        // Create in-memory agent record
         const agent: SwarmAgent = {
           id: label,
           vmId,
@@ -626,15 +713,14 @@ export class SwarmRuntime {
         this.agents.set(label, agent);
         this.handles.set(label, handle);
 
-        // Lifecycle + events
         this.pushLifecycle(agent, {
           type: "spawned",
           timestamp: Date.now(),
-          detail: `Spawned on VM ${vmId.slice(0, 12)}`,
-          metadata: { vmId, commitId: resolved.commitId },
+          detail: `Spawned on VM ${vmId.slice(0, 12)} (${Date.now() - spawnStart}ms)`,
+          metadata: { vmId, commitId: resolved.commitId, durationMs: Date.now() - spawnStart },
         });
 
-        // Register in coordination registry
+        // Register in coordination registry (backward compat)
         await registryPost({
           id: vmId,
           name: label,
@@ -644,40 +730,185 @@ export class SwarmRuntime {
           metadata: { agentId: label, commitId: resolved.commitId, parentSession: true },
         });
 
-        messages.push(`${label}: VM ${vmId.slice(0, 12)} — ready`);
-
-        // v2: Register in vm_tree first, then update status to running
+        // Fire events (notification-only — vm_tree already updated directly)
         this.events.fire("swarm:agent_spawned", {
           vmId,
           label,
           role: "worker",
           commitId: resolved.commitId,
-          category: params.category || "swarm_vm",
+          category,
           context: params.context,
         });
         this.events.fire("swarm:agent_ready", { vmId, label });
 
-        // v2: Baseline snapshot — best effort, non-blocking
+        // Baseline snapshot — best effort
+        currentStep = "baseline_snapshot";
         try {
           const commit = await versClient.commit(vmId);
-          if (commit?.commitId || commit?.id) {
-            this.events.fire("swarm:agent_baseline", { vmId, label, commitId: commit.commitId || commit.id });
+          const cid = (commit as any)?.commitId || (commit as any)?.commit_id || (commit as any)?.id;
+          if (cid) {
+            const baselineId = cid;
+            this.events.fire("swarm:agent_baseline", { vmId, label, commitId: baselineId });
+            try {
+              this.vmTreeStore?.updateVM(vmId, { baselineCommit: baselineId });
+            } catch {
+              /* ok */
+            }
           }
         } catch {
           /* baseline snapshot is insurance, not critical */
         }
+
         this.events.fire("reef:event", {
           type: "swarm_agent_spawned",
           source: "swarm",
           name: label,
           vmId,
         });
+
+        results.push({ ok: true, vmId, name: label });
+        messages.push(`${label}: VM ${vmId.slice(0, 12)} — ready (${Date.now() - spawnStart}ms)`);
       } catch (err) {
-        messages.push(`${label}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+
+        // Cleanup: mark vm_tree as error and delete the leaked VM
+        if (vmId) {
+          try {
+            this.vmTreeStore?.updateVM(vmId, { status: "error" });
+          } catch {
+            /* ok */
+          }
+          try {
+            await this.deleteVm(vmId);
+          } catch {
+            /* VM may not exist */
+          }
+          console.error(`  [swarm] ${label}: spawn failed at ${currentStep}, VM ${vmId.slice(0, 12)} cleaned up`);
+        }
+
+        results.push({ ok: false, error: errorMsg, step: currentStep, vmId });
+        messages.push(`${label}: FAILED at ${currentStep} — ${errorMsg}`);
       }
     }
 
-    return { agents: this.getAgents(), messages };
+    return { results, agents: this.getAgents(), messages };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step validation — verify AGENTS.md and env vars landed on child VM
+  // ---------------------------------------------------------------------------
+
+  private async validateInjection(
+    vmId: string,
+    label: string,
+    opts: { expectAgentsMd: boolean; expectedEnvVars: string[] },
+  ): Promise<void> {
+    const failures: string[] = [];
+
+    // Check AGENTS.md exists and is non-empty
+    if (opts.expectAgentsMd) {
+      try {
+        const result = await versClient.exec(
+          vmId,
+          "test -f /root/.pi/agent/AGENTS.md && wc -c < /root/.pi/agent/AGENTS.md || echo 0",
+        );
+        const bytes = parseInt(String(result?.stdout ?? result).trim(), 10) || 0;
+        if (bytes === 0) {
+          failures.push("AGENTS.md missing or empty");
+        }
+      } catch {
+        failures.push("AGENTS.md validation failed (SSH error)");
+      }
+    }
+
+    // Batch-check env vars in a single SSH call
+    if (opts.expectedEnvVars.length > 0) {
+      try {
+        const checkScript = opts.expectedEnvVars.map((v) => `echo "${v}=\${${v}:+SET}"`).join("; ");
+        const result = await versClient.exec(vmId, `bash -l -c '${checkScript}'`);
+        const output = String(result?.stdout ?? result);
+        for (const envVar of opts.expectedEnvVars) {
+          if (!output.includes(`${envVar}=SET`)) {
+            failures.push(`${envVar} not set`);
+          }
+        }
+      } catch {
+        failures.push("env var validation failed (SSH error)");
+      }
+    }
+
+    if (failures.length > 0) {
+      console.warn(`  [swarm] ${label}: validation warnings: ${failures.join(", ")}`);
+      // Hard-fail only if AGENTS.md is missing when context was provided
+      if (failures.includes("AGENTS.md missing or empty")) {
+        throw new Error(`Validation failed: ${failures.join(", ")}`);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Orphan cleanup — sweep VMs stuck in "creating" status
+  // ---------------------------------------------------------------------------
+
+  async cleanupOrphans(): Promise<{ cleaned: string[]; errors: string[] }> {
+    if (!this.vmTreeStore) return { cleaned: [], errors: [] };
+
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    const allVMs = this.vmTreeStore.listVMs({ status: "creating" as any });
+    const orphans = allVMs.filter((vm) => vm.createdAt < cutoff);
+
+    const cleaned: string[] = [];
+    const errors: string[] = [];
+
+    for (const vm of orphans) {
+      try {
+        // Delete the actual Vers VM (may already be gone)
+        try {
+          await this.deleteVm(vm.vmId);
+        } catch {
+          /* VM may not exist */
+        }
+
+        // Mark as error in vm_tree
+        this.vmTreeStore.updateVM(vm.vmId, { status: "error" });
+
+        // Remove from in-memory maps if present
+        for (const [id, agent] of this.agents) {
+          if (agent.vmId === vm.vmId) {
+            this.agents.delete(id);
+            this.handles.delete(id);
+            break;
+          }
+        }
+
+        cleaned.push(
+          `${vm.name} (${vm.vmId.slice(0, 12)}): stuck creating since ${new Date(vm.createdAt).toISOString()}`,
+        );
+      } catch (err) {
+        errors.push(`${vm.name}: cleanup failed — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if (cleaned.length > 0) {
+      console.log(`  [swarm] Orphan cleanup: cleaned ${cleaned.length} stuck VM(s)`);
+    }
+
+    return { cleaned, errors };
+  }
+
+  startOrphanCleanup(): void {
+    if (this.orphanTimer) return;
+    this.orphanTimer = setInterval(
+      async () => {
+        try {
+          await this.cleanupOrphans();
+        } catch (err) {
+          console.error(`  [swarm] Orphan cleanup error: ${err instanceof Error ? err.message : err}`);
+        }
+      },
+      5 * 60 * 1000,
+    );
+    if (this.orphanTimer.unref) this.orphanTimer.unref();
   }
 
   sendTask(agentId: string, task: string): void {
@@ -907,6 +1138,10 @@ export class SwarmRuntime {
 
   async shutdown(): Promise<void> {
     clearInterval(this.activityChecker);
+    if (this.orphanTimer) {
+      clearInterval(this.orphanTimer);
+      this.orphanTimer = undefined;
+    }
     for (const [id] of this.watchdogs) {
       this.clearWatchdog(id);
     }

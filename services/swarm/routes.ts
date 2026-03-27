@@ -33,6 +33,7 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
       return c.json(
         {
           agents: result.agents.map((a) => ({ id: a.id, vmId: a.vmId, status: a.status })),
+          results: result.results,
           messages: result.messages,
           count: result.agents.length,
         },
@@ -143,6 +144,12 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
       throw e;
     }
+  });
+
+  // POST /orphan-cleanup — sweep stuck VMs
+  routes.post("/orphan-cleanup", async (c) => {
+    const result = await getRuntime().cleanupOrphans();
+    return c.json(result);
   });
 
   // POST /teardown — destroy all agents

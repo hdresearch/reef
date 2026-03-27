@@ -5,9 +5,10 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { type ResolveGoldenCommitResult, resolveGoldenCommit } from "@hdresearch/pi-v/core";
+import { type ResolveGoldenCommitResult, resolveGoldenCommit, VersClient } from "@hdresearch/pi-v/core";
 import { buildChildAgentsMd, readParentAgentsMd } from "../../src/core/agents-md.js";
 import type { ServiceEventBus } from "../../src/core/events.js";
+import type { VMTreeStore } from "../vm-tree/store.js";
 import {
   buildSystemPrompt,
   createVersVmFromCommit,
@@ -24,9 +25,12 @@ import {
 import type { Lieutenant, LieutenantStore } from "./store.js";
 import { ConflictError, NotFoundError, ValidationError } from "./store.js";
 
+const versClient = new VersClient();
+
 export interface LieutenantRuntimeOptions {
   events: ServiceEventBus;
   store: LieutenantStore;
+  vmTreeStore?: VMTreeStore;
   fetchImpl?: typeof fetch;
   getVmState?: typeof getVersVmState;
   resolveCommitId?: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
@@ -70,6 +74,7 @@ export class LieutenantRuntime {
   private readonly handles = new Map<string, RpcHandle>();
   private readonly events: ServiceEventBus;
   private readonly store: LieutenantStore;
+  private readonly vmTreeStore?: VMTreeStore;
   private readonly fetchImpl: typeof fetch;
   private readonly getVmState: typeof getVersVmState;
   private readonly resolveCommitId: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
@@ -81,6 +86,7 @@ export class LieutenantRuntime {
   constructor(opts: LieutenantRuntimeOptions) {
     this.events = opts.events;
     this.store = opts.store;
+    this.vmTreeStore = opts.vmTreeStore;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.getVmState = opts.getVmState ?? getVersVmState;
     this.resolveCommitId = opts.resolveCommitId ?? ((commitId) => resolveGoldenCommit({ commitId, ensure: true }));
@@ -209,11 +215,32 @@ export class LieutenantRuntime {
       parentAgent: process.env.VERS_AGENT_NAME,
     });
 
+    let vmId: string | undefined;
     try {
       const resolvedCommit = await this.resolveCommitId(commitId);
       const remote = await createVersVmFromCommit(resolvedCommit.commitId);
-      this.store.update(name, { vmId: remote.vmId });
-      await this.waitForRemoteVm(remote.vmId);
+      vmId = remote.vmId;
+      this.store.update(name, { vmId });
+
+      // Register in vm_tree immediately with status: creating
+      try {
+        this.vmTreeStore?.upsertVM({
+          vmId,
+          name,
+          category: "lieutenant",
+          parentId: process.env.VERS_VM_ID || null,
+          context: params.context,
+          directive: params.directive,
+          model: resolvedModel,
+          spawnedBy: process.env.VERS_AGENT_NAME || "reef",
+        });
+      } catch (err) {
+        console.warn(
+          `  [lieutenant] vm_tree pre-register failed for ${name}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+
+      await this.waitForRemoteVm(vmId);
 
       // v2: Build inherited AGENTS.md with context
       let agentsMd: string | undefined;
@@ -223,9 +250,12 @@ export class LieutenantRuntime {
         agentsMd = buildChildAgentsMd(parentMd, parentName, params.context);
       } catch (err) {
         console.error(`  [lieutenant] AGENTS.md build failed for ${name}: ${err instanceof Error ? err.message : err}`);
+        if (params.context) {
+          throw new Error(`AGENTS.md injection failed: ${err instanceof Error ? err.message : err}`);
+        }
       }
 
-      const handle = await this.startRemoteHandle(remote.vmId, {
+      const handle = await this.startRemoteHandle(vmId, {
         name,
         llmProxyKey: resolvedLlmProxyKey,
         model: resolvedModel,
@@ -236,10 +266,27 @@ export class LieutenantRuntime {
       this.handles.set(name, handle);
 
       const ready = await waitForRpcReady(handle, 45_000);
-      if (!ready) throw new Error(`Pi RPC failed to start on ${remote.vmId}`);
+      if (!ready) throw new Error(`Pi RPC failed to start on ${vmId}`);
+
+      // Validate AGENTS.md and env vars
+      await this.validateInjection(vmId, name, {
+        expectAgentsMd: !!params.context,
+        expectedEnvVars: ["REEF_CATEGORY", "VERS_AGENT_NAME"],
+      });
 
       this.store.update(name, { status: "idle" });
       this.installEventHandler(name);
+
+      // Update vm_tree to running
+      try {
+        this.vmTreeStore?.updateVM(vmId, {
+          status: "running",
+          address: `${vmId}.vm.vers.sh`,
+          rpcStatus: "connected",
+        });
+      } catch {
+        /* event handlers also update */
+      }
 
       const created = this.store.getByName(name)!;
       this.events.fire(
@@ -253,8 +300,61 @@ export class LieutenantRuntime {
       );
       return created;
     } catch (err) {
+      // Mark vm_tree as error before cleaning up
+      if (vmId) {
+        try {
+          this.vmTreeStore?.updateVM(vmId, { status: "error" });
+        } catch {
+          /* ok */
+        }
+      }
       await this.cleanupFailedCreate(name);
       throw err;
+    }
+  }
+
+  private async validateInjection(
+    vmId: string,
+    label: string,
+    opts: { expectAgentsMd: boolean; expectedEnvVars: string[] },
+  ): Promise<void> {
+    const failures: string[] = [];
+
+    if (opts.expectAgentsMd) {
+      try {
+        const result = await versClient.exec(
+          vmId,
+          "test -f /root/.pi/agent/AGENTS.md && wc -c < /root/.pi/agent/AGENTS.md || echo 0",
+        );
+        const bytes = parseInt(String(result?.stdout ?? result).trim(), 10) || 0;
+        if (bytes === 0) {
+          failures.push("AGENTS.md missing or empty");
+        }
+      } catch {
+        failures.push("AGENTS.md validation failed (SSH error)");
+      }
+    }
+
+    if (opts.expectedEnvVars.length > 0) {
+      try {
+        const checkScript = opts.expectedEnvVars.map((v) => `echo "${v}=\${${v}:+SET}"`).join("; ");
+        const result = await versClient.exec(vmId, `bash -l -c '${checkScript}'`);
+        const output = String(result?.stdout ?? result);
+        for (const envVar of opts.expectedEnvVars) {
+          if (!output.includes(`${envVar}=SET`)) {
+            failures.push(`${envVar} not set`);
+          }
+        }
+      } catch {
+        failures.push("env var validation failed (SSH error)");
+      }
+    }
+
+    if (failures.length > 0) {
+      console.warn(`  [lieutenant] ${label}: validation warnings: ${failures.join(", ")}`);
+      if (failures.includes("AGENTS.md missing or empty")) {
+        throw new Error(`Validation failed: ${failures.join(", ")}`);
+      }
     }
   }
 

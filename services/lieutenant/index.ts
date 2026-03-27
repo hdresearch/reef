@@ -22,6 +22,7 @@
 
 import { ServiceEventBus } from "../../src/core/events.js";
 import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
+import type { VMTreeStore } from "../vm-tree/store.js";
 import { createRoutes } from "./routes.js";
 import { LieutenantRuntime } from "./runtime.js";
 import { LieutenantStore } from "./store.js";
@@ -39,9 +40,11 @@ const lieutenant: ServiceModule = {
   routes,
 
   init(ctx: ServiceContext) {
+    const vmTreeHandle = ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree");
     runtime = new LieutenantRuntime({
       events: ctx.events,
       store,
+      vmTreeStore: vmTreeHandle?.vmTreeStore,
     });
     runtime.rehydrate().catch((err) => {
       console.error(`  [lieutenant] rehydrate failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -81,7 +84,7 @@ const lieutenant: ServiceModule = {
     },
   },
 
-  dependencies: ["store"],
+  dependencies: ["store", "vm-tree"],
   capabilities: ["agent.spawn", "agent.communicate", "agent.lifecycle"],
 
   routeDocs: {

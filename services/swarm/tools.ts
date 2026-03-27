@@ -268,6 +268,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
+      let vmId: string | undefined;
       try {
         // Resolve commit ID
         const commitId = params.commitId || process.env.VERS_GOLDEN_COMMIT_ID;
@@ -275,33 +276,43 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           return client.err("No commit ID provided and VERS_GOLDEN_COMMIT_ID not set.");
         }
 
-        // Create VM via vers API (restore from commit)
+        // Step 1: Create VM via vers API
         const createResult = await client.api<any>("POST", "/vers/vm/from_commit", { commitId });
-        const vmId = createResult?.vmId || createResult?.id;
+        vmId = createResult?.vmId || createResult?.id;
         if (!vmId) return client.err("Failed to create resource VM — no vmId returned.");
 
-        // Register in vm_tree as resource_vm
-        try {
-          await client.api("POST", "/vm-tree/vms", {
-            vmId,
-            name: params.name,
-            category: "resource_vm",
-            parentId: process.env.VERS_VM_ID,
-          });
-          // Update status to running
-          await client.api("PATCH", `/vm-tree/vms/${vmId}`, {
-            status: "running",
-            address: `${vmId}.vm.vers.sh`,
-          });
-        } catch {
-          /* best effort */
-        }
+        // Step 2: Register in vm_tree immediately (status: creating)
+        await client.api("POST", "/vm-tree/vms", {
+          vmId,
+          name: params.name,
+          category: "resource_vm",
+          parentId: process.env.VERS_VM_ID,
+        });
+
+        // Step 3: Update to running
+        await client.api("PATCH", `/vm-tree/vms/${vmId}`, {
+          status: "running",
+          address: `${vmId}.vm.vers.sh`,
+        });
 
         return client.ok(
           `Resource VM "${params.name}" created.\nVM ID: ${vmId}\nSSH: vers_vm_use with vmId ${vmId}\nAddress: ${vmId}.vm.vers.sh`,
           { vmId, name: params.name, address: `${vmId}.vm.vers.sh` },
         );
       } catch (e: any) {
+        // Cleanup: mark error + delete leaked VM
+        if (vmId) {
+          try {
+            await client.api("PATCH", `/vm-tree/vms/${vmId}`, { status: "error" });
+          } catch {
+            /* ok */
+          }
+          try {
+            await client.api("DELETE", `/vers/vm/${vmId}`);
+          } catch {
+            /* ok */
+          }
+        }
         return client.err(e.message);
       }
     },

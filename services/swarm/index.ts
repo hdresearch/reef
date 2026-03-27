@@ -20,6 +20,7 @@
 
 import { ServiceEventBus } from "../../src/core/events.js";
 import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
+import type { VMTreeStore } from "../vm-tree/store.js";
 import { createRoutes } from "./routes.js";
 import { SwarmRuntime } from "./runtime.js";
 import { registerTools } from "./tools.js";
@@ -33,7 +34,12 @@ const swarm: ServiceModule = {
   routes,
 
   init(ctx: ServiceContext) {
-    runtime = new SwarmRuntime({ events: ctx.events });
+    const vmTreeHandle = ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree");
+    runtime = new SwarmRuntime({
+      events: ctx.events,
+      vmTreeStore: vmTreeHandle?.vmTreeStore,
+    });
+    runtime.startOrphanCleanup();
   },
 
   store: {
@@ -65,7 +71,7 @@ const swarm: ServiceModule = {
     },
   },
 
-  dependencies: ["lieutenant"],
+  dependencies: ["lieutenant", "vm-tree"],
   capabilities: ["swarm.spawn", "swarm.communicate", "swarm.lifecycle"],
 
   routeDocs: {
