@@ -49,8 +49,24 @@ export default function (pi: ExtensionAPI) {
     const elapsed = formatDuration(Date.now() - reminder.scheduledAt);
     const msg = `⏰ REMINDER (scheduled ${elapsed} ago):\n\n${reminder.message}\n\nAct on this now.`;
 
-    // This triggers a new agent turn even if idle — no user input needed
-    pi.sendUserMessage(msg, { deliverAs: "followUp" });
+    const callbackUrl = process.env.REEF_CALLBACK_URL;
+    if (callbackUrl) {
+      // In RPC mode, the pi process is ephemeral — sendUserMessage won't work
+      // because reef kills the process on agent_end. Instead, POST to reef's
+      // /tasks endpoint to trigger a new independent task with the reminder.
+      fetch(`${callbackUrl}/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: msg, source: "reminder" }),
+      }).catch((err) => {
+        console.error(`[reminders] Failed to POST reminder to ${callbackUrl}/tasks:`, err.message);
+        // Fallback to sendUserMessage in case we're not actually in RPC mode
+        pi.sendUserMessage(msg, { deliverAs: "followUp" });
+      });
+    } else {
+      // Interactive/TUI mode — inject directly into the conversation
+      pi.sendUserMessage(msg, { deliverAs: "followUp" });
+    }
   }
 
   pi.registerTool({

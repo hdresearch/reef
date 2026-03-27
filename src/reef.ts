@@ -163,6 +163,8 @@ function spawnTask(
       ...process.env,
       PI_PATH: process.env.PI_PATH || piPath,
       ...(opts.model ? { PI_MODEL: opts.model } : {}),
+      // Tell extensions (e.g. reminders) where to POST to trigger new tasks
+      REEF_CALLBACK_URL: process.env.REEF_CALLBACK_URL || `http://localhost:${process.env.PORT || "3000"}`,
     },
   });
 
