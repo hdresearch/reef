@@ -264,3 +264,48 @@ describe("swarm completion surfacing", () => {
     });
   });
 });
+
+describe("swarm wait", () => {
+  test("ignores idle siblings and resolves when active workers finish", async () => {
+    const runtime = new SwarmRuntime({ events: new ServiceEventBus() });
+    const internal = runtime as any;
+
+    internal.agents.set("idle-worker", {
+      id: "idle-worker",
+      vmId: "vm-idle",
+      label: "idle-worker",
+      status: "idle",
+      lastOutput: "",
+      events: [],
+      lifecycle: [],
+      lastActivityAt: Date.now(),
+      createdAt: Date.now(),
+    });
+
+    internal.agents.set("active-worker", {
+      id: "active-worker",
+      vmId: "vm-active",
+      label: "active-worker",
+      status: "working",
+      lastOutput: "",
+      events: [],
+      lifecycle: [],
+      lastActivityAt: Date.now(),
+      createdAt: Date.now(),
+    });
+
+    setTimeout(() => {
+      const active = internal.agents.get("active-worker");
+      active.status = "done";
+      active.lastOutput = "finished";
+    }, 50);
+
+    const result = await runtime.wait(undefined, 1);
+
+    expect(result.timedOut).toBe(false);
+    expect(result.agents.some((a) => a.id === "idle-worker")).toBe(false);
+    expect(result.agents.find((a) => a.id === "active-worker")?.status).toBe("done");
+
+    await runtime.shutdown();
+  });
+});

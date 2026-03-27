@@ -223,7 +223,7 @@ routes.post("/", async (c) => {
         const sender = vmTreeStore.getVMByName(fromAgent, { activeOnly: false });
         if (sender) {
           if (signalType === "done" || signalType === "failed") {
-            vmTreeStore.updateVM(sender.vmId, { status: "stopped" });
+            vmTreeStore.updateVM(sender.vmId, { status: "stopped", rpcStatus: "disconnected" });
             // Completion snapshot — best effort, non-blocking
             // Note: actual vers_vm_commit would require pi-vers VersClient access
             // which the signals service doesn't have. Log the intent as an agent_event.

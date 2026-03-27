@@ -1013,10 +1013,14 @@ export class SwarmRuntime {
     const timeout = timeoutSeconds * 1000;
     const startTime = Date.now();
 
-    const targetIds = agentIds || Array.from(this.agents.keys());
+    const targetIds =
+      agentIds ||
+      Array.from(this.agents.values())
+        .filter((a) => a.status === "starting" || a.status === "working")
+        .map((a) => a.id);
     const waiting = targetIds.filter((id) => {
       const a = this.agents.get(id);
-      return a && (a.status === "working" || a.status === "idle");
+      return a && (a.status === "starting" || a.status === "working");
     });
 
     if (waiting.length > 0) {
@@ -1037,7 +1041,7 @@ export class SwarmRuntime {
             return;
           }
 
-          setTimeout(check, 2000);
+          setTimeout(check, 250);
         };
         check();
       });
@@ -1046,7 +1050,7 @@ export class SwarmRuntime {
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     const timedOut = waiting.some((id) => {
       const a = this.agents.get(id);
-      return a && a.status === "working";
+      return a && (a.status === "starting" || a.status === "working");
     });
 
     const agents = targetIds.map((id) => {

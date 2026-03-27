@@ -365,4 +365,34 @@ describe("authority model", () => {
     expect(rootReadsAnyone.data.count).toBe(1);
     expect(rootReadsAnyone.data.logs[0].agentName).toBe(ids.otherAgentName);
   });
+
+  test("upward done signals mark the sender stopped and rpc-disconnected", async () => {
+    const server = await createServer({ modules: [vmTree, signals] });
+    const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
+    expect(store).toBeDefined();
+    const ids = seedHierarchy(store!, `${Date.now()}-done-cleanup`);
+
+    const lieutenantHeaders = authHeaders({
+      "X-Reef-Agent-Name": ids.ltName,
+      "X-Reef-VM-ID": ids.ltVmId,
+      "X-Reef-Category": "lieutenant",
+    });
+
+    const result = await json(server.app, "/signals/", {
+      method: "POST",
+      headers: lieutenantHeaders,
+      body: {
+        fromAgent: ids.ltName,
+        toAgent: ids.rootName,
+        direction: "up",
+        signalType: "done",
+        payload: { summary: "subfleet complete" },
+      },
+    });
+
+    expect(result.status).toBe(201);
+    const updated = store!.getVM(ids.ltVmId);
+    expect(updated?.status).toBe("stopped");
+    expect(updated?.rpcStatus).toBe("disconnected");
+  });
 });
