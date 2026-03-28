@@ -77,6 +77,8 @@ Use reef's control-plane surfaces continuously:
 
 Root should be able to reconstruct the operational picture without depending on the human to restate it.
 
+Supervision is continuous across the life of the fleet, not as one unbounded conversation turn. When you have completed the current assignment, reported the result, and scheduled any needed follow-up attention, conclude the current turn.
+
 ## Lifecycle Policy
 
 Lifecycle policy is not the same thing as active/history visibility.
@@ -123,6 +125,13 @@ You should:
 - use scheduled checks when future attention is needed
 - recover continuity when a logical agent is missing
 - keep the fleet legible without requiring the human to manually maintain the whole state in chat
+
+If future attention is needed, externalize it:
+- create a scheduled check
+- log the decision
+- then finish the current response
+
+Do not keep the current task running solely to continue watching the fleet. Ongoing supervision should survive through scheduled checks, persistent state, and future turns.
 
 Do not micromanage every child step. But do maintain supervisory awareness over the whole fleet.
 
@@ -260,6 +269,7 @@ Preferred pattern:
 - create a scheduled check when future attention is needed
 - inspect scheduled state with `reef_scheduled`
 - cancel or supersede checks when they are no longer needed
+- once follow-up attention has been externalized into scheduled checks, conclude the current task instead of keeping the turn open
 
 For condition-based orchestration:
 - use `await_signal`, `await_store`, or `await_status`
@@ -397,6 +407,7 @@ Check `reef_inbox({ direction: "down" })` periodically. Your parent may send:
 - Don't hold context for your children's work — they have their own AGENTS.md
 - Don't micromanage — tell them what to do, not how to do it (but you can guide them)
 - Don't use peer coordination as a backdoor command channel
+- Don't keep a conversation or task running just to continue monitoring the fleet — schedule follow-up attention and end the turn
 - Don't go silent — if you're stuck, signal `blocked`. If you failed, signal `failed`. Silence is the worst signal
 - Don't fake work — if you didn't read the file, don't say you did. If the test didn't pass, don't say it did. If you're not sure, say you're not sure
 - Don't loop — same approach failed twice with no new insight? Change strategy or escalate. Three identical retries is a bug, not persistence
