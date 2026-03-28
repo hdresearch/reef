@@ -237,6 +237,7 @@ routes.get("/_panel", (c) => {
 			<script>
 				(() => {
 					const root = document.currentScript.parentElement;
+					const apiBase = window.PANEL_API || '/ui/api';
 					const form = root.querySelector('#logs-panel-filters');
 					const reset = root.querySelector('#logs-panel-reset');
 					const body = root.querySelector('#logs-panel-body');
@@ -272,7 +273,7 @@ routes.get("/_panel", (c) => {
 						if (agent) params.set('agent', agent);
 
 						summary.textContent = 'Loading…';
-						const res = await fetch(\`\${window.location.origin}/logs/?\${params.toString()}\`);
+						const res = await fetch(\`\${apiBase}/logs/?\${params.toString()}\`, { credentials: 'same-origin' });
 						const data = await res.json();
 						if (!res.ok) {
 							summary.textContent = data.error || 'Failed to load logs';

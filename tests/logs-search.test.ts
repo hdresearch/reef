@@ -126,5 +126,6 @@ describe("logs search and panel", () => {
     expect(html).toContain('type="search"');
     expect(html).toContain('type="datetime-local"');
     expect(html).toContain("Keyword + date range search runs server-side.");
+    expect(html).toContain("const apiBase = window.PANEL_API || '/ui/api';");
   });
 });
