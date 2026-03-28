@@ -18,9 +18,14 @@ interface Reminder {
   delayMs: number;
   scheduledAt: number;
   firesAt: number;
-  status: "pending" | "fired";
+  status: "pending" | "fired" | "cancelled";
   timerId?: ReturnType<typeof setTimeout>;
+  firedAt?: number;
+  cancelledAt?: number;
 }
+
+const MAX_REMINDER_HISTORY = 20;
+const FIRED_REMINDER_TTL_MS = 5 * 60 * 1000;
 
 function parseDelay(delay: string): number | null {
   const match = delay.trim().match(/^(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?)$/i);
@@ -42,8 +47,33 @@ function formatDuration(ms: number): string {
 export default function (pi: ExtensionAPI) {
   const reminders: Reminder[] = [];
 
+  function pruneReminders() {
+    const cutoff = Date.now() - FIRED_REMINDER_TTL_MS;
+    for (let i = reminders.length - 1; i >= 0; i--) {
+      const reminder = reminders[i];
+      const staleFired = reminder.status === "fired" && (reminder.firedAt || 0) < cutoff;
+      const cancelled = reminder.status === "cancelled";
+      if (staleFired || cancelled) reminders.splice(i, 1);
+    }
+    if (reminders.length > MAX_REMINDER_HISTORY) {
+      reminders.splice(0, reminders.length - MAX_REMINDER_HISTORY);
+    }
+  }
+
+  function cancelReminder(reminder: Reminder): boolean {
+    if (reminder.status !== "pending") return false;
+    if (reminder.timerId) clearTimeout(reminder.timerId);
+    reminder.status = "cancelled";
+    reminder.cancelledAt = Date.now();
+    delete reminder.timerId;
+    pruneReminders();
+    return true;
+  }
+
   function fireReminder(reminder: Reminder) {
+    if (reminder.status !== "pending") return;
     reminder.status = "fired";
+    reminder.firedAt = Date.now();
     delete reminder.timerId;
 
     const elapsed = formatDuration(Date.now() - reminder.scheduledAt);
@@ -51,6 +81,7 @@ export default function (pi: ExtensionAPI) {
 
     // This triggers a new agent turn even if idle — no user input needed
     pi.sendUserMessage(msg, { deliverAs: "followUp" });
+    pruneReminders();
   }
 
   pi.registerTool({
@@ -108,11 +139,59 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "clear_reminders",
+    label: "Clear Reminders",
+    description:
+      "Cancel pending reminders or clear reminder history once a task is complete. Use this to clean up obsolete check-ins so they do not fire after the work is already done.",
+    parameters: Type.Object({
+      id: Type.Optional(Type.String({ description: "Specific reminder ID to cancel or clear" })),
+      status: Type.Optional(
+        Type.Union([Type.Literal("pending"), Type.Literal("fired"), Type.Literal("all")], {
+          description: "Which reminders to clear (default: pending)",
+        }),
+      ),
+      textIncludes: Type.Optional(
+        Type.String({ description: "Only clear reminders whose message contains this text" }),
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      const targetStatus = params.status || "pending";
+      let cleared = 0;
+
+      for (const reminder of [...reminders]) {
+        if (params.id && reminder.id !== params.id) continue;
+        if (params.textIncludes && !reminder.message.includes(params.textIncludes)) continue;
+        if (targetStatus !== "all" && reminder.status !== targetStatus) continue;
+
+        if (reminder.status === "pending") {
+          if (cancelReminder(reminder)) cleared++;
+          continue;
+        }
+
+        reminder.status = "cancelled";
+        reminder.cancelledAt = Date.now();
+        cleared++;
+      }
+
+      pruneReminders();
+      return {
+        content: [
+          {
+            type: "text",
+            text: cleared > 0 ? `Cleared ${cleared} reminder(s).` : "No matching reminders to clear.",
+          },
+        ],
+      };
+    },
+  });
+
+  pi.registerTool({
     name: "reminders",
     label: "List Reminders",
     description: "List all pending and recently fired reminders.",
     parameters: Type.Object({}),
     async execute() {
+      pruneReminders();
       if (reminders.length === 0) {
         return { content: [{ type: "text", text: "No reminders scheduled." }] };
       }
@@ -123,6 +202,8 @@ export default function (pi: ExtensionAPI) {
         if (r.status === "pending") {
           const remaining = formatDuration(r.firesAt - now);
           return `⏳ [${r.id}] fires in ${remaining} — ${r.message.slice(0, 80)}`;
+        } else if (r.status === "cancelled") {
+          return `🧹 [${r.id}] cleared — ${r.message.slice(0, 80)}`;
         } else {
           return `✅ [${r.id}] fired ${age} ago — ${r.message.slice(0, 80)}`;
         }
@@ -137,5 +218,9 @@ export default function (pi: ExtensionAPI) {
     for (const r of reminders) {
       if (r.timerId) clearTimeout(r.timerId);
     }
+  });
+
+  pi.on("agent_end", async () => {
+    pruneReminders();
   });
 }

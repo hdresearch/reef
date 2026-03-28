@@ -14,9 +14,9 @@ import { DEFAULT_SERVICES_DIR } from "./core/server.js";
  * Resolve which services this agent should load based on its category.
  *
  * infra_vm (root): all services
- * lieutenant: agent-context, signals, swarm, store, github, vm-tree
- * agent_vm: agent-context, signals, swarm, store, github
- * swarm_vm: agent-context, signals, swarm, store, github
+ * lieutenant: agent-context, scheduled, signals, swarm, store, github, vm-tree
+ * agent_vm: agent-context, scheduled, signals, swarm, store, github
+ * swarm_vm: agent-context, scheduled, signals, swarm, store, github
  * resource_vm: none (not an agent)
  *
  * Backward compat: REEF_CHILD_AGENT=true without REEF_CATEGORY → treat as swarm_vm
@@ -34,20 +34,20 @@ export function resolveClientServiceSelection(env: NodeJS.ProcessEnv = process.e
       return undefined; // all services
 
     case "lieutenant":
-      return ["agent-context", "signals", "swarm", "store", "github", "logs", "probe", "vm-tree"];
+      return ["agent-context", "scheduled", "signals", "swarm", "store", "github", "logs", "probe", "vm-tree"];
 
     case "agent_vm":
-      return ["agent-context", "signals", "swarm", "store", "github", "logs", "probe"];
+      return ["agent-context", "scheduled", "signals", "swarm", "store", "github", "logs", "probe"];
 
     case "swarm_vm":
-      return ["agent-context", "signals", "swarm", "store", "github", "logs", "probe"];
+      return ["agent-context", "scheduled", "signals", "swarm", "store", "github", "logs", "probe"];
 
     case "resource_vm":
       return []; // no agent, no services
 
     default:
       // Unknown category — fallback to child-safe set
-      return ["agent-context", "signals", "swarm", "store", "github", "logs", "probe"];
+      return ["agent-context", "scheduled", "signals", "swarm", "store", "github", "logs", "probe"];
   }
 }
 

@@ -35,12 +35,19 @@ function storeGet(key: string) {
     : undefined;
 }
 
-function storePut(key: string, value: unknown) {
-  if (vmTreeStore) return vmTreeStore.storePut(key, value);
+function storePut(key: string, value: unknown, agentName?: string, agentId?: string) {
+  if (vmTreeStore) return vmTreeStore.storePut(key, value, agentName, agentId);
   const now = Date.now();
   const existing = fallback.get(key);
   fallback.set(key, { value, createdAt: existing?.createdAt ?? now, updatedAt: now });
-  return { key, value, agentName: null, agentId: null, createdAt: existing?.createdAt ?? now, updatedAt: now };
+  return {
+    key,
+    value,
+    agentName: agentName || null,
+    agentId: agentId || null,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
 }
 
 function storeDelete(key: string): boolean {
@@ -58,6 +65,83 @@ function storeList() {
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
   }));
+}
+
+function storeFilter(options: { prefix?: string; agentName?: string; limit?: number }) {
+  const prefix = options.prefix?.trim();
+  let entries = storeList();
+  if (options.agentName) {
+    entries = entries.filter((entry) => entry.agentName === options.agentName);
+  }
+  if (prefix) {
+    entries = entries.filter((entry) => {
+      if (entry.key.startsWith(prefix)) return true;
+      const colon = entry.key.indexOf(":");
+      if (colon === -1) return false;
+      return entry.key.slice(colon + 1).startsWith(prefix);
+    });
+  }
+  if (options.limit && options.limit > 0) {
+    entries = entries.slice(0, options.limit);
+  }
+  return entries;
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function waitForStoreCondition(options: {
+  key?: string;
+  prefix?: string;
+  equals?: unknown;
+  minCount?: number;
+  timeoutSeconds?: number;
+  pollMs?: number;
+}) {
+  const timeoutMs = Math.max(1, options.timeoutSeconds || 60) * 1000;
+  const pollMs = Math.max(50, options.pollMs || 250);
+  const startedAt = Date.now();
+
+  const check = () => {
+    if (options.key) {
+      const entry = storeGet(options.key);
+      if (!entry) return { matched: false, entries: [] as ReturnType<typeof storeList> };
+      if (options.equals !== undefined && !valuesEqual(entry.value, options.equals)) {
+        return { matched: false, entries: [entry] };
+      }
+      return { matched: true, entries: [entry] };
+    }
+
+    const entries = storeFilter({
+      prefix: options.prefix,
+      limit: undefined,
+    });
+    const minCount = Math.max(1, options.minCount || 1);
+    if (entries.length < minCount) return { matched: false, entries };
+    return { matched: true, entries };
+  };
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const result = check();
+    if (result.matched) {
+      return {
+        matched: true,
+        timedOut: false,
+        elapsedSeconds: Number(((Date.now() - startedAt) / 1000).toFixed(2)),
+        entries: result.entries,
+      };
+    }
+    await Bun.sleep(pollMs);
+  }
+
+  const final = check();
+  return {
+    matched: false,
+    timedOut: true,
+    elapsedSeconds: Number(((Date.now() - startedAt) / 1000).toFixed(2)),
+    entries: final.entries,
+  };
 }
 
 // =============================================================================
@@ -99,9 +183,43 @@ const app = new Hono();
 
 // GET /store — list all keys
 app.get("/", (c) => {
-  const entries = storeList();
-  const keys = entries.map((e) => ({ key: e.key, createdAt: e.createdAt, updatedAt: e.updatedAt }));
+  const prefix = c.req.query("prefix") || undefined;
+  const agentName = c.req.query("agent") || undefined;
+  const includeValues = c.req.query("includeValues") === "1" || c.req.query("includeValues") === "true";
+  const limit = c.req.query("limit") ? parseInt(c.req.query("limit")!, 10) : undefined;
+  const entries = storeFilter({ prefix, agentName, limit });
+  const keys = entries.map((e) => ({
+    key: e.key,
+    agentName: e.agentName,
+    agentId: e.agentId,
+    createdAt: e.createdAt,
+    updatedAt: e.updatedAt,
+    ...(includeValues ? { value: e.value } : {}),
+  }));
   return c.json({ keys });
+});
+
+// POST /store/wait — block until a key/prefix condition becomes true
+app.post("/wait", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const { key, prefix, equals, minCount, timeoutSeconds, pollMs } = body as {
+    key?: string;
+    prefix?: string;
+    equals?: unknown;
+    minCount?: number;
+    timeoutSeconds?: number;
+    pollMs?: number;
+  };
+
+  if (!key && !prefix) {
+    return c.json({ error: "key or prefix is required" }, 400);
+  }
+  if (key && prefix) {
+    return c.json({ error: "provide either key or prefix, not both" }, 400);
+  }
+
+  const result = await waitForStoreCondition({ key, prefix, equals, minCount, timeoutSeconds, pollMs });
+  return c.json(result);
 });
 
 // GET /store/:key — get a value
@@ -117,6 +235,7 @@ app.put("/:key", async (c) => {
   const key = c.req.param("key");
   const callerCategory = c.req.header("X-Reef-Category") || "infra_vm";
   const callerName = c.req.header("X-Reef-Agent-Name");
+  const callerVmId = c.req.header("X-Reef-VM-ID") || undefined;
 
   // v2: Server-side namespace enforcement — non-root agents must prefix keys with their name
   if (callerCategory !== "infra_vm" && callerName) {
@@ -130,7 +249,7 @@ app.put("/:key", async (c) => {
   }
 
   const body = await c.req.json();
-  const result = storePut(key, body.value);
+  const result = storePut(key, body.value, callerName || undefined, callerVmId);
   return c.json({ key, value: body.value, updatedAt: result.updatedAt });
 });
 
@@ -203,6 +322,18 @@ function esc(s: string): string {
 const routeDocs: Record<string, RouteDocs> = {
   "GET /_panel": { summary: "HTML debug view of all stored keys and values", response: "text/html" },
   "GET /": { summary: "List all keys", response: "{ keys: [{ key, createdAt, updatedAt }] }" },
+  "POST /wait": {
+    summary: "Wait for a key or prefix condition to become true",
+    body: {
+      key: { type: "string", description: "Exact key to wait for" },
+      prefix: { type: "string", description: "Prefix to scan for matching keys" },
+      equals: { type: "any", description: "Optional exact JSON value to wait for when using key" },
+      minCount: { type: "number", description: "Minimum matching keys required when using prefix" },
+      timeoutSeconds: { type: "number", description: "Max seconds to wait (default: 60)" },
+      pollMs: { type: "number", description: "Polling interval in milliseconds (default: 250)" },
+    },
+    response: "{ matched, timedOut, elapsedSeconds, entries }",
+  },
   "GET /:key": {
     summary: "Get a value by key",
     params: { key: { type: "string", required: true, description: "The key to look up" } },
@@ -307,14 +438,60 @@ const mod: ServiceModule = {
     pi.registerTool({
       name: "reef_store_list",
       label: "Reef: List Keys",
-      description: "List all keys in the reef key-value store.",
-      parameters: Type.Object({}),
-      async execute() {
+      description:
+        "List keys in the reef key-value store, optionally filtered by prefix. Use this to discover coordination keys and artifact handoffs without guessing exact namespaced keys.",
+      parameters: Type.Object({
+        prefix: Type.Optional(Type.String({ description: "Only include keys starting with this prefix" })),
+        includeValues: Type.Optional(Type.Boolean({ description: "Include current values in the result" })),
+        limit: Type.Optional(Type.Number({ description: "Maximum number of keys to return" })),
+      }),
+      async execute(_id, params) {
         if (!client.getBaseUrl()) return client.noUrl();
         try {
-          const data = await client.api<any>("GET", "/store");
-          const keys = data.keys.map((k: any) => k.key);
-          return client.ok(keys.length ? keys.join("\n") : "Store is empty.", { keys });
+          const qs = new URLSearchParams();
+          if (params.prefix) qs.set("prefix", params.prefix);
+          if (params.includeValues) qs.set("includeValues", "1");
+          if (params.limit) qs.set("limit", String(params.limit));
+          const data = await client.api<any>("GET", `/store${qs.toString() ? `?${qs.toString()}` : ""}`);
+          const lines = (data.keys || []).map((k: any) =>
+            params.includeValues
+              ? `${k.key} = ${JSON.stringify(k.value)}`
+              : `${k.key}${k.agentName ? ` (owner: ${k.agentName})` : ""}`,
+          );
+          return client.ok(lines.length ? lines.join("\n") : "Store is empty.", { keys: data.keys || [] });
+        } catch (e: any) {
+          return client.err(e.message);
+        }
+      },
+    });
+
+    pi.registerTool({
+      name: "reef_store_wait",
+      label: "Reef: Wait On Store",
+      description:
+        "Wait for a store condition instead of writing your own polling loop. Use this for barriers, rendezvous, phase gates, and artifact availability checks.",
+      parameters: Type.Object({
+        key: Type.Optional(Type.String({ description: "Exact key to wait for" })),
+        prefix: Type.Optional(Type.String({ description: "Prefix to scan for matching keys" })),
+        equals: Type.Optional(Type.Any({ description: "Optional exact JSON value required when using key" })),
+        minCount: Type.Optional(Type.Number({ description: "Minimum matching key count when using prefix" })),
+        timeoutSeconds: Type.Optional(Type.Number({ description: "Max seconds to wait (default: 60)" })),
+      }),
+      async execute(_id, params) {
+        if (!client.getBaseUrl()) return client.noUrl();
+        try {
+          const data = await client.api<any>("POST", "/store/wait", {
+            key: params.key,
+            prefix: params.prefix,
+            equals: params.equals,
+            minCount: params.minCount,
+            timeoutSeconds: params.timeoutSeconds,
+          });
+          const keys = (data.entries || []).map((entry: any) => entry.key);
+          const summary = data.matched
+            ? `Store wait matched in ${data.elapsedSeconds}s.`
+            : `Store wait timed out after ${data.elapsedSeconds}s.`;
+          return client.ok(`${summary}\n${keys.length ? keys.join("\n") : "(no matching keys yet)"}`, data);
         } catch (e: any) {
           return client.err(e.message);
         }
