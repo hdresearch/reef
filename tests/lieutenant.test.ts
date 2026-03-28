@@ -8,8 +8,8 @@ import { createRoutes } from "../services/lieutenant/routes.js";
 import { buildPersistKeysScript, buildPersistVmIdScript, buildRemoteEnv } from "../services/lieutenant/rpc.js";
 import { LieutenantRuntime } from "../services/lieutenant/runtime.js";
 import { LieutenantStore, ValidationError } from "../services/lieutenant/store.js";
-import registry from "../services/registry/index.js";
 import vmTree from "../services/vm-tree/index.js";
+import { VMTreeStore } from "../services/vm-tree/store.js";
 
 const TMP_DIR = join(import.meta.dir, ".tmp-lieutenant");
 const AUTH_TOKEN = "test-token-12345";
@@ -160,7 +160,7 @@ describe("lieutenant routes and runtime", () => {
 
     expect(env).toContain("export VERS_VM_ID='vm-child-123'");
     expect(env).toContain("export VERS_INFRA_URL='https://root.example:3000'");
-    expect(env).toContain("export VERS_AGENT_ROLE='lieutenant'");
+    expect(env).toContain("export REEF_CATEGORY='lieutenant'");
   });
 
   test("post-restore VM identity script persists VERS_VM_ID into reef-agent.sh", () => {
@@ -275,11 +275,11 @@ describe("lieutenant routes and runtime", () => {
   });
 });
 
-describe("registry and vm-tree event wiring", () => {
-  test("registers remote lieutenants from server events", async () => {
+describe("vm-tree lieutenant event wiring", () => {
+  test("registers and updates remote lieutenants from server events", async () => {
     process.env.VERS_VM_ID = "parent-root-1";
     const { app, events, liveModules } = await createServer({
-      modules: [registry, vmTree, lieutenant],
+      modules: [vmTree, lieutenant],
     });
 
     const vmId = `vm-test-${Date.now()}`;
@@ -293,32 +293,72 @@ describe("registry and vm-tree event wiring", () => {
       commitId: "commit-123",
     });
 
-    const registryList = await json(app, "/registry/vms?role=lieutenant", { auth: true });
-    expect(registryList.status).toBe(200);
-    expect(registryList.data.count).toBeGreaterThanOrEqual(1);
-    expect(registryList.data.vms.some((vm: any) => vm.id === vmId)).toBe(true);
-
     const vmTreeList = await json(app, "/vm-tree/vms?category=lieutenant", { auth: true });
     expect(vmTreeList.status).toBe(200);
-    expect(vmTreeList.data.vms.some((vm: any) => vm.vmId === vmId && vm.parentVmId === "parent-root-1")).toBe(true);
+    expect(
+      vmTreeList.data.vms.some(
+        (vm: any) => vm.vmId === vmId && vm.parentId === "parent-root-1" && vm.status === "running",
+      ),
+    ).toBe(true);
 
     await events.emit("lieutenant:paused", { vmId });
-    const paused = await json(app, `/registry/vms/${vmId}`, { auth: true });
+    const paused = await json(app, `/vm-tree/vms/${vmId}`, { auth: true });
     expect(paused.status).toBe(200);
     expect(paused.data.status).toBe("paused");
 
     await events.emit("lieutenant:resumed", { vmId });
-    const resumed = await json(app, `/registry/vms/${vmId}`, { auth: true });
+    const resumed = await json(app, `/vm-tree/vms/${vmId}`, { auth: true });
     expect(resumed.status).toBe(200);
     expect(resumed.data.status).toBe("running");
 
     await events.emit("lieutenant:destroyed", { vmId });
-    const afterDestroy = await json(app, "/registry/vms?role=lieutenant", { auth: true });
+    const afterDestroy = await json(app, `/vm-tree/vms/${vmId}`, { auth: true });
     expect(afterDestroy.status).toBe(200);
-    expect(afterDestroy.data.vms.some((vm: any) => vm.id === vmId)).toBe(false);
+    expect(afterDestroy.data.status).toBe("destroyed");
 
     for (const mod of liveModules.values()) {
+      if (mod.name === "vm-tree") continue;
       if (mod.store?.close) await mod.store.close();
     }
+  });
+});
+
+describe("vm-tree lieutenant discovery", () => {
+  test("discovers lieutenants from vm-tree without registry", async () => {
+    const store = new LieutenantStore(join(TMP_DIR, "discover-vm-tree.sqlite"));
+    const vmTreeStore = new VMTreeStore(join(TMP_DIR, "fleet.sqlite"));
+    vmTreeStore.createVM({
+      vmId: "vm-lt-1",
+      name: "lineage-lt",
+      category: "lieutenant",
+      status: "running",
+      parentId: "vm-root-1",
+      discovery: {
+        registeredVia: "lieutenant:create",
+        agentLabel: "lineage-lt",
+        reconnectKind: "lieutenant",
+        roleHint: "usage orchestrator",
+      },
+    });
+
+    const remote = createFakeRemoteHandle();
+    const runtime = new LieutenantRuntime({
+      events: new ServiceEventBus(),
+      store,
+      vmTreeStore,
+      getVmState: async () => "running",
+      reconnectRemoteHandle: async () => remote.handle as any,
+      waitForRemoteSession: async () => {},
+    });
+
+    const results = await runtime.discover();
+
+    expect(results.some((line) => line.includes("lineage-lt: available"))).toBe(true);
+    expect(store.getByName("lineage-lt")?.vmId).toBe("vm-lt-1");
+    expect(store.getByName("lineage-lt")?.role).toBe("usage orchestrator");
+
+    await runtime.shutdown();
+    store.close();
+    vmTreeStore.close();
   });
 });

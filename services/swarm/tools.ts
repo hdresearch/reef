@@ -9,6 +9,67 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import type { FleetClient } from "../../src/core/types.js";
+import { createVersVmFromCommit, deleteVersVm } from "../lieutenant/rpc.js";
+
+export async function spawnResourceVm(
+  client: FleetClient,
+  params: { name: string; commitId?: string },
+  ops: {
+    createVm: (commitId: string) => Promise<{ vmId: string }>;
+    deleteVm: (vmId: string) => Promise<void>;
+  } = {
+    createVm: createVersVmFromCommit,
+    deleteVm: deleteVersVm,
+  },
+) {
+  let vmId: string | undefined;
+
+  try {
+    const commitId = params.commitId || process.env.VERS_GOLDEN_COMMIT_ID;
+    if (!commitId) {
+      return client.err("No commit ID provided and VERS_GOLDEN_COMMIT_ID not set.");
+    }
+
+    const created = await ops.createVm(commitId);
+    vmId = created?.vmId;
+    if (!vmId) return client.err("Failed to create resource VM — no vmId returned.");
+
+    await client.api("POST", "/vm-tree/vms", {
+      vmId,
+      name: params.name,
+      category: "resource_vm",
+      parentId: process.env.VERS_VM_ID,
+      status: "running",
+      address: `${vmId}.vm.vers.sh`,
+      lastHeartbeat: Date.now(),
+      spawnedBy: client.agentName,
+      discovery: {
+        registeredVia: "resource:spawn",
+        agentLabel: params.name,
+        reconnectKind: "resource_vm",
+      },
+    });
+
+    return client.ok(
+      `Resource VM "${params.name}" created.\nVM ID: ${vmId}\nSSH: vers_vm_use with vmId ${vmId}\nAddress: ${vmId}.vm.vers.sh`,
+      { vmId, name: params.name, address: `${vmId}.vm.vers.sh` },
+    );
+  } catch (e: any) {
+    if (vmId) {
+      try {
+        await client.api("PATCH", `/vm-tree/vms/${vmId}`, { status: "error" });
+      } catch {
+        /* ok */
+      }
+      try {
+        await ops.deleteVm(vmId);
+      } catch {
+        /* ok */
+      }
+    }
+    return client.err(e.message);
+  }
+}
 
 export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
@@ -27,6 +88,9 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       ),
       llmProxyKey: Type.Optional(Type.String({ description: "Vers LLM proxy key override (sk-vers-...)" })),
       model: Type.Optional(Type.String({ description: "Model ID for agents (default: claude-sonnet-4-6)" })),
+      context: Type.Optional(
+        Type.String({ description: "Situational context appended to inherited AGENTS.md for all workers" }),
+      ),
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
@@ -37,6 +101,9 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           labels: params.labels,
           llmProxyKey: params.llmProxyKey,
           model: params.model,
+          context: params.context,
+          parentVmId: client.vmId,
+          spawnedBy: client.agentName,
         });
         return client.ok(
           `Spawned ${result.count} agent(s):\n${result.messages.join("\n")}\n\n${result.count} workers ready.`,
@@ -161,7 +228,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
     name: "reef_swarm_discover",
     label: "Discover Swarm Workers",
     description:
-      "Discover running swarm workers from the registry and reconnect to them. Use after session restart to recover swarm state.",
+      "Discover running swarm workers from vm-tree and reconnect to them. Use after session restart to recover swarm state.",
     parameters: Type.Object({}),
     async execute() {
       if (!client.getBaseUrl()) return client.noUrl();
@@ -189,6 +256,84 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       } catch (e: any) {
         return client.err(e.message);
       }
+    },
+  });
+
+  // reef_agent_spawn — spawn a single autonomous agent VM
+  pi.registerTool({
+    name: "reef_agent_spawn",
+    label: "Spawn Agent VM",
+    description: [
+      "Spawn a single autonomous agent VM that runs independently and signals when done.",
+      "Unlike swarm workers, agent VMs own their lifecycle — they decide what to do based on",
+      "their inherited AGENTS.md + context, and signal done/blocked/failed to their parent.",
+      "",
+      "Your full AGENTS.md is inherited by the agent. Provide context to tell it what to do.",
+      "The agent VM can spawn its own sub-agents (more agent VMs, swarms, resource VMs).",
+      "",
+      "Pick model and effort based on task complexity. Default: sonnet/medium.",
+    ].join("\n"),
+    parameters: Type.Object({
+      name: Type.String({ description: "Agent name (must be unique in the fleet)" }),
+      task: Type.String({ description: "The task for this agent to execute autonomously" }),
+      context: Type.Optional(Type.String({ description: "Situational context appended to inherited AGENTS.md" })),
+      directive: Type.Optional(Type.String({ description: "Hard guardrails (VERS_AGENT_DIRECTIVE)" })),
+      model: Type.Optional(Type.String({ description: "LLM model (default: claude-sonnet-4-6)" })),
+      commitId: Type.Optional(Type.String({ description: "Golden image commit (default: auto-resolved)" })),
+    }),
+    async execute(_id, params) {
+      if (!client.getBaseUrl()) return client.noUrl();
+      try {
+        // Spawn as a 1-worker swarm with agent_vm category
+        const spawnResult = await client.api<any>("POST", "/swarm/agents", {
+          count: 1,
+          labels: [params.name],
+          model: params.model || "claude-sonnet-4-6",
+          commitId: params.commitId,
+          context: params.context,
+          category: "agent_vm",
+          directive: params.directive,
+          parentVmId: client.vmId,
+          spawnedBy: client.agentName,
+        });
+
+        const agent = spawnResult.agents?.[0];
+        if (!agent) return client.err("Failed to spawn agent VM");
+
+        // Send the task — agent VMs always get an initial task
+        await client.api("POST", `/swarm/agents/${params.name}/task`, { task: params.task });
+
+        const lines = [
+          `Agent VM "${params.name}" spawned on ${agent.vmId?.slice(0, 12)}`,
+          `Task: ${params.task.slice(0, 100)}${params.task.length > 100 ? "..." : ""}`,
+          params.context ? `Context: ${params.context.slice(0, 80)}...` : "",
+          "The agent runs autonomously. Check reef_inbox for its signals.",
+        ].filter(Boolean);
+
+        return client.ok(lines.join("\n"), { agent, vmId: agent.vmId, name: params.name });
+      } catch (e: any) {
+        return client.err(e.message);
+      }
+    },
+  });
+
+  // reef_resource_spawn — spawn a bare metal VM
+  pi.registerTool({
+    name: "reef_resource_spawn",
+    label: "Spawn Resource VM",
+    description: [
+      "Spawn a bare metal Vers VM for infrastructure (database, build server, test runner).",
+      "No agent stack, no punkin, no AGENTS.md — just a Linux box.",
+      "You own it. SSH into it via vers_vm_use to configure it.",
+      "It gets cleaned up when you are torn down.",
+    ].join("\n"),
+    parameters: Type.Object({
+      name: Type.String({ description: "Resource VM name (must be unique)" }),
+      commitId: Type.Optional(Type.String({ description: "Image commit to restore from (default: golden image)" })),
+    }),
+    async execute(_id, params) {
+      if (!client.getBaseUrl()) return client.noUrl();
+      return spawnResourceVm(client, params);
     },
   });
 }

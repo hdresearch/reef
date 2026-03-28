@@ -13,6 +13,13 @@ export function createFleetClient(): FleetClient {
   const agentRole = process.env.VERS_AGENT_ROLE || "worker";
   const isChildAgent = process.env.REEF_CHILD_AGENT === "true";
 
+  // v2: category-based identity
+  const agentCategory =
+    process.env.REEF_CATEGORY ||
+    (process.env.VERS_AGENT_ROLE === "lieutenant" ? "lieutenant" : undefined) ||
+    (process.env.REEF_CHILD_AGENT === "true" ? "swarm_vm" : undefined) ||
+    "infra_vm";
+
   function getBaseUrl(): string | null {
     return process.env.VERS_INFRA_URL || null;
   }
@@ -23,7 +30,13 @@ export function createFleetClient(): FleetClient {
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      "X-Reef-Agent-Name": agentName,
+      "X-Reef-Category": agentCategory,
     };
+
+    if (vmId) {
+      headers["X-Reef-VM-ID"] = vmId;
+    }
 
     const token = process.env.VERS_AUTH_TOKEN;
     if (token) {
@@ -87,6 +100,7 @@ export function createFleetClient(): FleetClient {
     agentName,
     vmId,
     agentRole,
+    agentCategory,
     isChildAgent,
     ok,
     err,

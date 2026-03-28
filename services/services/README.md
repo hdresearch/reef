@@ -35,7 +35,7 @@ Runtime service manager. List, reload, unload, and export modules without restar
     { "service": "board", "method": "POST", "path": "/board/tasks", "description": "Create a task" }
   ],
   "servicesWithTools": ["board", "feed", "log"],
-  "servicesWithBehaviors": ["feed", "registry"],
+  "servicesWithBehaviors": ["feed", "signals"],
   "servicesWithPanels": ["board", "feed"],
   "count": 8
 }

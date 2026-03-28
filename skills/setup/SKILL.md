@@ -5,7 +5,7 @@ description: Set up a reef server with example services. Use when bootstrapping 
 
 # Setup Reef
 
-Reef ships with core infrastructure services in `services/` (docs, installer, services, store, cron, ui). Fleet coordination services live in `examples/services/` and need to be copied into `services/` to activate them.
+Reef ships with core infrastructure services in `services/` (including `vm-tree`, signals, swarm, lieutenant, usage, probe, docs, installer, services, store, cron, ui). Optional example services live in `examples/services/` and can be copied into `services/` if you want them.
 
 ## Available Example Services
 
@@ -15,7 +15,6 @@ Reef ships with core infrastructure services in `services/` (docs, installer, se
 | **feed** | Activity event stream with SSE, auto-publishes from board events |
 | **log** | Append-only work log with time-range queries |
 | **journal** | Personal narrative log with mood/vibe tagging |
-| **registry** | VM service discovery with heartbeats and role-based lookup |
 | **commits** | VM snapshot ledger for tracking golden images |
 | **reports** | Markdown reports with title, author, tags |
 | **usage** | Cost & token tracking with per-agent summaries (depends on feed) |
@@ -37,7 +36,6 @@ cp -r examples/services/feed services/feed
 cp -r examples/services/board services/board
 cp -r examples/services/log services/log
 cp -r examples/services/journal services/journal
-cp -r examples/services/registry services/registry
 cp -r examples/services/commits services/commits
 cp -r examples/services/reports services/reports
 cp -r examples/services/usage services/usage

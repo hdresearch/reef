@@ -1,20 +1,20 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createTestHarness, type TestHarness } from "../../src/core/testing.js";
+import vmTree from "../vm-tree/index.js";
 import store from "./index.js";
 
 let t: TestHarness;
-const setup = (async () => {
-  // Clean store file from previous runs
-  try {
-    (await import("node:fs")).unlinkSync("data/store.json");
-  } catch {}
-  t = await createTestHarness({ services: [store] });
-})();
-afterAll(() => {
+
+beforeEach(async () => {
+  t = await createTestHarness({ services: [vmTree, store] });
+  const { data } = await t.json<any>("/store", A);
+  for (const entry of data.keys as Array<{ key: string }>) {
+    await t.json(`/store/${encodeURIComponent(entry.key)}`, del(entry.key));
+  }
+});
+
+afterEach(() => {
   t?.cleanup();
-  try {
-    require("node:fs").unlinkSync("data/store.json");
-  } catch {}
 });
 
 const A = { auth: true };
@@ -23,14 +23,12 @@ const del = (_key: string) => ({ method: "DELETE", auth: true });
 
 describe("store", () => {
   test("list keys — empty initially", async () => {
-    await setup;
     const { status, data } = await t.json<any>("/store", A);
     expect(status).toBe(200);
     expect(data.keys).toEqual([]);
   });
 
   test("put and get a value", async () => {
-    await setup;
     const { status: putStatus, data: putData } = await t.json<any>("/store/greeting", put("greeting", "hello world"));
     expect(putStatus).toBe(200);
     expect(putData.key).toBe("greeting");
@@ -43,7 +41,6 @@ describe("store", () => {
   });
 
   test("put complex JSON value", async () => {
-    await setup;
     const complex = { nested: { array: [1, 2, 3] }, flag: true };
     await t.json<any>("/store/complex", put("complex", complex));
 
@@ -52,7 +49,6 @@ describe("store", () => {
   });
 
   test("update preserves createdAt", async () => {
-    await setup;
     await t.json<any>("/store/mutable", put("mutable", "v1"));
     await t.json<any>("/store/mutable", put("mutable", "v2"));
 
@@ -61,13 +57,11 @@ describe("store", () => {
   });
 
   test("get nonexistent key returns 404", async () => {
-    await setup;
     const { status } = await t.json("/store/nope", A);
     expect(status).toBe(404);
   });
 
   test("delete a key", async () => {
-    await setup;
     await t.json("/store/ephemeral", put("ephemeral", "temp"));
 
     const { status, data } = await t.json<any>("/store/ephemeral", del("ephemeral"));
@@ -79,13 +73,11 @@ describe("store", () => {
   });
 
   test("delete nonexistent key returns 404", async () => {
-    await setup;
     const { status } = await t.json("/store/ghost", del("ghost"));
     expect(status).toBe(404);
   });
 
   test("list keys shows all entries", async () => {
-    await setup;
     await t.json("/store/a", put("a", 1));
     await t.json("/store/b", put("b", 2));
 
@@ -96,7 +88,6 @@ describe("store", () => {
   });
 
   test("requires auth", async () => {
-    await setup;
     const { status } = await t.json("/store");
     expect(status).toBe(401);
   });

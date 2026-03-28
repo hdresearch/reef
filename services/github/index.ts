@@ -21,6 +21,9 @@
  *   - Use reef_github_token with scoped permissions for all in-repo work
  */
 
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Hono } from "hono";
@@ -274,6 +277,46 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function slug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+function sh(value: string): string {
+  return JSON.stringify(value);
+}
+
+function runShell(command: string, cwd: string): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn("/bin/bash", ["-lc", command], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (data: Buffer) => {
+      stdout += data.toString();
+    });
+    child.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+    child.on("error", (err) => rejectPromise(err));
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolvePromise({ stdout, stderr });
+      } else {
+        rejectPromise(new Error(`${command}\n${stderr || stdout}`.trim()));
+      }
+    });
+  });
+}
+
 // =============================================================================
 // Tools
 // =============================================================================
@@ -289,6 +332,111 @@ IMPORTANT — GitHub operational rules:
 - Prefer the most restrictive profile/permissions that accomplish your task`;
 
 function registerTools(pi: ExtensionAPI, client: FleetClient) {
+  pi.registerTool({
+    name: "reef_git_prepare",
+    label: "GitHub: Prepare Repo",
+    description: `Prepare a durable Git working copy for a child agent.
+
+What it does:
+  - clones the repo if missing (using the installed git-credential-vers helper)
+  - mints a scoped develop token for the repo
+  - configures local push auth in .git
+  - syncs to the requested base branch
+  - creates/switches to a per-agent feature branch
+
+Use this before making code changes you want to survive VM loss.
+${GITHUB_RULES}`,
+    parameters: Type.Object({
+      repo: Type.String({ description: "GitHub repo, e.g. hdresearch/idol" }),
+      baseBranch: Type.Optional(Type.String({ description: "Base branch to branch from (default: main)" })),
+      branch: Type.Optional(Type.String({ description: "Feature branch name (default: feat/<agent>/<repo>)" })),
+      directory: Type.Optional(
+        Type.String({ description: "Checkout directory (default: repo name under current cwd)" }),
+      ),
+      profile: Type.Optional(
+        Type.Union([Type.Literal("develop"), Type.Literal("read")], {
+          description: 'Token profile for in-repo auth (default: "develop")',
+        }),
+      ),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!client.getBaseUrl()) return client.noUrl();
+
+      try {
+        const baseBranch = params.baseBranch || "main";
+        const repo = String(params.repo || "").trim();
+        if (!repo.includes("/")) return client.err(`Repo must be "owner/name", got "${repo}"`);
+
+        const repoName = repo.split("/").pop()!;
+        const rootDir = resolve(ctx.cwd || process.cwd());
+        const workDir = params.directory ? resolve(rootDir, params.directory) : join(rootDir, repoName);
+        const branch =
+          params.branch || `feat/${slug(client.agentName || "agent")}/${slug(repoName || "repo") || "work"}`;
+
+        if (!existsSync(rootDir)) mkdirSync(rootDir, { recursive: true });
+
+        if (!existsSync(workDir)) {
+          await runShell(`git clone https://github.com/${repo}.git ${sh(workDir)}`, rootDir);
+        }
+
+        const tokenResult = await client.api<{
+          token: string;
+          expires_at: string;
+          permissions: Record<string, string>;
+          repositories?: string[];
+        }>("POST", "/github/token", {
+          repositories: [repoName],
+          profile: params.profile || "develop",
+        });
+
+        const helperPath = join(workDir, ".git", "credential-reef-helper.sh");
+        writeFileSync(
+          helperPath,
+          `#!/bin/sh
+case "$1" in
+  get) ;;
+  *) exit 0 ;;
+esac
+printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=%s\\n' '${tokenResult.token}'
+`,
+          "utf8",
+        );
+        chmodSync(helperPath, 0o700);
+
+        await runShell(`git config --local credential.https://github.com.helper ${sh(helperPath)}`, workDir);
+        await runShell("git config --local credential.useHttpPath true", workDir);
+        await runShell(`git remote set-url origin https://github.com/${repo}.git`, workDir);
+        await runShell(`git fetch origin ${sh(baseBranch)}`, workDir);
+        await runShell(`git checkout -B ${sh(baseBranch)} origin/${baseBranch}`, workDir);
+        await runShell(`git checkout -B ${sh(branch)}`, workDir);
+
+        const status = await runShell("git status --short --branch", workDir);
+        return client.ok(
+          [
+            `Repo ready: ${repo}`,
+            `Path: ${workDir}`,
+            `Base: ${baseBranch}`,
+            `Branch: ${branch}`,
+            `Token expires: ${tokenResult.expires_at}`,
+            "",
+            status.stdout.trim(),
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          {
+            repo,
+            path: workDir,
+            baseBranch,
+            branch,
+            tokenExpiresAt: tokenResult.expires_at,
+          },
+        );
+      } catch (e: any) {
+        return client.err(e.message);
+      }
+    },
+  });
+
   pi.registerTool({
     name: "reef_github_token",
     label: "GitHub: Get Token",
@@ -324,6 +472,47 @@ ${GITHUB_RULES}`,
       if (!client.getBaseUrl()) return client.noUrl();
 
       try {
+        // v2: Check grants — enforce repo scope and profile limits
+        let grantedRepos: string[] | undefined;
+        let grantedProfile: string | undefined;
+        try {
+          const vmId = process.env.VERS_VM_ID;
+          if (vmId) {
+            const self = await client.api<any>("GET", `/vm-tree/vms/${encodeURIComponent(vmId)}`);
+            const grants = self?.grants;
+            if (grants?.repos?.length) grantedRepos = grants.repos;
+            if (grants?.githubProfile) grantedProfile = grants.githubProfile;
+          }
+        } catch {
+          /* grants check is best-effort */
+        }
+
+        // Enforce repo grants
+        let requestedRepos = params.repositories;
+        if (grantedRepos && requestedRepos) {
+          const unauthorized = requestedRepos.filter((r: string) => !grantedRepos!.includes(r));
+          if (unauthorized.length > 0) {
+            return client.err(
+              `Grant violation: repos [${unauthorized.join(", ")}] not in your grants [${grantedRepos.join(", ")}]`,
+            );
+          }
+        } else if (grantedRepos && !requestedRepos) {
+          // If agent has repo grants but didn't scope, auto-scope to granted repos
+          requestedRepos = grantedRepos;
+        }
+
+        // Enforce profile grants
+        const profileOrder = ["read", "develop", "ci"];
+        if (grantedProfile && params.profile) {
+          const grantedIdx = profileOrder.indexOf(grantedProfile);
+          const requestedIdx = profileOrder.indexOf(params.profile);
+          if (requestedIdx > grantedIdx && grantedIdx >= 0) {
+            return client.err(
+              `Grant violation: profile "${params.profile}" exceeds your granted profile "${grantedProfile}"`,
+            );
+          }
+        }
+
         let permissions = params.permissions;
         if (params.profile && TOKEN_PROFILES[params.profile as TokenProfile]) {
           permissions = TOKEN_PROFILES[params.profile as TokenProfile].permissions;
@@ -335,7 +524,7 @@ ${GITHUB_RULES}`,
           permissions: Record<string, string>;
           repositories?: string[];
         }>("POST", "/github/token", {
-          repositories: params.repositories,
+          repositories: requestedRepos,
           permissions,
           profile: params.profile,
         });

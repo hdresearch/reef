@@ -2,7 +2,7 @@
 
 Reef is the root control plane for a Vers agent fleet.
 
-It runs the root Reef server, owns the global registry/vm-tree/commits state, manages remote lieutenants, serves the `/ui`, and provides the child-safe Reef tools that golden-image child VMs use to talk back to the root.
+It runs the root Reef server, owns the global `vm-tree` / `commits` fleet state, manages remote lieutenants, serves the `/ui`, and provides the child-safe Reef tools that golden-image child VMs use to talk back to the root.
 
 ## Current Architecture
 
@@ -16,7 +16,7 @@ After bootstrap, Reef is responsible for:
 - ensuring a golden image exists
 - creating lieutenants from that golden image
 - tracking lineage in `vm-tree`
-- tracking liveness/discovery in `registry`
+- tracking liveness, discovery, and lineage in `vm-tree`
 - managing golden commits in `commits`
 - serving the root UI and conversation system
 
@@ -25,7 +25,7 @@ After bootstrap, Reef is responsible for:
 Root Reef VM:
 
 - runs the Reef server
-- owns SQLite-backed services like `registry`, `vm-tree`, and `commits`
+- owns SQLite-backed services like `vm-tree` and `commits`
 - is the only global authority
 - defaults its own task runner to `claude-opus-4-6-thinking`
 
@@ -56,7 +56,7 @@ Lieutenants additionally get:
 - `reef_lt_subtree`
 - `reef_lt_worker_capacity`
 
-Child VMs do not expose raw global `registry`, `vm-tree`, `commits`, or lieutenant-lifecycle tools locally.
+Child VMs do not expose raw global `vm-tree`, `commits`, or lieutenant-lifecycle tools locally.
 
 ## Conversations And UI
 
@@ -78,7 +78,6 @@ Closing a conversation archives it from the active list without deleting it.
 Root-only control-plane services include:
 
 - `commits`
-- `registry`
 - `vm-tree`
 - `lieutenant`
 - `services`
