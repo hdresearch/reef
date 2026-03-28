@@ -96,7 +96,7 @@ describe("scheduled orchestration checks", () => {
     const created = await json(server.app, "/scheduled", {
       method: "POST",
       body: {
-        kind: "await_signal",
+        kind: "follow_up",
         message: "check if peer-a finished",
         targetAgent,
         dueAt: Date.now() - 10,
@@ -145,10 +145,10 @@ describe("scheduled orchestration checks", () => {
     const created = await json(server.app, "/scheduled", {
       method: "POST",
       body: {
-        kind: "await_signal",
+        kind: "follow_up",
         message: "check whether peer-b is done",
         targetAgent,
-        dueAt: Date.now() - 10,
+        dueAt: Date.now() + 60_000,
         autoCancelOn: {
           signalType: "done",
         },
@@ -178,5 +178,57 @@ describe("scheduled orchestration checks", () => {
 
     const signals = vmTreeStore.querySignals({ toAgent: targetAgent, signalType: "steer" });
     expect(signals).toHaveLength(0);
+  });
+
+  test("condition-first await_store checks fire when the store condition matches without requiring a delay", async () => {
+    const server = await createServer({ modules: [vmTree, scheduled] });
+    const vmTreeStore = server.ctx.getStore<any>("vm-tree")!.vmTreeStore;
+    const targetAgent = `peer-c-${Date.now()}`;
+
+    vmTreeStore.upsertVM({
+      vmId: `vm-${targetAgent}`,
+      name: targetAgent,
+      parentId: process.env.VERS_VM_ID!,
+      category: "agent_vm",
+      status: "running",
+    });
+    vmTreeStore.updateVM(`vm-${targetAgent}`, { rpcStatus: "connected" });
+
+    const created = await json(server.app, "/scheduled", {
+      method: "POST",
+      body: {
+        kind: "await_store",
+        message: "peer-c is ready",
+        targetAgent,
+        triggerOn: {
+          storeKey: `${targetAgent}:coord/phase`,
+          storeEquals: "ready",
+        },
+      },
+    });
+
+    expect(created.status).toBe(201);
+    expect(created.data.dueAt).toBe(0);
+
+    await json(server.app, "/scheduled/_tick", { method: "POST" });
+    let pending = await json(server.app, `/scheduled?status=pending&targetAgent=${encodeURIComponent(targetAgent)}`);
+    expect(pending.data.count).toBe(1);
+
+    vmTreeStore.storePut(`${targetAgent}:coord/phase`, "ready", targetAgent, `vm-${targetAgent}`);
+
+    await json(server.app, "/scheduled/_tick", { method: "POST" });
+    const fired = await json(server.app, `/scheduled?status=fired&targetAgent=${encodeURIComponent(targetAgent)}`);
+    expect(fired.status).toBe(200);
+    expect(fired.data.count).toBe(1);
+    expect(fired.data.checks[0].id).toBe(created.data.id);
+    expect(fired.data.checks[0].statusReason).toContain("triggered after store condition matched");
+
+    const signals = vmTreeStore.querySignals({ toAgent: targetAgent, signalType: "steer" });
+    expect(signals).toHaveLength(1);
+    expect(signals[0].payload).toMatchObject({
+      scheduledCheckId: created.data.id,
+      kind: "await_store",
+      message: "peer-c is ready",
+    });
   });
 });

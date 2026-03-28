@@ -123,11 +123,12 @@ describe("store coordination helpers", () => {
     expect(result.data.entries).toHaveLength(2);
   });
 
-  test("waits for an exact key to reach a specific value", async () => {
+  test("waits for an exact key to reach a specific value across agent namespaces", async () => {
     const server = await createServer({ modules: [vmTree, store] });
+    const phaseKey = `coord/phase-${Date.now()}`;
 
     setTimeout(() => {
-      request(server.app, "/store/peer-b%3Acoord%2Fphase", {
+      request(server.app, `/store/${encodeURIComponent(`peer-b:${phaseKey}`)}`, {
         method: "PUT",
         body: { value: "ready" },
         headers: {
@@ -140,7 +141,7 @@ describe("store coordination helpers", () => {
     const result = await json(server.app, "/store/wait", {
       method: "POST",
       body: {
-        key: "peer-b:coord/phase",
+        key: phaseKey,
         equals: "ready",
         timeoutSeconds: 1,
       },
@@ -151,7 +152,7 @@ describe("store coordination helpers", () => {
     expect(result.data.timedOut).toBe(false);
     expect(result.data.entries).toHaveLength(1);
     expect(result.data.entries[0]).toMatchObject({
-      key: "peer-b:coord/phase",
+      key: `peer-b:${phaseKey}`,
       value: "ready",
       agentName: "peer-b",
     });

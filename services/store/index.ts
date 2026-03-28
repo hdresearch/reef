@@ -87,6 +87,18 @@ function storeFilter(options: { prefix?: string; agentName?: string; limit?: num
   return entries;
 }
 
+function resolveStoreEntriesForKey(key: string) {
+  const direct = storeGet(key);
+  if (direct) return [direct];
+  const trimmed = key.trim();
+  if (!trimmed || trimmed.includes(":")) return [];
+  return storeList().filter((entry) => {
+    const colon = entry.key.indexOf(":");
+    if (colon === -1) return false;
+    return entry.key.slice(colon + 1) === trimmed;
+  });
+}
+
 function valuesEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -105,12 +117,16 @@ async function waitForStoreCondition(options: {
 
   const check = () => {
     if (options.key) {
-      const entry = storeGet(options.key);
-      if (!entry) return { matched: false, entries: [] as ReturnType<typeof storeList> };
-      if (options.equals !== undefined && !valuesEqual(entry.value, options.equals)) {
-        return { matched: false, entries: [entry] };
+      const entries = resolveStoreEntriesForKey(options.key);
+      if (entries.length === 0) return { matched: false, entries: [] as ReturnType<typeof storeList> };
+      if (options.equals !== undefined) {
+        const matching = entries.filter((entry) => valuesEqual(entry.value, options.equals));
+        if (matching.length === 0) {
+          return { matched: false, entries };
+        }
+        return { matched: true, entries: matching };
       }
-      return { matched: true, entries: [entry] };
+      return { matched: true, entries };
     }
 
     const entries = storeFilter({
@@ -242,7 +258,9 @@ app.put("/:key", async (c) => {
     const prefix = `${callerName}:`;
     if (!key.startsWith(prefix)) {
       return c.json(
-        { error: `Store namespacing: key must start with "${prefix}" (your agent name). Got "${key}".` },
+        {
+          error: `Store namespacing: key must start with "${prefix}" (your agent name). Got "${key}". Try "${prefix}${key}" for your own writes. Use reef_store_list or reef_store_wait with a prefix for cross-agent coordination.`,
+        },
         403,
       );
     }
@@ -263,7 +281,9 @@ app.delete("/:key", (c) => {
     const prefix = `${callerName}:`;
     if (!key.startsWith(prefix)) {
       return c.json(
-        { error: `Store namespacing: key must start with "${prefix}" (your agent name). Got "${key}".` },
+        {
+          error: `Store namespacing: key must start with "${prefix}" (your agent name). Got "${key}". Try "${prefix}${key}" for your own writes. Use reef_store_list or reef_store_wait with a prefix for cross-agent coordination.`,
+        },
         403,
       );
     }
@@ -423,7 +443,7 @@ const mod: ServiceModule = {
             const prefix = `${client.agentName}:`;
             if (!params.key.startsWith(prefix)) {
               return client.err(
-                `Store namespacing: key must start with "${prefix}" (your agent name). Got "${params.key}".`,
+                `Store namespacing: key must start with "${prefix}" (your agent name). Got "${params.key}". Try "${prefix}${params.key}" for your own writes. Use reef_store_list or reef_store_wait with a prefix for cross-agent coordination.`,
               );
             }
           }
