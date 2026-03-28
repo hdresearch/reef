@@ -44,6 +44,70 @@ function taskLabel(status) {
 }
 
 const $ = (id) => document.getElementById(id);
+const appShell = $('app');
+const panelAreaEl = $('panel-area');
+const panelViewsEl = $('panel-views');
+const mobileMq = window.matchMedia('(max-width: 900px)');
+
+let mobileView = 'chat';
+let memexExpanded = true;
+
+function isMobileViewport() {
+  return mobileMq.matches;
+}
+
+function updateMobileMeta() {
+  const chatsDetail = $('mobile-nav-chats-detail');
+  if (chatsDetail) {
+    const openCount = [...conversations.values()].filter((conversation) => !conversation.closed).length;
+    chatsDetail.textContent = conversations.size ? `${openCount} open` : 'none';
+  }
+
+  const panelsDetail = $('mobile-nav-panels-detail');
+  if (panelsDetail) {
+    panelsDetail.textContent = loadedPanels.size ? `${loadedPanels.size} live` : 'syncing';
+  }
+}
+
+function updateMobileView() {
+  if (!appShell) return;
+  const currentView = isMobileViewport() ? (activePanel ? 'panel' : mobileView) : 'desktop';
+  appShell.dataset.mobileView = currentView;
+  document.querySelectorAll('.mobile-nav-btn').forEach((button) => {
+    button.classList.toggle('active', button.dataset.mobileView === currentView);
+  });
+  updateMobileMeta();
+}
+
+function closeActivePanel(nextView = null) {
+  panelAreaEl.className = 'closed';
+  $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === 'feed'));
+  activePanel = null;
+  $('panel-shell-title').textContent = 'panel';
+  if (isMobileViewport()) {
+    mobileView = nextView || (mobileView === 'panel' ? 'panels' : mobileView);
+  }
+  syncMobilePanelList();
+  updateMobileView();
+}
+
+function setMobileView(view) {
+  mobileView = view;
+  if (activePanel && view !== 'panel') {
+    closeActivePanel(view);
+    return;
+  }
+  if (view === 'panels') syncMobilePanelList();
+  updateMobileView();
+}
+
+function setMemexExpanded(expanded) {
+  memexExpanded = expanded;
+  $('branch').classList.toggle('memex-collapsed', !expanded);
+  const button = $('branch-memex-toggle');
+  button.setAttribute('aria-expanded', String(expanded));
+  button.classList.toggle('collapsed', !expanded);
+}
 
 function autoScroll(el) {
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -206,15 +270,19 @@ function renderConversationLists() {
     items.filter((conversation) => conversation.closed),
     'No closed conversations.',
   );
+  updateMobileMeta();
 }
 
 function renderConversationHeader() {
   const label = $('branch-label');
   const meta = $('branch-meta');
   const toggle = $('branch-toggle');
+  const close = $('branch-close');
   const empty = $('branch-empty');
   const input = $('branch-text');
   const send = $('branch-send');
+  close.textContent = isMobileViewport() ? 'chats' : '✕';
+  close.title = isMobileViewport() ? 'Open chats' : 'Clear selection';
 
   if (!activeConversationId || !conversations.has(activeConversationId)) {
     label.textContent = 'select a conversation';
@@ -315,6 +383,7 @@ async function loadConversation(conversationId) {
 
 async function selectConversation(conversationId) {
   if (!conversationId) return;
+  if (isMobileViewport()) setMobileView('chat');
   activeConversationId = conversationId;
   ensureConversation(conversationId);
   renderConversationLists();
@@ -335,6 +404,7 @@ function deselectConversation() {
   activeConversationId = null;
   renderConversationLists();
   renderConversationHeader();
+  if (isMobileViewport()) setMobileView('chat');
   $('branch-text').focus();
 }
 
@@ -1119,6 +1189,42 @@ let activePanel = null;
 // v2: Friendly display names for tabs
 const TAB_LABELS = { 'vm-tree': 'fleet', 'github': 'github', 'signals': 'signals', 'logs': 'logs', 'store': 'store', 'cron': 'cron', 'usage': 'usage' };
 
+function syncMobilePanelList() {
+  const list = $('mobile-panel-list');
+  if (!list) return;
+
+  const tabs = [...$('tabs').querySelectorAll('.tab')].filter((tab) => tab.dataset.view && tab.dataset.view !== 'feed');
+  list.innerHTML = '';
+
+  if (!tabs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'panel-directory-empty';
+    empty.textContent = 'Modules are loading...';
+    list.appendChild(empty);
+    updateMobileMeta();
+    return;
+  }
+
+  for (const tab of tabs) {
+    const button = document.createElement('button');
+    button.className = 'mobile-panel-link' + (activePanel === tab.dataset.view ? ' active' : '');
+    button.type = 'button';
+    button.innerHTML = `
+      <span class="mobile-panel-link-label">${esc(tab.textContent || tab.dataset.view)}</span>
+      <span class="mobile-panel-link-meta">${esc(tab.dataset.view)}</span>
+    `;
+    button.addEventListener('click', () => togglePanel(tab.dataset.view));
+    list.appendChild(button);
+  }
+
+  updateMobileMeta();
+}
+
+function panelLabel(name) {
+  const tab = $('tabs').querySelector(`.tab[data-view="${name}"]`);
+  return tab?.textContent || TAB_LABELS[name] || name;
+}
+
 async function fetchPanel(name) {
   const response = await fetch(`${API}/${name}/_panel`);
   if (!response.ok) return null;
@@ -1152,9 +1258,10 @@ async function loadProfilePanel() {
     container.className = 'panel-view';
     container.id = 'panel-profile';
     container.dataset.api = API;
-    $('panel-area').appendChild(container);
+    panelViewsEl.appendChild(container);
     injectPanel(container, html);
     loadedPanels.set('profile', container);
+    syncMobilePanelList();
   } catch {}
 }
 
@@ -1191,25 +1298,28 @@ async function discoverPanels() {
       container.className = 'panel-view';
       container.id = `panel-${panel.name}`;
       container.dataset.api = API;
-      $('panel-area').appendChild(container);
+      panelViewsEl.appendChild(container);
       injectPanel(container, panel.html);
       loadedPanels.set(panel.name, container);
     }
+    syncMobilePanelList();
   } catch {}
 }
 
 function togglePanel(name) {
   if (activePanel === name) {
-    $('panel-area').className = 'closed';
-    $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === 'feed'));
-    activePanel = null;
+    closeActivePanel();
     return;
   }
   activePanel = name;
-  $('panel-area').className = 'open';
+  panelAreaEl.className = 'open';
+  $('panel-shell-title').textContent = panelLabel(name);
   document.querySelectorAll('.panel-view').forEach((view) => view.classList.toggle('active', view.id === `panel-${name}`));
   $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === name));
   // v2: Always refresh immediately when switching panels
+  if (isMobileViewport()) mobileView = 'panel';
+  syncMobilePanelList();
+  updateMobileView();
   refreshPanel(name).catch(() => {});
 }
 
@@ -1236,9 +1346,7 @@ function injectPanel(container, html) {
 
 $('tabs').querySelector('[data-view="feed"]').addEventListener('click', () => {
   if (!activePanel) return;
-  $('panel-area').className = 'closed';
-  $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === 'feed'));
-  activePanel = null;
+  closeActivePanel('activity');
 });
 
 // =============================================================================
@@ -1523,7 +1631,13 @@ document.addEventListener('keydown', (event) => {
 });
 $('branch-text').addEventListener('input', () => resizeInput('branch-text'));
 
-$('branch-close').addEventListener('click', deselectConversation);
+$('branch-close').addEventListener('click', () => {
+  if (isMobileViewport()) {
+    setMobileView('chats');
+    return;
+  }
+  deselectConversation();
+});
 $('branch-toggle').addEventListener('click', () => {
   if (!activeConversationId) return;
   const conversation = conversations.get(activeConversationId);
@@ -1532,16 +1646,50 @@ $('branch-toggle').addEventListener('click', () => {
     console.error(error);
   });
 });
+$('branch-memex-toggle').addEventListener('click', () => {
+  setMemexExpanded(!memexExpanded);
+});
 
 $('new-chat').addEventListener('click', () => {
   deselectConversation();
 });
+$('panel-directory-close').addEventListener('click', () => {
+  setMobileView('chat');
+});
+$('panel-shell-close').addEventListener('click', () => {
+  closeActivePanel(isMobileViewport() ? 'panels' : null);
+});
+document.querySelectorAll('.mobile-nav-btn').forEach((button) => {
+  button.addEventListener('click', () => {
+    setMobileView(button.dataset.mobileView || 'chat');
+  });
+});
+
+function syncViewportMode() {
+  if (isMobileViewport()) {
+    if (mobileView === 'desktop') mobileView = 'chat';
+    if (!memexExpanded) {
+      updateMobileView();
+      return;
+    }
+    setMemexExpanded(false);
+    updateMobileView();
+    return;
+  }
+  setMemexExpanded(true);
+  updateMobileView();
+}
+
+if (mobileMq.addEventListener) mobileMq.addEventListener('change', syncViewportMode);
+else if (mobileMq.addListener) mobileMq.addListener(syncViewportMode);
 
 // =============================================================================
 // Init
 // =============================================================================
 
 Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
+  syncMobilePanelList();
+  syncViewportMode();
   connectSSE();
   updateStatus();
   updateMemex();
