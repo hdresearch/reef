@@ -66,7 +66,9 @@ function canReadTargetLogs(actor: RequestActor, target: VMNode): boolean {
   if (target.vmId === actor.vm.vmId) return true;
   if (actor.vm.parentId === target.vmId) return true;
   if (actor.vm.parentId && target.parentId && actor.vm.parentId === target.parentId) return true;
-  return vmTreeStore?.descendants(actor.vm.vmId).some((vm) => vm.vmId === target.vmId) || false;
+  return (
+    vmTreeStore?.descendants(actor.vm.vmId, { includeHistory: true }).some((vm) => vm.vmId === target.vmId) || false
+  );
 }
 
 // =============================================================================
@@ -116,8 +118,11 @@ routes.get("/", (c) => {
   const requestedAgentId = c.req.query("agentId");
   const level = c.req.query("level");
   const category = c.req.query("category");
+  const q = c.req.query("q");
   const since = c.req.query("since");
+  const until = c.req.query("until");
   const limit = c.req.query("limit");
+  const offset = c.req.query("offset");
 
   let agentName = requestedAgentName || undefined;
   let agentId = requestedAgentId || undefined;
@@ -150,11 +155,23 @@ routes.get("/", (c) => {
     agentId: agentId || undefined,
     level: level || undefined,
     category: category || undefined,
+    q: q || undefined,
     since: since ? Number.parseInt(since, 10) : undefined,
-    limit: limit ? Number.parseInt(limit, 10) : 100,
+    until: until ? Number.parseInt(until, 10) : undefined,
+    limit: limit ? Number.parseInt(limit, 10) : undefined,
+    offset: offset ? Number.parseInt(offset, 10) : undefined,
+  });
+  const totalCount = vmTreeStore.countLogs({
+    agentName: agentName || undefined,
+    agentId: agentId || undefined,
+    level: level || undefined,
+    category: category || undefined,
+    q: q || undefined,
+    since: since ? Number.parseInt(since, 10) : undefined,
+    until: until ? Number.parseInt(until, 10) : undefined,
   });
 
-  return c.json({ logs, count: logs.length });
+  return c.json({ logs, count: logs.length, totalCount });
 });
 
 // GET /_panel — debug view
@@ -163,46 +180,144 @@ routes.get("/_panel", (c) => {
     return c.html('<div style="font-family:monospace;color:#888">Logs service not initialized</div>');
   }
 
-  const recent = vmTreeStore.queryLogs({ limit: 30 });
-
-  function esc(s: string): string {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-
-  const levelColor: Record<string, string> = { info: "#4f9", warn: "#ff9800", error: "#f44" };
-
-  const rows = recent
-    .map((l) => {
-      const color = levelColor[l.level] || "#ccc";
-      const age = Math.round((Date.now() - l.createdAt) / 1000);
-      const cat = l.category ? `[${l.category}]` : "";
-      return `<tr>
-				<td style="padding:2px 6px;color:${color};font-size:11px">${esc(l.level)}</td>
-				<td style="padding:2px 6px;color:#64b5f6">${esc(l.agentName)}</td>
-				<td style="padding:2px 6px;color:#888;font-size:11px">${esc(cat)}</td>
-				<td style="padding:2px 6px">${esc(l.message.slice(0, 120))}</td>
-				<td style="padding:2px 6px;color:#666;font-size:11px">${age}s ago</td>
-			</tr>`;
-    })
-    .join("");
-
   return c.html(`
-		<div style="font-family:monospace;font-size:13px;color:#ccc">
-			<div style="margin-bottom:8px;color:#888">${recent.length} recent log entries</div>
-			${
-        recent.length > 0
-          ? `<table style="width:100%;border-collapse:collapse">
-						<thead><tr style="color:#666;font-size:11px;text-align:left;border-bottom:1px solid #333">
-							<th style="padding:2px 6px">Level</th>
-							<th style="padding:2px 6px">Agent</th>
-							<th style="padding:2px 6px">Category</th>
-							<th style="padding:2px 6px">Message</th>
-							<th style="padding:2px 6px">Age</th>
-						</tr></thead>
-						<tbody>${rows}</tbody>
-					</table>`
-          : '<div style="color:#666;font-style:italic">No logs yet</div>'
-      }
+		<div style="font-family:monospace;font-size:13px;color:#ccc;display:flex;flex-direction:column;gap:10px;min-height:0">
+			<div style="display:flex;align-items:end;justify-content:space-between;gap:12px;flex-wrap:wrap">
+				<div>
+					<div style="color:#ddd;font-size:12px">fleet logs</div>
+					<div id="logs-panel-summary" style="color:#888;font-size:11px">Loading full log history…</div>
+				</div>
+				<div style="color:#666;font-size:11px">Keyword + date range search runs server-side.</div>
+			</div>
+			<form id="logs-panel-filters" style="display:grid;grid-template-columns:2fr repeat(4,minmax(0,1fr)) auto auto;gap:8px;align-items:end">
+				<label style="display:flex;flex-direction:column;gap:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">
+					<span>keyword</span>
+					<input name="q" type="search" placeholder="decision, error, agent name, message…" style="background:#111;border:1px solid #333;color:#ddd;padding:6px 8px;border-radius:4px;font:inherit" />
+				</label>
+				<label style="display:flex;flex-direction:column;gap:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">
+					<span>from</span>
+					<input name="from" type="datetime-local" style="background:#111;border:1px solid #333;color:#ddd;padding:6px 8px;border-radius:4px;font:inherit" />
+				</label>
+				<label style="display:flex;flex-direction:column;gap:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">
+					<span>to</span>
+					<input name="to" type="datetime-local" style="background:#111;border:1px solid #333;color:#ddd;padding:6px 8px;border-radius:4px;font:inherit" />
+				</label>
+				<label style="display:flex;flex-direction:column;gap:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">
+					<span>level</span>
+					<select name="level" style="background:#111;border:1px solid #333;color:#ddd;padding:6px 8px;border-radius:4px;font:inherit">
+						<option value="">all</option>
+						<option value="info">info</option>
+						<option value="warn">warn</option>
+						<option value="error">error</option>
+					</select>
+				</label>
+				<label style="display:flex;flex-direction:column;gap:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">
+					<span>agent</span>
+					<input name="agent" type="text" placeholder="optional agent name" style="background:#111;border:1px solid #333;color:#ddd;padding:6px 8px;border-radius:4px;font:inherit" />
+				</label>
+				<button type="submit" style="background:#16213e;border:1px solid #2c4f7a;color:#d9f6ff;padding:6px 10px;border-radius:4px;font:inherit;cursor:pointer">search</button>
+				<button type="button" id="logs-panel-reset" style="background:#111;border:1px solid #333;color:#bbb;padding:6px 10px;border-radius:4px;font:inherit;cursor:pointer">reset</button>
+			</form>
+			<div id="logs-panel-table-wrap" style="min-height:0;overflow:auto;border:1px solid #222;border-radius:6px;background:#0c0c0c">
+				<table style="width:100%;border-collapse:collapse">
+					<thead style="position:sticky;top:0;background:#101010;z-index:1">
+						<tr style="color:#666;font-size:11px;text-align:left;border-bottom:1px solid #333">
+							<th style="padding:6px 8px">Time</th>
+							<th style="padding:6px 8px">Level</th>
+							<th style="padding:6px 8px">Agent</th>
+							<th style="padding:6px 8px">Category</th>
+							<th style="padding:6px 8px">Message</th>
+						</tr>
+					</thead>
+					<tbody id="logs-panel-body">
+						<tr><td colspan="5" style="padding:12px;color:#666;font-style:italic">Loading logs…</td></tr>
+					</tbody>
+				</table>
+			</div>
+			<script>
+				(() => {
+					const root = document.currentScript.parentElement;
+					const form = root.querySelector('#logs-panel-filters');
+					const reset = root.querySelector('#logs-panel-reset');
+					const body = root.querySelector('#logs-panel-body');
+					const summary = root.querySelector('#logs-panel-summary');
+					const levelColor = { info: '#4f9', warn: '#ff9800', error: '#f44' };
+
+					function esc(s) {
+						return String(s)
+							.replace(/&/g, '&amp;')
+							.replace(/</g, '&lt;')
+							.replace(/>/g, '&gt;');
+					}
+
+					function toEpoch(value, endOfMinute = false) {
+						if (!value) return '';
+						const date = new Date(value);
+						if (Number.isNaN(date.getTime())) return '';
+						if (endOfMinute) date.setSeconds(59, 999);
+						return String(date.getTime());
+					}
+
+					async function loadLogs() {
+						const params = new URLSearchParams();
+						const q = form.elements.q.value.trim();
+						const from = form.elements.from.value;
+						const to = form.elements.to.value;
+						const level = form.elements.level.value;
+						const agent = form.elements.agent.value.trim();
+						if (q) params.set('q', q);
+						if (from) params.set('since', toEpoch(from));
+						if (to) params.set('until', toEpoch(to, true));
+						if (level) params.set('level', level);
+						if (agent) params.set('agent', agent);
+
+						summary.textContent = 'Loading…';
+						const res = await fetch(\`\${window.location.origin}/logs/?\${params.toString()}\`);
+						const data = await res.json();
+						if (!res.ok) {
+							summary.textContent = data.error || 'Failed to load logs';
+							body.innerHTML = \`<tr><td colspan="5" style="padding:12px;color:#f55">\${esc(data.error || 'Failed to load logs')}</td></tr>\`;
+							return;
+						}
+
+						const logs = data.logs || [];
+						summary.textContent = \`\${data.totalCount ?? logs.length} matching log(s)\${logs.length !== (data.totalCount ?? logs.length) ? \` · showing \${logs.length}\` : ''}\`;
+						if (!logs.length) {
+							body.innerHTML = '<tr><td colspan="5" style="padding:12px;color:#666;font-style:italic">No logs match the current filters.</td></tr>';
+							return;
+						}
+
+						body.innerHTML = logs.map((log) => {
+							const created = new Date(log.createdAt).toLocaleString();
+							const meta = log.metadata ? \` — \${JSON.stringify(log.metadata)}\` : '';
+							return \`<tr style="border-bottom:1px solid #161616">
+								<td style="padding:6px 8px;color:#888;white-space:nowrap">\${esc(created)}</td>
+								<td style="padding:6px 8px;color:\${levelColor[log.level] || '#ccc'};white-space:nowrap">\${esc(log.level)}</td>
+								<td style="padding:6px 8px;color:#64b5f6;white-space:nowrap">\${esc(log.agentName)}</td>
+								<td style="padding:6px 8px;color:#888;white-space:nowrap">\${esc(log.category || '')}</td>
+								<td style="padding:6px 8px;word-break:break-word">\${esc(log.message + meta)}</td>
+							</tr>\`;
+						}).join('');
+					}
+
+					form.addEventListener('submit', (event) => {
+						event.preventDefault();
+						loadLogs().catch((error) => {
+							summary.textContent = error.message || 'Failed to load logs';
+						});
+					});
+					reset.addEventListener('click', () => {
+						form.reset();
+						loadLogs().catch((error) => {
+							summary.textContent = error.message || 'Failed to load logs';
+						});
+					});
+
+					loadLogs().catch((error) => {
+						summary.textContent = error.message || 'Failed to load logs';
+					});
+				})();
+			</script>
 		</div>
 	`);
 });
@@ -260,6 +375,9 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
       agent: Type.Optional(Type.String({ description: "Agent name to read logs for (default: yourself)" })),
       level: Type.Optional(Type.String({ description: "Filter by level: info, warn, error" })),
       category: Type.Optional(Type.String({ description: "Filter by category: tool_call, decision, error, etc." })),
+      q: Type.Optional(Type.String({ description: "Keyword search across agent, category, message, and metadata" })),
+      since: Type.Optional(Type.Number({ description: "Epoch ms lower bound for createdAt" })),
+      until: Type.Optional(Type.Number({ description: "Epoch ms upper bound for createdAt" })),
       limit: Type.Optional(Type.Number({ description: "Max entries to return (default: 20)" })),
     }),
     async execute(_id, params) {
@@ -270,6 +388,9 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
         qs += `&agent=${encodeURIComponent(agentName)}`;
         if (params.level) qs += `&level=${params.level}`;
         if (params.category) qs += `&category=${encodeURIComponent(params.category)}`;
+        if (params.q) qs += `&q=${encodeURIComponent(params.q)}`;
+        if (params.since) qs += `&since=${params.since}`;
+        if (params.until) qs += `&until=${params.until}`;
 
         const result = await client.api<any>("GET", `/logs/?${qs}`);
         const logs = result.logs || [];
@@ -358,12 +479,15 @@ const routeDocs: Record<string, RouteDocs> = {
       agentId: { type: "string", description: "Filter by VM ID" },
       level: { type: "string", description: "Filter by level" },
       category: { type: "string", description: "Filter by category" },
+      q: { type: "string", description: "Keyword search across agent, level, category, message, and metadata" },
       since: { type: "string", description: "Epoch ms timestamp" },
+      until: { type: "string", description: "Epoch ms timestamp upper bound" },
       limit: { type: "string", description: "Max results (default: 100)" },
+      offset: { type: "string", description: "Offset for pagination" },
     },
-    response: "{ logs: [...], count }",
+    response: "{ logs: [...], count, totalCount }",
   },
-  "GET /_panel": { summary: "HTML debug view of recent logs", response: "text/html" },
+  "GET /_panel": { summary: "HTML log browser with keyword and date-range search", response: "text/html" },
 };
 
 const logs: ServiceModule = {

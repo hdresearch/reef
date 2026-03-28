@@ -57,10 +57,12 @@ routes.get("/vms", (c) => {
   const category = c.req.query("category") as VMCategory | undefined;
   const parentId = c.req.query("parentId") || c.req.query("parentVmId");
   const status = c.req.query("status") as any;
+  const includeHistory = c.req.query("includeHistory") === "true";
   const vms = store.listVMs({
     category: category || undefined,
     parentId: parentId || undefined,
     status: status || undefined,
+    includeHistory,
   });
   return c.json({ vms: vms.map(serializeVm), count: vms.length });
 });
@@ -125,8 +127,23 @@ routes.post("/vms/:id/heartbeat", (c) => {
 // GET /tree — full tree view (all roots or from a specific VM)
 routes.get("/tree", (c) => {
   const rootId = c.req.query("root");
-  const tree = store.tree(rootId || undefined);
-  return c.json({ tree: tree.map(serializeTree), count: store.count() });
+  const includeHistory = c.req.query("includeHistory") === "true";
+  const tree = store.tree(rootId || undefined, { includeHistory });
+  const visibleCount = store.visibleCount(tree);
+  return c.json({
+    tree: tree.map(serializeTree),
+    count: visibleCount,
+    visibleCount,
+    totalRegistered: store.count(),
+    mode: includeHistory ? "history" : "active",
+    historyIncluded: includeHistory,
+    notes: includeHistory
+      ? ["History view preserves original lineage, including stopped, destroyed, and rewound generations."]
+      : [
+          "Active view shows only operationally relevant nodes by default.",
+          "Running resource infrastructure may be promoted under the nearest active ancestor for visibility without mutating stored lineage.",
+        ],
+  });
 });
 
 // GET /vms/:id/ancestors — path to root
@@ -140,14 +157,16 @@ routes.get("/vms/:id/ancestors", (c) => {
 routes.get("/vms/:id/descendants", (c) => {
   const vm = store.getVM(c.req.param("id"));
   if (!vm) return c.json({ error: "VM not found" }, 404);
-  return c.json({ descendants: store.descendants(c.req.param("id")).map(serializeVm) });
+  const includeHistory = c.req.query("includeHistory") === "true";
+  return c.json({ descendants: store.descendants(c.req.param("id"), { includeHistory }).map(serializeVm) });
 });
 
 // GET /vms/:id/children — direct children
 routes.get("/vms/:id/children", (c) => {
   const vm = store.getVM(c.req.param("id"));
   if (!vm) return c.json({ error: "VM not found" }, 404);
-  return c.json({ children: store.children(c.req.param("id")).map(serializeVm) });
+  const includeHistory = c.req.query("includeHistory") === "true";
+  return c.json({ children: store.children(c.req.param("id"), { includeHistory }).map(serializeVm) });
 });
 
 // GET /vms/:a/diff/:b — config diff
@@ -177,7 +196,12 @@ routes.get("/find/capability/:name", (c) => {
 
 // GET /fleet/status — live fleet metrics
 routes.get("/fleet/status", (c) => {
-  return c.json(store.fleetStatus());
+  const includeHistory = c.req.query("includeHistory") === "true";
+  return c.json({
+    ...store.fleetStatus(includeHistory),
+    mode: includeHistory ? "history" : "active",
+    historyIncluded: includeHistory,
+  });
 });
 
 // POST /snapshot — create a snapshot now
@@ -188,8 +212,9 @@ routes.post("/snapshot", (c) => {
 
 // GET /_panel — dashboard
 routes.get("/_panel", (c) => {
-  const status = store.fleetStatus();
-  const tree = store.tree();
+  const includeHistory = c.req.query("includeHistory") === "true";
+  const status = store.fleetStatus(includeHistory);
+  const tree = store.tree(undefined, { includeHistory });
 
   function renderTree(views: { vm: any; children: any[] }[], depth = 0): string {
     return views
@@ -440,15 +465,21 @@ const vmTree: ServiceModule = {
       name: "vm_tree_view",
       label: "VM Tree: View",
       description:
-        "View the VM lineage tree. Shows which services and extensions are on each VM and where it sits in the hierarchy.",
+        "View the VM lineage tree. Active fleet is shown by default; pass includeHistory to include stopped/destroyed/rewound generations for audit.",
       parameters: Type.Object({
         vmId: Type.Optional(Type.String({ description: "Root VM ID to view subtree from (default: all roots)" })),
+        includeHistory: Type.Optional(
+          Type.Boolean({ description: "Include historical stopped/destroyed/rewound generations" }),
+        ),
       }),
       async execute(_id, params) {
         if (!client.getBaseUrl()) return client.noUrl();
         try {
-          const qs = params.vmId ? `?root=${encodeURIComponent(params.vmId)}` : "";
-          const result = await client.api<any>("GET", `/vm-tree/tree${qs}`);
+          const search = new URLSearchParams();
+          if (params.vmId) search.set("root", params.vmId);
+          if (params.includeHistory) search.set("includeHistory", "true");
+          const qs = search.toString();
+          const result = await client.api<any>("GET", `/vm-tree/tree${qs ? `?${qs}` : ""}`);
           return client.ok(JSON.stringify(result, null, 2), { tree: result });
         } catch (e: any) {
           return client.err(e.message);
@@ -558,11 +589,13 @@ const vmTree: ServiceModule = {
 
   routeDocs: {
     "GET /vms": {
-      summary: "List VMs with optional category/parent/status filter",
+      summary:
+        "List VMs with optional category/parent/status filter. Active fleet only by default; add includeHistory=true for historical generations.",
       query: {
         category: { type: "string", description: "infra_vm | lieutenant | agent_vm | swarm_vm | resource_vm" },
         parentId: { type: "string", description: "Filter by parent" },
         status: { type: "string", description: "creating | running | paused | stopped | error | destroyed | rewound" },
+        includeHistory: { type: "boolean", description: "Include historical stopped/destroyed/rewound generations" },
       },
       response: "{ vms: [...], count }",
     },
@@ -583,22 +616,46 @@ const vmTree: ServiceModule = {
     "DELETE /vms/:id": { summary: "Mark a VM as destroyed", params: { id: { type: "string", required: true } } },
     "POST /vms/:id/heartbeat": { summary: "Update VM heartbeat", params: { id: { type: "string", required: true } } },
     "GET /tree": {
-      summary: "Full tree view — all roots or subtree from ?root=vmId",
-      query: { root: { type: "string", description: "Root VM ID" } },
+      summary: "Tree view for the active fleet by default, or include historical generations explicitly.",
+      query: {
+        root: { type: "string", description: "Root VM ID" },
+        includeHistory: { type: "boolean", description: "Include historical stopped/destroyed/rewound generations" },
+      },
       response: "{ tree: [...], count }",
     },
     "GET /vms/:id/ancestors": { summary: "Ancestor chain to root" },
-    "GET /vms/:id/descendants": { summary: "All descendants (BFS)" },
-    "GET /vms/:id/children": { summary: "Direct children" },
+    "GET /vms/:id/descendants": {
+      summary:
+        "All descendants (BFS). Active descendants by default; add includeHistory=true for historical generations.",
+      query: {
+        includeHistory: { type: "boolean", description: "Include historical stopped/destroyed/rewound generations" },
+      },
+    },
+    "GET /vms/:id/children": {
+      summary: "Direct children. Active children by default; add includeHistory=true for historical generations.",
+      query: {
+        includeHistory: { type: "boolean", description: "Include historical stopped/destroyed/rewound generations" },
+      },
+    },
     "GET /vms/:a/diff/:b": { summary: "Config diff between two VMs" },
     "GET /find/service/:name": { summary: "Find VMs with a specific service" },
     "GET /find/capability/:name": { summary: "Find VMs with a specific capability" },
     "GET /fleet/status": {
-      summary: "Live fleet metrics (alive VMs by category, total spawned)",
+      summary: "Fleet metrics. Active fleet only by default; add includeHistory=true for historical generations.",
+      query: {
+        includeHistory: { type: "boolean", description: "Include historical stopped/destroyed/rewound generations" },
+      },
       response: "{ alive, byCategory, byStatus, totalSpawned }",
     },
     "POST /snapshot": { summary: "Create a DB snapshot" },
-    "GET /_panel": { summary: "HTML dashboard with tree visualization", response: "text/html" },
+    "GET /_panel": {
+      summary:
+        "HTML dashboard with active fleet visualization by default; add includeHistory=true for historical generations.",
+      query: {
+        includeHistory: { type: "boolean", description: "Include historical stopped/destroyed/rewound generations" },
+      },
+      response: "text/html",
+    },
   },
 };
 

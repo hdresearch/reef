@@ -168,6 +168,18 @@ export interface LogEntry {
   createdAt: number;
 }
 
+export interface LogQueryFilters {
+  agentName?: string;
+  agentId?: string;
+  level?: string;
+  category?: string;
+  since?: number;
+  until?: number;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export interface UsageRecord {
   id: string;
   agentId: string;
@@ -226,6 +238,13 @@ export interface TreeView {
   children: TreeView[];
 }
 
+export interface VMListFilters {
+  category?: VMCategory;
+  status?: VMStatus;
+  parentId?: string;
+  includeHistory?: boolean;
+}
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -233,6 +252,20 @@ export interface TreeView {
 const VALID_CATEGORIES = new Set<VMCategory>(["infra_vm", "lieutenant", "agent_vm", "swarm_vm", "resource_vm"]);
 const VALID_STATUSES = new Set<VMStatus>(["creating", "running", "paused", "stopped", "error", "destroyed", "rewound"]);
 const DEFAULT_CONFIG: ReefConfig = { services: [], capabilities: [] };
+const ACTIVE_STATUSES: VMStatus[] = ["creating", "running", "paused", "error"];
+
+function isActiveStatus(status: VMStatus): boolean {
+  return ACTIVE_STATUSES.includes(status);
+}
+
+function normalizeLogSearchQuery(input: string): string {
+  return input
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => `"${token.replace(/"/g, '""')}"`)
+    .join(" ");
+}
 
 function normalizeReefConfig(value: unknown): ReefConfig {
   if (!value || typeof value !== "object") return { ...DEFAULT_CONFIG };
@@ -390,10 +423,24 @@ export class VMTreeStore {
 			)
 		`);
 
+    this.db.exec(`
+			CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5(
+				agent_name,
+				level,
+				category,
+				message,
+				metadata,
+				content='logs',
+				content_rowid='rowid'
+			)
+		`);
+
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_logs_agent_name ON logs(agent_name, created_at)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_logs_agent_id ON logs(agent_id, created_at)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level, created_at)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_logs_category ON logs(category, created_at)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at)");
+    this.db.exec("INSERT INTO logs_fts(logs_fts) VALUES ('rebuild')");
 
     this.db.exec(`
 			CREATE TABLE IF NOT EXISTS usage_records (
@@ -544,7 +591,7 @@ export class VMTreeStore {
   getVMByName(name: string, opts: { activeOnly?: boolean } = {}): VMNode | undefined {
     const activeOnly = opts.activeOnly ?? true;
     const sql = activeOnly
-      ? "SELECT * FROM vm_tree WHERE name = ? AND status IN ('creating', 'running', 'paused') ORDER BY created_at DESC LIMIT 1"
+      ? "SELECT * FROM vm_tree WHERE name = ? AND status IN ('creating', 'running', 'paused', 'error') ORDER BY created_at DESC LIMIT 1"
       : "SELECT * FROM vm_tree WHERE name = ? ORDER BY created_at DESC LIMIT 1";
     const row = this.db.query(sql).get(name) as any;
     return row ? rowToVMNode(row) : undefined;
@@ -650,10 +697,11 @@ export class VMTreeStore {
     });
   }
 
-  listVMs(filters?: { category?: VMCategory; status?: VMStatus; parentId?: string }): VMNode[] {
+  listVMs(filters?: VMListFilters): VMNode[] {
     let sql = "SELECT * FROM vm_tree";
     const conditions: string[] = [];
     const params: any[] = [];
+    const includeHistory = filters?.includeHistory ?? false;
 
     if (filters?.category) {
       conditions.push("category = ?");
@@ -666,6 +714,10 @@ export class VMTreeStore {
     if (filters?.parentId) {
       conditions.push("parent_id = ?");
       params.push(filters.parentId);
+    }
+    if (!includeHistory && !filters?.status) {
+      conditions.push(`status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`);
+      params.push(...ACTIVE_STATUSES);
     }
 
     if (conditions.length) sql += ` WHERE ${conditions.join(" AND ")}`;
@@ -681,8 +733,16 @@ export class VMTreeStore {
   // Lineage queries
   // =========================================================================
 
-  children(vmId: string): VMNode[] {
-    return this.db.query("SELECT * FROM vm_tree WHERE parent_id = ? ORDER BY created_at").all(vmId).map(rowToVMNode);
+  children(vmId: string, opts: { includeHistory?: boolean } = {}): VMNode[] {
+    const includeHistory = opts.includeHistory ?? false;
+    const sql = includeHistory
+      ? "SELECT * FROM vm_tree WHERE parent_id = ? ORDER BY created_at"
+      : `SELECT * FROM vm_tree WHERE parent_id = ? AND status IN (${ACTIVE_STATUSES.map(() => "?").join(",")}) ORDER BY created_at`;
+    const params = includeHistory ? [vmId] : [vmId, ...ACTIVE_STATUSES];
+    return this.db
+      .query(sql)
+      .all(...params)
+      .map(rowToVMNode);
   }
 
   ancestors(vmId: string): VMNode[] {
@@ -702,17 +762,18 @@ export class VMTreeStore {
     return result;
   }
 
-  descendants(vmId: string): VMNode[] {
+  descendants(vmId: string, opts: { includeHistory?: boolean } = {}): VMNode[] {
     const result: VMNode[] = [];
     const queue: string[] = [vmId];
     const seen = new Set<string>();
+    const includeHistory = opts.includeHistory ?? false;
 
     while (queue.length > 0) {
       const id = queue.shift()!;
       if (seen.has(id)) continue;
       seen.add(id);
 
-      const kids = this.children(id);
+      const kids = this.children(id, { includeHistory });
       for (const kid of kids) {
         result.push(kid);
         queue.push(kid.vmId);
@@ -722,27 +783,80 @@ export class VMTreeStore {
     return result;
   }
 
-  tree(vmId?: string): TreeView[] {
+  tree(vmId?: string, opts: { includeHistory?: boolean } = {}): TreeView[] {
+    const includeHistory = opts.includeHistory ?? false;
     if (vmId) {
       const vm = this.getVM(vmId);
       if (!vm) return [];
-      return [this.buildTree(vm)];
+      if (!includeHistory && !isActiveStatus(vm.status)) return [];
+      const tree = [this.buildTree(vm, { includeHistory })];
+      return includeHistory ? tree : this.attachPromotedActiveResources(tree, vm.vmId);
     }
 
+    const sql = includeHistory
+      ? "SELECT * FROM vm_tree WHERE parent_id IS NULL ORDER BY created_at"
+      : `SELECT * FROM vm_tree WHERE parent_id IS NULL AND status IN (${ACTIVE_STATUSES.map(() => "?").join(",")}) ORDER BY created_at`;
     const roots = this.db
-      .query("SELECT * FROM vm_tree WHERE parent_id IS NULL ORDER BY created_at")
-      .all()
+      .query(sql)
+      .all(...(includeHistory ? [] : ACTIVE_STATUSES))
       .map(rowToVMNode);
+    const builtRoots = roots.map((r) => this.buildTree(r, { includeHistory }));
+    if (includeHistory) return builtRoots;
 
-    return roots.map((r) => this.buildTree(r));
+    return this.attachPromotedActiveResources(builtRoots);
   }
 
-  private buildTree(vm: VMNode): TreeView {
-    const kids = this.children(vm.vmId);
+  private buildTree(vm: VMNode, opts: { includeHistory?: boolean } = {}): TreeView {
+    const kids = this.children(vm.vmId, opts);
     return {
       vm,
-      children: kids.map((k) => this.buildTree(k)),
+      children: kids.map((k) => this.buildTree(k, opts)),
     };
+  }
+
+  private attachPromotedActiveResources(roots: TreeView[], scopeRootId?: string): TreeView[] {
+    const activeVms = this.listVMs({ includeHistory: false });
+    const activeIds = new Set(activeVms.map((vm) => vm.vmId));
+    const resourceRoots = activeVms.filter(
+      (vm) =>
+        vm.category === "resource_vm" &&
+        vm.parentId &&
+        !activeIds.has(vm.parentId) &&
+        (!scopeRootId || this.ancestors(vm.vmId).some((ancestor) => ancestor.vmId === scopeRootId)),
+    );
+    if (!resourceRoots.length) return roots;
+
+    const byId = new Map<string, TreeView>();
+    const index = (views: TreeView[]) => {
+      for (const view of views) {
+        byId.set(view.vm.vmId, view);
+        if (view.children.length) index(view.children);
+      }
+    };
+    index(roots);
+
+    for (const resource of resourceRoots) {
+      const resourceTree = this.buildTree(resource, { includeHistory: false });
+      const ancestor = this.findNearestVisibleAncestor(resource.parentId, activeIds);
+      if (ancestor && byId.has(ancestor)) {
+        byId.get(ancestor)!.children.push(resourceTree);
+        index([resourceTree]);
+      } else if (!byId.has(resource.vmId)) {
+        roots.push(resourceTree);
+        index([resourceTree]);
+      }
+    }
+
+    return roots;
+  }
+
+  private findNearestVisibleAncestor(vmId: string | null, activeIds: Set<string>): string | null {
+    let current = vmId;
+    while (current) {
+      if (activeIds.has(current)) return current;
+      current = this.getVM(current)?.parentId || null;
+    }
+    return null;
   }
 
   // =========================================================================
@@ -914,6 +1028,14 @@ export class VMTreeStore {
       ],
     );
 
+    const row = this.db.query("SELECT rowid, metadata FROM logs WHERE id = ?").get(id) as any;
+    if (row?.rowid) {
+      this.db.run(
+        "INSERT INTO logs_fts(rowid, agent_name, level, category, message, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+        [row.rowid, input.agentName, input.level, input.category || "", input.message, row.metadata || ""],
+      );
+    }
+
     return {
       id,
       agentId: input.agentId,
@@ -926,47 +1048,62 @@ export class VMTreeStore {
     };
   }
 
-  queryLogs(filters: {
-    agentName?: string;
-    agentId?: string;
-    level?: string;
-    category?: string;
-    since?: number;
-    limit?: number;
-  }): LogEntry[] {
-    let sql = "SELECT * FROM logs";
+  private buildLogQuery(filters: LogQueryFilters, select = "SELECT logs.* FROM logs"): { sql: string; params: any[] } {
+    let sql = select;
     const conditions: string[] = [];
     const params: any[] = [];
+    const q = filters.q?.trim();
+
+    if (q) {
+      sql += " JOIN logs_fts ON logs_fts.rowid = logs.rowid";
+      conditions.push("logs_fts MATCH ?");
+      params.push(normalizeLogSearchQuery(q));
+    }
 
     if (filters.agentName) {
-      conditions.push("agent_name = ?");
+      conditions.push("logs.agent_name = ?");
       params.push(filters.agentName);
     }
     if (filters.agentId) {
-      conditions.push("agent_id = ?");
+      conditions.push("logs.agent_id = ?");
       params.push(filters.agentId);
     }
     if (filters.level) {
-      conditions.push("level = ?");
+      conditions.push("logs.level = ?");
       params.push(filters.level);
     }
     if (filters.category) {
-      conditions.push("category = ?");
+      conditions.push("logs.category = ?");
       params.push(filters.category);
     }
     if (filters.since) {
-      conditions.push("created_at >= ?");
+      conditions.push("logs.created_at >= ?");
       params.push(filters.since);
+    }
+    if (filters.until) {
+      conditions.push("logs.created_at <= ?");
+      params.push(filters.until);
     }
 
     if (conditions.length) sql += ` WHERE ${conditions.join(" AND ")}`;
-    sql += " ORDER BY created_at DESC";
+    return { sql, params };
+  }
+
+  queryLogs(filters: LogQueryFilters): LogEntry[] {
+    const { sql: baseSql, params } = this.buildLogQuery(filters);
+    let sql = `${baseSql} ORDER BY logs.created_at DESC`;
     if (filters.limit) sql += ` LIMIT ${filters.limit}`;
+    if (filters.offset) sql += ` OFFSET ${filters.offset}`;
 
     return this.db
       .query(sql)
       .all(...params)
       .map(rowToLogEntry);
+  }
+
+  countLogs(filters: LogQueryFilters): number {
+    const { sql, params } = this.buildLogQuery(filters, "SELECT COUNT(*) as c FROM logs");
+    return ((this.db.query(sql).get(...params) as any)?.c || 0) as number;
   }
 
   // =========================================================================
@@ -1188,7 +1325,7 @@ export class VMTreeStore {
     const byAgentMap = new Map(byAgent.map((row) => [row.agentId, row]));
     const lineages = byAgent
       .map((row) => {
-        const descendants = this.descendants(row.agentId)
+        const descendants = this.descendants(row.agentId, { includeHistory: true })
           .map((vm) => byAgentMap.get(vm.vmId))
           .filter((entry): entry is NonNullable<typeof entry> => !!entry);
         const subtreeTokens = row.totalTokens + descendants.reduce((sum, child) => sum + child.totalTokens, 0);
@@ -1535,27 +1672,38 @@ export class VMTreeStore {
   // Fleet status
   // =========================================================================
 
-  fleetStatus(): {
+  fleetStatus(includeHistory = false): {
     alive: number;
     byCategory: Record<string, number>;
     byStatus: Record<string, number>;
     totalSpawned: number;
   } {
-    const alive =
-      (this.db.query("SELECT COUNT(*) as c FROM vm_tree WHERE status NOT IN ('destroyed', 'rewound')").get() as any)
-        ?.c || 0;
+    const activeWhere = `status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`;
+    const alive = includeHistory
+      ? (this.db.query("SELECT COUNT(*) as c FROM vm_tree WHERE status NOT IN ('destroyed', 'rewound')").get() as any)
+          ?.c || 0
+      : (this.db.query(`SELECT COUNT(*) as c FROM vm_tree WHERE ${activeWhere}`).get(...ACTIVE_STATUSES) as any)?.c ||
+        0;
     const totalSpawned = (this.db.query("SELECT COUNT(*) as c FROM vm_tree").get() as any)?.c || 0;
 
     const byCategory: Record<string, number> = {};
-    const catRows = this.db
-      .query(
-        "SELECT category, COUNT(*) as c FROM vm_tree WHERE status NOT IN ('destroyed', 'rewound') GROUP BY category",
-      )
-      .all() as any[];
+    const catRows = includeHistory
+      ? (this.db
+          .query(
+            "SELECT category, COUNT(*) as c FROM vm_tree WHERE status NOT IN ('destroyed', 'rewound') GROUP BY category",
+          )
+          .all() as any[])
+      : (this.db
+          .query(`SELECT category, COUNT(*) as c FROM vm_tree WHERE ${activeWhere} GROUP BY category`)
+          .all(...ACTIVE_STATUSES) as any[]);
     for (const row of catRows) byCategory[row.category] = row.c;
 
     const byStatus: Record<string, number> = {};
-    const statusRows = this.db.query("SELECT status, COUNT(*) as c FROM vm_tree GROUP BY status").all() as any[];
+    const statusRows = includeHistory
+      ? (this.db.query("SELECT status, COUNT(*) as c FROM vm_tree GROUP BY status").all() as any[])
+      : (this.db
+          .query(`SELECT status, COUNT(*) as c FROM vm_tree WHERE ${activeWhere} GROUP BY status`)
+          .all(...ACTIVE_STATUSES) as any[]);
     for (const row of statusRows) byStatus[row.status] = row.c;
 
     return { alive, byCategory, byStatus, totalSpawned };
@@ -1611,6 +1759,18 @@ export class VMTreeStore {
 
   count(): number {
     return (this.db.query("SELECT COUNT(*) as c FROM vm_tree").get() as any)?.c || 0;
+  }
+
+  visibleCount(tree: TreeView[]): number {
+    let count = 0;
+    const walk = (views: TreeView[]) => {
+      for (const view of views) {
+        count += 1;
+        if (view.children.length) walk(view.children);
+      }
+    };
+    walk(tree);
+    return count;
   }
 
   flush(): void {}

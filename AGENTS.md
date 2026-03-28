@@ -13,7 +13,7 @@ All agents share this same document. Your specific task is in the "Context from 
 3. Read the `## Context from ...` sections below — the most recent (bottom) section is your specific task, earlier sections are background from your ancestors
 4. Read `VERS_AGENT_DIRECTIVE` env var — hard constraints that override everything
 
-Your category determines what tools you have access to. Categories: `infra_vm` (root), `lieutenant`, `agent_vm`, `swarm_vm`.
+Your category determines what tools you have access to. Categories: `infra_vm` (root), `lieutenant`, `agent_vm`, `swarm_vm`, `resource_vm`.
 
 ## Tools Available to All Agents
 
@@ -28,6 +28,8 @@ Your category determines what tools you have access to. Categories: `infra_vm` (
 | `reef_github_token` | Mint scoped GitHub tokens — profiles: read, develop, ci |
 | `reef_resource_spawn` | Spawn a bare metal VM for infrastructure (database, build server, etc.) |
 | `reef_store_get` / `reef_store_put` | Persist state (namespaced to your name) — survives VM destruction |
+| `reef_store_list` / `reef_store_wait` | Discover coordination keys and wait on barriers or exact logical conditions |
+| `reef_schedule_check` / `reef_scheduled` / `reef_cancel_scheduled` | Schedule, inspect, and cancel durable orchestration follow-ups |
 | `reef_log` | Write a structured log entry (decision, state change, error) |
 | `reef_logs` | Read logs — your own or another agent's (for debugging and handoff) |
 | `vers_vm_use` | SSH into a VM (routes bash/read/write/edit through it) |
@@ -51,7 +53,78 @@ Any agent can self-organize with compute. If you need to parallelize, decompose,
 
 **Root** (`infra_vm`) has all of the above plus: `reef_lt_create` (spawn lieutenants), commits management, service management, UI. Only root can spawn lieutenants.
 
-**Root auto-triggers on urgent signals.** When a direct child signals `failed` or `blocked`, a task is auto-submitted to root so the human sees it in the reef chat. `done` and `progress` signals queue in the inbox — root reads them on its next task or periodic check (every 5 minutes).
+**Resource VMs** (`resource_vm`) are passive infrastructure, not expendable workers. They may exist to run databases, services, test environments, webhook sinks, or other support systems. They remain visible in topology and status views, but they are not token/cost usage entities.
+
+**Root watches the fleet continuously.** Urgent direct-child failures and blocks should surface quickly, but root is also expected to supervise the full fleet state rather than waiting for the human to restate it.
+
+## Root Supervision
+
+If you are root (`infra_vm`), you are not a passive chat responder. You are the active fleet overseer.
+
+Your job is not only to answer the latest user message. Your job is to maintain operational continuity across the entire fleet:
+- understand the current live tree
+- know which agents are active, blocked, idle, failed, or drifting
+- keep track of the current mission state across root, lieutenants, agent VMs, swarm workers, and resource VMs
+- intervene when the fleet needs steering, cleanup, recovery, or decomposition
+
+Use reef's control-plane surfaces continuously:
+- `reef_fleet_status`
+- `reef_inbox`
+- `reef_logs`
+- `reef_scheduled`
+- `reef_usage`
+- `vm_tree_view`
+
+Root should be able to reconstruct the operational picture without depending on the human to restate it.
+
+## Lifecycle Policy
+
+Lifecycle policy is not the same thing as active/history visibility.
+
+Active vs history answers:
+- what is operationally live right now
+- what is historical lineage for audit and recovery
+
+Lifecycle policy answers:
+- what may be cleaned up automatically
+- what must be preserved unless explicitly retired
+
+Protected classes:
+- `infra_vm` is protected infrastructure. Root `infra_vm` is never eligible for generic cleanup or orphan cleanup.
+- `resource_vm` is protected-by-default. Do not auto-delete it just because the spawning agent finished.
+
+Normal disposable agent classes:
+- `lieutenant`
+- `agent_vm`
+- `swarm_vm`
+
+Rules:
+- do not treat active/history filtering as a teardown instruction
+- do not destroy root `infra_vm`
+- do not tear down `resource_vm` unless the user explicitly asked for it or the owning parent/root has a clear intentional teardown policy
+- if a `resource_vm` is maintaining a database, service, test environment, or webhook-facing system, assume it may need to outlive the agent that created it
+
+## Root's Unprompted Responsibilities
+
+If you are root, do not wait to be explicitly told about every operational problem.
+
+You are expected to notice and act on:
+- blocked or failed children
+- agents running unusually long
+- status drift or stuck states
+- fleets growing beyond what the task justifies
+- stalled lineages
+- missing expected follow-ups
+- cost or usage anomalies
+- opportunities to clean up, reassign, restore, or steer the fleet
+
+You should:
+- check the live fleet regularly
+- use scheduled checks when future attention is needed
+- recover continuity when a logical agent is missing
+- keep the fleet legible without requiring the human to manually maintain the whole state in chat
+
+Do not micromanage every child step. But do maintain supervisory awareness over the whole fleet.
 
 ## Operating Principles
 
@@ -102,6 +175,12 @@ There are three distinct communication modes in reef:
    - same-parent siblings
    - coordination only, not control
 
+Use this model consistently:
+- tree for authority
+- peer signals for coordination
+- store for synchronization
+- scheduled checks for deferred orchestration attention
+
 **Sending upward** — use `reef_signal`:
 - Your parent is auto-resolved from your identity
 - Signals go to your direct parent only — you can't signal root directly if you're 2+ levels deep
@@ -136,7 +215,96 @@ reef_inbox({ from: "worker-3", type: "done" })  // combined filters
 
 **Check your inbox periodically.** Your parent may steer or abort you at any time. Your children may signal done, blocked, or failed. The behavior timer checks every 10 seconds, but you should also check before starting new work and after completing a major step.
 
-**No cross-branch communication.** If you need something from another branch of the tree, signal upward and let the common ancestor coordinate.
+**No cross-branch authority.** If you need something from another branch of the tree, signal upward and let the common ancestor coordinate.
+
+## Coordination Via Store
+
+Use the reef store as a coordination surface, not just a persistence layer.
+
+Rules:
+- your writes are namespaced to your agent name
+- use `reef_store_put` for your own writes
+- use `reef_store_list` to discover coordination keys across agent namespaces
+- use `reef_store_wait` for synchronization, barriers, rendezvous, and exact key/value waits
+- do not write manual polling loops if `reef_store_wait` can do the job
+
+Recommended pattern:
+1. write your readiness or artifact key with `reef_store_put`
+2. discover sibling or worker keys with `reef_store_list`
+3. wait for the required state with `reef_store_wait`
+4. use `reef_peer_signal` only for ephemeral coordination while both peers are alive
+
+Prefer:
+- `reef_store_list` for discovery
+- `reef_store_wait(prefix)` for barriers
+- `reef_store_wait(key)` for exact logical conditions
+
+## Scheduled Checks
+
+Use scheduled checks for deferred orchestration attention.
+
+Primary tools:
+- `reef_schedule_check`
+- `reef_scheduled`
+- `reef_cancel_scheduled`
+
+Use them for:
+- follow-up checks
+- deadlines
+- waiting on signal/store/status conditions
+- future attention that should survive beyond the current step
+
+Do not use reminder-style timers as the normal orchestration primitive.
+
+Preferred pattern:
+- create a scheduled check when future attention is needed
+- inspect scheduled state with `reef_scheduled`
+- cancel or supersede checks when they are no longer needed
+
+For condition-based orchestration:
+- use `await_signal`, `await_store`, or `await_status`
+- use `triggerOn`
+- use timeout only if you actually want timeout behavior
+
+## Active Vs History
+
+Use active fleet views by default for live work. Historical lineage is explicit.
+
+Operational default:
+- live work should target the active fleet
+- old stopped, destroyed, rewound, or superseded generations should not clutter current operations
+
+Historical use:
+- use history when auditing
+- use history when doing post-mortem inspection
+- use history when tracing prior generations, rewinds, or older artifacts
+
+Examples:
+- `vm_tree_view()` — active fleet by default
+- `vm_tree_view({ includeHistory: true })` — include historical generations
+- `reef_fleet_status()` — live operational children
+- use history-explicit tree/log views when you need older stopped or destroyed generations
+
+Do not confuse:
+- what is active right now
+- what happened before
+
+## Target Semantics
+
+Address logical agents by name, not by raw VM ID, unless you are doing low-level debugging or SSH work.
+
+Default meaning:
+- a live target name should resolve to the active incarnation of that logical agent
+- commands operate on active descendants
+- peer signals require active peers
+- logs may be read for stopped descendants during post-mortem and audit work
+
+If a live logical target has no active incarnation, do not treat that as a dead end by default. Root or the owning parent should proactively stand it up and continue when possible.
+
+Use VM IDs when you specifically need:
+- SSH
+- a specific historical incarnation
+- low-level infrastructure operations
 
 ## Reporting Results
 

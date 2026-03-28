@@ -366,7 +366,7 @@ describe("authority model", () => {
     expect(rootReadsAnyone.data.logs[0].agentName).toBe(ids.otherAgentName);
   });
 
-  test("upward done signals mark the sender stopped and rpc-disconnected", async () => {
+  test("upward done keeps lieutenants active while workers still stop", async () => {
     const server = await createServer({ modules: [vmTree, signals] });
     const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
     expect(store).toBeDefined();
@@ -392,7 +392,28 @@ describe("authority model", () => {
 
     expect(result.status).toBe(201);
     const updated = store!.getVM(ids.ltVmId);
-    expect(updated?.status).toBe("stopped");
-    expect(updated?.rpcStatus).toBe("disconnected");
+    expect(updated?.status).toBe("running");
+    expect(updated?.rpcStatus).toBe("connected");
+
+    const agentHeaders = authHeaders({
+      "X-Reef-Agent-Name": ids.agentName,
+      "X-Reef-VM-ID": ids.agentVmId,
+      "X-Reef-Category": "agent_vm",
+    });
+    const agentDone = await json(server.app, "/signals/", {
+      method: "POST",
+      headers: agentHeaders,
+      body: {
+        fromAgent: ids.agentName,
+        toAgent: ids.ltName,
+        direction: "up",
+        signalType: "done",
+        payload: { summary: "leaf work complete" },
+      },
+    });
+    expect(agentDone.status).toBe(201);
+    const leaf = store!.getVM(ids.agentVmId);
+    expect(leaf?.status).toBe("stopped");
+    expect(leaf?.rpcStatus).toBe("disconnected");
   });
 });

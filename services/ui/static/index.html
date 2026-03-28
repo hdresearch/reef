@@ -53,6 +53,36 @@
           <div id="branch-empty">Select a conversation to continue the chat, or start a new one from the left sidebar.</div>
           <div id="branch-messages"></div>
         </div>
+        <section id="branch-memex" aria-label="reef world state">
+          <div id="branch-memex-header">
+            <div>
+              <div id="branch-memex-label">reef memex</div>
+              <div id="branch-memex-meta">loading live fleet state…</div>
+            </div>
+          </div>
+          <div id="branch-memex-grid">
+            <section class="memex-card">
+              <div class="memex-card-label">overview</div>
+              <div id="memex-overview" class="memex-card-body"></div>
+            </section>
+            <section class="memex-card">
+              <div class="memex-card-label">observing</div>
+              <div id="memex-observing" class="memex-card-body"></div>
+            </section>
+            <section class="memex-card">
+              <div class="memex-card-label">receiving</div>
+              <div id="memex-receiving" class="memex-card-body"></div>
+            </section>
+            <section class="memex-card">
+              <div class="memex-card-label">tracking</div>
+              <div id="memex-tracking" class="memex-card-body"></div>
+            </section>
+            <section class="memex-card">
+              <div class="memex-card-label">reasoning</div>
+              <div id="memex-reasoning" class="memex-card-body"></div>
+            </section>
+          </div>
+        </section>
         <div id="branch-attachments"></div>
         <div id="branch-input">
           <input type="file" id="branch-file" multiple style="position:absolute;width:0;height:0;overflow:hidden;opacity:0" />

@@ -574,6 +574,7 @@ function reconnectSSE() {
   // Catch up on any state changes that happened while disconnected
   syncConversationList();
   updateStatus();
+  scheduleMemexRefresh(0);
   if (activePanel) {
     refreshPanel(activePanel).catch(() => {});
   }
@@ -716,6 +717,8 @@ function handleEvent(event) {
       feedAdd(nodeId, parentId, 'error', (event.error || 'failed').slice(0, 80));
       break;
   }
+
+  scheduleMemexRefresh();
 }
 
 // =============================================================================
@@ -911,6 +914,198 @@ async function updateStatus() {
     }
     setStatus('ok', parts.join(' · '));
   } catch {}
+}
+
+// =============================================================================
+// Reef memex
+// =============================================================================
+
+function moneyStr(value) {
+  const amount = Number(value || 0);
+  return `$${amount.toFixed(2)}`;
+}
+
+function flattenVmTree(nodes, acc = []) {
+  for (const node of nodes || []) {
+    if (node?.vm) acc.push(node.vm);
+    if (node?.children?.length) flattenVmTree(node.children, acc);
+  }
+  return acc;
+}
+
+function setMemexBody(id, html) {
+  const el = $(id);
+  if (el) el.innerHTML = html;
+}
+
+function memexEmpty(text) {
+  return `<div class="memex-empty">${esc(text)}</div>`;
+}
+
+function memexList(items) {
+  return `<div class="memex-list">${items.join('')}</div>`;
+}
+
+function memexItem(name, meta, sub = '') {
+  return `
+    <div class="memex-item">
+      <div class="memex-item-top">
+        <div class="memex-item-name">${esc(name)}</div>
+        <div class="memex-item-meta">${esc(meta)}</div>
+      </div>
+      ${sub ? `<div class="memex-item-sub">${esc(sub)}</div>` : ''}
+    </div>
+  `;
+}
+
+function memexTag(text, kind = '') {
+  return `<span class="memex-tag ${kind}">${esc(text)}</span>`;
+}
+
+function inferMemexNotices({ activeSignals, activeNodes, pendingChecks }) {
+  const notices = [];
+  const failedOrBlocked = (activeSignals || []).filter((signal) => signal.signalType === 'failed' || signal.signalType === 'blocked');
+  if (failedOrBlocked.length) notices.push({ label: 'urgent inbox', kind: 'error' });
+  const errorNodes = (activeNodes || []).filter((vm) => vm.status === 'error');
+  if (errorNodes.length) notices.push({ label: 'error state', kind: 'error' });
+  if ((pendingChecks || []).length) notices.push({ label: 'scheduled', kind: 'warn' });
+  if (!notices.length) notices.push({ label: 'steady state', kind: 'ok' });
+  return notices;
+}
+
+let memexSnapshot = {
+  state: null,
+  fleet: null,
+  treeData: null,
+  scheduledData: null,
+  usageData: null,
+  signalsData: null,
+  logsData: null,
+  recentSignalsData: null,
+};
+let memexRefreshTimer = null;
+
+async function fetchJsonSoft(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function scheduleMemexRefresh(delay = 250) {
+  if (memexRefreshTimer) clearTimeout(memexRefreshTimer);
+  memexRefreshTimer = setTimeout(() => {
+    memexRefreshTimer = null;
+    updateMemex().catch(() => {});
+  }, delay);
+}
+
+async function updateMemex() {
+  try {
+    const [state, fleet, treeData, scheduledData, usageData] = await Promise.all([
+      fetchJsonSoft(`${API}/reef/state`),
+      fetchJsonSoft(`${API}/vm-tree/fleet/status`),
+      fetchJsonSoft(`${API}/vm-tree/tree`),
+      fetchJsonSoft(`${API}/scheduled?status=pending&limit=6`),
+      fetchJsonSoft(`${API}/usage/summary?windowMinutes=60`),
+    ]);
+    memexSnapshot = {
+      ...memexSnapshot,
+      ...(state ? { state } : {}),
+      ...(fleet ? { fleet } : {}),
+      ...(treeData ? { treeData } : {}),
+      ...(scheduledData ? { scheduledData } : {}),
+      ...(usageData ? { usageData } : {}),
+    };
+    if (!memexSnapshot.state || !memexSnapshot.fleet || !memexSnapshot.treeData) {
+      throw new Error("Unable to read reef world state.");
+    }
+
+    const rootVm = memexSnapshot.treeData.tree?.[0]?.vm || null;
+    const rootName = rootVm?.name || 'root-reef';
+    const activeNodes = flattenVmTree(memexSnapshot.treeData.tree || []).filter((vm) => vm.vmId !== rootVm?.vmId);
+
+    const [signalsData, logsData] = await Promise.all([
+      fetchJsonSoft(`${API}/signals/?to=${encodeURIComponent(rootName)}&acknowledged=false&limit=8`),
+      fetchJsonSoft(`${API}/logs/?agent=${encodeURIComponent(rootName)}&limit=8`),
+    ]);
+    memexSnapshot = {
+      ...memexSnapshot,
+      ...(signalsData ? { signalsData } : {}),
+      ...(logsData ? { logsData } : {}),
+    };
+
+    const pendingChecks = memexSnapshot.scheduledData?.checks || [];
+    let pendingSignals = memexSnapshot.signalsData?.signals || [];
+    let receivingMode = 'pending';
+    if (!pendingSignals.length) {
+      const recentSignalsData = await fetchJsonSoft(`${API}/signals/?to=${encodeURIComponent(rootName)}&limit=8`);
+      if (recentSignalsData) memexSnapshot = { ...memexSnapshot, recentSignalsData };
+      pendingSignals = memexSnapshot.recentSignalsData?.signals || [];
+      receivingMode = 'recent';
+    }
+    const rootLogs = memexSnapshot.logsData?.logs || [];
+    const summary = memexSnapshot.usageData?.summary || memexSnapshot.usageData;
+    const usageTotals = summary?.totals || null;
+
+    $('branch-memex-meta').textContent = `reef world state · ${memexSnapshot.fleet.alive || 0} active VM${(memexSnapshot.fleet.alive || 0) === 1 ? '' : 's'} · ${pendingSignals.length} inbox · ${pendingChecks.length} scheduled`;
+
+    const notices = inferMemexNotices({ activeSignals: pendingSignals, activeNodes, pendingChecks });
+    setMemexBody('memex-overview', `
+      <div class="memex-stack">
+        <div class="memex-line"><span class="memex-key">root</span><span class="memex-value">${esc(rootName)}</span></div>
+        <div class="memex-line"><span class="memex-key">active work</span><span class="memex-value">${memexSnapshot.state.activeTasks || 0} task${memexSnapshot.state.activeTasks === 1 ? '' : 's'}</span></div>
+        <div class="memex-line"><span class="memex-key">convos</span><span class="memex-value">${memexSnapshot.state.conversations || conversations.size}</span></div>
+        <div class="memex-line"><span class="memex-key">1h usage</span><span class="memex-value">${usageTotals ? `${Number(usageTotals.totalTokens || 0).toLocaleString()} tok · ${moneyStr(usageTotals.totalCost)}` : 'unavailable'}</span></div>
+        <div class="memex-line"><span class="memex-key">noticing</span><span class="memex-value">${notices.map((item) => memexTag(item.label, item.kind)).join(' ')}</span></div>
+      </div>
+    `);
+
+    const observingItems = activeNodes.slice(0, 6).map((vm) =>
+      memexItem(vm.name, `${vm.category} · ${vm.status}`, vm.parentVmId ? `parent ${vm.parentVmId.slice(0, 8)}` : 'root child'),
+    );
+    setMemexBody('memex-observing', observingItems.length ? memexList(observingItems) : memexEmpty('No active child VMs outside root.'));
+
+    const receivingItems = pendingSignals.slice(0, 6).map((signal) => {
+      const payload = signal.payload || {};
+      const summaryText = payload.summary || payload.reason || payload.message || 'pending root attention';
+      return memexItem(`${signal.fromAgent} → ${signal.signalType}`, relativeTime(signal.createdAt), String(summaryText));
+    });
+    setMemexBody(
+      'memex-receiving',
+      receivingItems.length
+        ? `${receivingMode === 'recent' ? '<div class="memex-empty" style="margin-bottom:6px">No pending inbox. Showing recent root-directed signals.</div>' : ''}${memexList(receivingItems)}`
+        : memexEmpty('Root inbox is quiet.'),
+    );
+
+    const trackingItems = pendingChecks.slice(0, 6).map((check) =>
+      memexItem(`${check.kind} · ${check.targetAgent || check.ownerAgent}`, check.dueAt === 0 ? 'condition-first' : relativeTime(check.dueAt), check.message || ''),
+    );
+    setMemexBody('memex-tracking', trackingItems.length ? memexList(trackingItems) : memexEmpty('No pending scheduled checks.'));
+
+    const reasoningLogs = rootLogs
+      .filter((log) => ['warn', 'error'].includes(log.level) || ['decision', 'state_change'].includes(log.category || ''))
+      .slice(0, 6);
+    const reasoningItems = reasoningLogs.map((log) =>
+      memexItem(`${log.level}${log.category ? ` · ${log.category}` : ''}`, relativeTime(log.createdAt), log.message),
+    );
+    setMemexBody(
+      'memex-reasoning',
+      reasoningItems.length ? memexList(reasoningItems) : memexEmpty('No recent supervisory decisions or anomalies logged.'),
+    );
+  } catch (error) {
+    if (!memexSnapshot.state && !memexSnapshot.fleet && !memexSnapshot.treeData) {
+      $('branch-memex-meta').textContent = 'memex unavailable';
+      setMemexBody('memex-overview', memexEmpty(error?.message || 'Unable to read reef world state.'));
+      setMemexBody('memex-observing', memexEmpty('Unavailable.'));
+      setMemexBody('memex-receiving', memexEmpty('Unavailable.'));
+      setMemexBody('memex-tracking', memexEmpty('Unavailable.'));
+      setMemexBody('memex-reasoning', memexEmpty('Unavailable.'));
+    }
+  }
 }
 
 // =============================================================================
@@ -1349,11 +1544,13 @@ $('new-chat').addEventListener('click', () => {
 Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   connectSSE();
   updateStatus();
+  updateMemex();
   loadProfilePanel();
   discoverPanels();
   setInterval(discoverPanels, 30000);
   setInterval(refreshActivePanel, 2000);
   setInterval(updateStatus, 10000);
+  setInterval(() => scheduleMemexRefresh(0), 4000);
   // Periodically sync conversation list to catch changes from other clients
   setInterval(syncConversationList, 15000);
 });

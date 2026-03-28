@@ -72,6 +72,10 @@ function isActiveSignalTarget(target: VMNode): boolean {
   return target.status === "creating" || target.status === "running" || target.status === "paused";
 }
 
+function isDurableCoordinator(target: VMNode): boolean {
+  return target.category === "lieutenant";
+}
+
 function ensureSwarmCompletionSignal(data: {
   vmId?: string;
   label?: string;
@@ -223,7 +227,14 @@ routes.post("/", async (c) => {
         const sender = vmTreeStore.getVMByName(fromAgent, { activeOnly: false });
         if (sender) {
           if (signalType === "done" || signalType === "failed") {
-            vmTreeStore.updateVM(sender.vmId, { status: "stopped", rpcStatus: "disconnected" });
+            if (isDurableCoordinator(sender)) {
+              vmTreeStore.updateVM(sender.vmId, {
+                status: signalType === "failed" ? "error" : "running",
+                rpcStatus: sender.rpcStatus || "connected",
+              });
+            } else {
+              vmTreeStore.updateVM(sender.vmId, { status: "stopped", rpcStatus: "disconnected" });
+            }
             // Completion snapshot — best effort, non-blocking
             // Note: actual vers_vm_commit would require pi-vers VersClient access
             // which the signals service doesn't have. Log the intent as an agent_event.

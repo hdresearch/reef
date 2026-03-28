@@ -207,6 +207,109 @@ describe("usage service", () => {
     }
   });
 
+  test("keeps stopped descendants in subtree rollups while resource VMs remain zero-usage", () => {
+    const store = new VMTreeStore(`data/fleet-${Date.now()}-usage-history-lineage.sqlite`);
+
+    try {
+      store.upsertVM({ vmId: "root", name: "root-reef", category: "infra_vm", status: "running" });
+      store.upsertVM({ vmId: "lt-1", name: "history-lt", parentId: "root", category: "lieutenant", status: "destroyed" });
+      store.upsertVM({
+        vmId: "agent-1",
+        name: "history-agent",
+        parentId: "lt-1",
+        category: "agent_vm",
+        status: "stopped",
+      });
+      store.upsertVM({
+        vmId: "swarm-1",
+        name: "history-swarm",
+        parentId: "agent-1",
+        category: "swarm_vm",
+        status: "stopped",
+      });
+      store.upsertVM({
+        vmId: "resource-1",
+        name: "history-resource",
+        parentId: "lt-1",
+        category: "resource_vm",
+        status: "running",
+      });
+
+      store.upsertUsageSession({
+        agentId: "root",
+        agentName: "root-reef",
+        sessionId: "sess-root-1",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        assistantMessages: 4,
+        inputTokens: 300,
+        outputTokens: 100,
+        totalTokens: 400,
+        totalCost: 0.04,
+      });
+      store.upsertUsageSession({
+        agentId: "lt-1",
+        agentName: "history-lt",
+        sessionId: "sess-lt-1",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        assistantMessages: 3,
+        inputTokens: 120,
+        outputTokens: 40,
+        totalTokens: 160,
+        totalCost: 0.016,
+      });
+      store.upsertUsageSession({
+        agentId: "agent-1",
+        agentName: "history-agent",
+        sessionId: "sess-agent-1",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        assistantMessages: 2,
+        inputTokens: 150,
+        outputTokens: 50,
+        totalTokens: 200,
+        totalCost: 0.02,
+      });
+      store.upsertUsageSession({
+        agentId: "swarm-1",
+        agentName: "history-swarm",
+        sessionId: "sess-swarm-1",
+        provider: "anthropic",
+        model: "claude-haiku-4-6",
+        assistantMessages: 2,
+        inputTokens: 60,
+        outputTokens: 20,
+        totalTokens: 80,
+        totalCost: 0.008,
+      });
+
+      const summary = store.usageSummary();
+      const lieutenantLineage = summary.lineages.find((row) => row.agentId === "lt-1");
+      expect(lieutenantLineage).toMatchObject({
+        agentName: "history-lt",
+        descendantAgents: 2,
+        selfTokens: 160,
+        subtreeTokens: 440,
+      });
+
+      const rootLineage = summary.lineages.find((row) => row.agentId === "root");
+      expect(rootLineage).toMatchObject({
+        agentName: "root-reef",
+        descendantAgents: 3,
+        selfTokens: 400,
+        subtreeTokens: 840,
+      });
+
+      expect(summary.byAgent.find((row) => row.agentId === "resource-1")).toBeUndefined();
+      expect(summary.lineages.find((row) => row.agentId === "resource-1")).toBeUndefined();
+      expect(summary.totals.totalTokens).toBe(840);
+      expect(summary.totals.totalCost).toBeCloseTo(0.084, 6);
+    } finally {
+      store.close();
+    }
+  });
+
   test("aggregates multiple session snapshots for the same agent instead of only the latest session", () => {
     const store = new VMTreeStore(`data/fleet-${Date.now()}-usage-root-sessions.sqlite`);
 
