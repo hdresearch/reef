@@ -429,7 +429,7 @@ function spawnTask(
         const raw = event.message.errorMessage;
         if (maybeFallbackToAnthropic(raw)) return;
         if (isCreditExhaustedError(raw)) {
-          output = "Error: No credits available on your Vers account and Anthropic fallback was not available.";
+          output = "Error: No credits available on your Vers account and no alternate provider was available.";
         } else if (isTransientProviderError(raw)) {
           output = `Error: Provider request failed after retries: ${raw}`;
         } else {
