@@ -125,7 +125,7 @@ describe("logs search and panel", () => {
     expect(html).toContain("logs-panel-filters");
     expect(html).toContain('type="search"');
     expect(html).toContain('type="datetime-local"');
-    expect(html).toContain("Keyword + date range search runs server-side.");
+    expect(html).toContain("Keyword search, category, agent, and date range filtering all run server-side.");
     expect(html).toContain("const apiBase = window.PANEL_API || '/ui/api';");
   });
 });
