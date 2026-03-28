@@ -181,58 +181,318 @@ routes.get("/_panel", (c) => {
   }
 
   return c.html(`
-		<div style="font-family:monospace;font-size:13px;color:#ccc;display:flex;flex-direction:column;gap:10px;min-height:0">
-			<div style="display:flex;align-items:end;justify-content:space-between;gap:12px;flex-wrap:wrap">
+		<div class="logs-panel">
+			<style>
+				.logs-panel {
+					font-family: monospace;
+					font-size: 13px;
+					color: #ccc;
+					display: flex;
+					flex-direction: column;
+					gap: 12px;
+					min-height: 0;
+				}
+				.logs-panel-header {
+					display: flex;
+					align-items: end;
+					justify-content: space-between;
+					gap: 12px;
+					flex-wrap: wrap;
+				}
+				.logs-panel-title {
+					color: #ddd;
+					font-size: 12px;
+				}
+				.logs-panel-summary,
+				.logs-panel-note,
+				.logs-panel-filter-summary {
+					color: #888;
+					font-size: 11px;
+				}
+				.logs-panel-note {
+					max-width: 34ch;
+				}
+				.logs-panel-form {
+					display: flex;
+					flex-direction: column;
+					gap: 10px;
+				}
+				.logs-panel-search-row,
+				.logs-panel-action-row,
+				.logs-panel-filter-grid,
+				.logs-panel-filter-chips,
+				.logs-panel-cards {
+					display: grid;
+					gap: 8px;
+				}
+				.logs-panel-search-row {
+					grid-template-columns: minmax(0, 1fr) auto auto;
+					align-items: end;
+				}
+				.logs-panel-filter-grid {
+					grid-template-columns: repeat(2, minmax(0, 1fr));
+				}
+				.logs-panel-field {
+					display: flex;
+					flex-direction: column;
+					gap: 4px;
+					color: #888;
+					font-size: 10px;
+					text-transform: uppercase;
+					letter-spacing: 0.5px;
+					min-width: 0;
+				}
+				.logs-panel-field input,
+				.logs-panel-field select {
+					background: #111;
+					border: 1px solid #333;
+					color: #ddd;
+					padding: 8px 10px;
+					border-radius: 8px;
+					font: inherit;
+					min-width: 0;
+				}
+				.logs-panel-btn {
+					padding: 8px 12px;
+					border-radius: 8px;
+					font: inherit;
+					cursor: pointer;
+					border: 1px solid #333;
+					background: #111;
+					color: #bbb;
+				}
+				.logs-panel-btn.primary {
+					background: #16213e;
+					border-color: #2c4f7a;
+					color: #d9f6ff;
+				}
+				.logs-panel-details {
+					border: 1px solid #222;
+					border-radius: 10px;
+					background: #0d0d0d;
+					overflow: hidden;
+				}
+				.logs-panel-details summary {
+					list-style: none;
+					cursor: pointer;
+					padding: 10px 12px;
+					display: flex;
+					align-items: center;
+					justify-content: space-between;
+					gap: 12px;
+				}
+				.logs-panel-details summary::-webkit-details-marker {
+					display: none;
+				}
+				.logs-panel-details[open] summary {
+					border-bottom: 1px solid #1e1e1e;
+				}
+				.logs-panel-details-body {
+					padding: 10px 12px 12px;
+					display: flex;
+					flex-direction: column;
+					gap: 10px;
+				}
+				.logs-panel-filter-chips {
+					grid-template-columns: repeat(auto-fit, minmax(110px, max-content));
+				}
+				.logs-panel-chip {
+					display: inline-flex;
+					align-items: center;
+					padding: 4px 8px;
+					border-radius: 999px;
+					border: 1px solid #2a2a2a;
+					background: #121212;
+					color: #a7a7a7;
+					font-size: 10px;
+					max-width: 100%;
+					overflow: hidden;
+					text-overflow: ellipsis;
+					white-space: nowrap;
+				}
+				.logs-panel-results {
+					min-height: 0;
+					border: 1px solid #222;
+					border-radius: 10px;
+					background: #0c0c0c;
+					overflow: hidden;
+				}
+				.logs-panel-table-wrap {
+					min-height: 0;
+					overflow: auto;
+				}
+				.logs-panel-table {
+					width: 100%;
+					border-collapse: collapse;
+				}
+				.logs-panel-table-head {
+					position: sticky;
+					top: 0;
+					background: #101010;
+					z-index: 1;
+				}
+				.logs-panel-table-head tr {
+					color: #666;
+					font-size: 11px;
+					text-align: left;
+					border-bottom: 1px solid #333;
+				}
+				.logs-panel-table-head th,
+				.logs-panel-table-body td {
+					padding: 8px 10px;
+				}
+				.logs-panel-table-body tr {
+					border-bottom: 1px solid #161616;
+				}
+				.logs-panel-cards {
+					display: none;
+					padding: 10px;
+				}
+				.logs-panel-card {
+					border: 1px solid #222;
+					border-radius: 10px;
+					background: #101010;
+					padding: 10px;
+					display: flex;
+					flex-direction: column;
+					gap: 8px;
+				}
+				.logs-panel-card-top {
+					display: flex;
+					align-items: center;
+					justify-content: space-between;
+					gap: 10px;
+				}
+				.logs-panel-level {
+					display: inline-flex;
+					align-items: center;
+					padding: 2px 7px;
+					border-radius: 999px;
+					border: 1px solid #222;
+					font-size: 10px;
+					text-transform: uppercase;
+				}
+				.logs-panel-level.info { color: #4f9; border-color: rgba(79, 255, 153, 0.28); }
+				.logs-panel-level.warn { color: #ff9800; border-color: rgba(255, 152, 0, 0.28); }
+				.logs-panel-level.error { color: #f44; border-color: rgba(255, 68, 68, 0.28); }
+				.logs-panel-time,
+				.logs-panel-category {
+					color: #888;
+					font-size: 11px;
+				}
+				.logs-panel-agent {
+					color: #64b5f6;
+					font-size: 12px;
+				}
+				.logs-panel-message,
+				.logs-panel-meta {
+					word-break: break-word;
+				}
+				.logs-panel-meta {
+					color: #777;
+					font-size: 11px;
+				}
+				.logs-panel-empty {
+					padding: 12px;
+					color: #666;
+					font-style: italic;
+				}
+				.logs-panel-error {
+					color: #f55;
+					font-style: normal;
+				}
+				@media (max-width: 760px) {
+					.logs-panel-search-row,
+					.logs-panel-filter-grid {
+						grid-template-columns: 1fr;
+					}
+					.logs-panel-search-row .logs-panel-btn {
+						width: 100%;
+					}
+					.logs-panel-table-wrap {
+						display: none;
+					}
+					.logs-panel-cards {
+						display: grid;
+					}
+					.logs-panel-note {
+						max-width: none;
+					}
+				}
+			</style>
+			<div class="logs-panel-header">
 				<div>
-					<div style="color:#ddd;font-size:12px">fleet logs</div>
-					<div id="logs-panel-summary" style="color:#888;font-size:11px">Loading full log history…</div>
+					<div class="logs-panel-title">fleet logs</div>
+					<div id="logs-panel-summary" class="logs-panel-summary">Loading full log history…</div>
 				</div>
-				<div style="color:#666;font-size:11px">Keyword + date range search runs server-side.</div>
+				<div class="logs-panel-note">Keyword search, category, agent, and date range filtering all run server-side.</div>
 			</div>
-			<form id="logs-panel-filters" style="display:grid;grid-template-columns:2fr repeat(4,minmax(0,1fr)) auto auto;gap:8px;align-items:end">
-				<label style="display:flex;flex-direction:column;gap:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">
-					<span>keyword</span>
-					<input name="q" type="search" placeholder="decision, error, agent name, message…" style="background:#111;border:1px solid #333;color:#ddd;padding:6px 8px;border-radius:4px;font:inherit" />
-				</label>
-				<label style="display:flex;flex-direction:column;gap:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">
-					<span>from</span>
-					<input name="from" type="datetime-local" style="background:#111;border:1px solid #333;color:#ddd;padding:6px 8px;border-radius:4px;font:inherit" />
-				</label>
-				<label style="display:flex;flex-direction:column;gap:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">
-					<span>to</span>
-					<input name="to" type="datetime-local" style="background:#111;border:1px solid #333;color:#ddd;padding:6px 8px;border-radius:4px;font:inherit" />
-				</label>
-				<label style="display:flex;flex-direction:column;gap:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">
-					<span>level</span>
-					<select name="level" style="background:#111;border:1px solid #333;color:#ddd;padding:6px 8px;border-radius:4px;font:inherit">
-						<option value="">all</option>
-						<option value="info">info</option>
-						<option value="warn">warn</option>
-						<option value="error">error</option>
-					</select>
-				</label>
-				<label style="display:flex;flex-direction:column;gap:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px">
-					<span>agent</span>
-					<input name="agent" type="text" placeholder="optional agent name" style="background:#111;border:1px solid #333;color:#ddd;padding:6px 8px;border-radius:4px;font:inherit" />
-				</label>
-				<button type="submit" style="background:#16213e;border:1px solid #2c4f7a;color:#d9f6ff;padding:6px 10px;border-radius:4px;font:inherit;cursor:pointer">search</button>
-				<button type="button" id="logs-panel-reset" style="background:#111;border:1px solid #333;color:#bbb;padding:6px 10px;border-radius:4px;font:inherit;cursor:pointer">reset</button>
+			<form id="logs-panel-filters" class="logs-panel-form">
+				<div class="logs-panel-search-row">
+					<label class="logs-panel-field">
+						<span>search logs</span>
+						<input name="q" type="search" placeholder="decision, error, agent, message, metadata…" />
+					</label>
+					<button type="submit" class="logs-panel-btn primary">search</button>
+					<button type="button" id="logs-panel-reset" class="logs-panel-btn">reset</button>
+				</div>
+				<details id="logs-panel-details" class="logs-panel-details">
+					<summary>
+						<span>filters</span>
+						<span id="logs-panel-filter-summary" class="logs-panel-filter-summary">all logs</span>
+					</summary>
+					<div class="logs-panel-details-body">
+						<div class="logs-panel-filter-grid">
+							<label class="logs-panel-field">
+								<span>agent</span>
+								<input name="agent" type="text" placeholder="optional agent name" />
+							</label>
+							<label class="logs-panel-field">
+								<span>level</span>
+								<select name="level">
+									<option value="">all</option>
+									<option value="info">info</option>
+									<option value="warn">warn</option>
+									<option value="error">error</option>
+								</select>
+							</label>
+							<label class="logs-panel-field">
+								<span>category</span>
+								<input name="category" type="text" placeholder="decision, state_change, health…" />
+							</label>
+							<label class="logs-panel-field">
+								<span>from</span>
+								<input name="from" type="datetime-local" />
+							</label>
+							<label class="logs-panel-field">
+								<span>to</span>
+								<input name="to" type="datetime-local" />
+							</label>
+						</div>
+						<div id="logs-panel-active-filters" class="logs-panel-filter-chips"></div>
+					</div>
+				</details>
 			</form>
-			<div id="logs-panel-table-wrap" style="min-height:0;overflow:auto;border:1px solid #222;border-radius:6px;background:#0c0c0c">
-				<table style="width:100%;border-collapse:collapse">
-					<thead style="position:sticky;top:0;background:#101010;z-index:1">
-						<tr style="color:#666;font-size:11px;text-align:left;border-bottom:1px solid #333">
-							<th style="padding:6px 8px">Time</th>
-							<th style="padding:6px 8px">Level</th>
-							<th style="padding:6px 8px">Agent</th>
-							<th style="padding:6px 8px">Category</th>
-							<th style="padding:6px 8px">Message</th>
-						</tr>
-					</thead>
-					<tbody id="logs-panel-body">
-						<tr><td colspan="5" style="padding:12px;color:#666;font-style:italic">Loading logs…</td></tr>
-					</tbody>
-				</table>
+			<div class="logs-panel-results">
+				<div class="logs-panel-table-wrap">
+					<table class="logs-panel-table">
+						<thead class="logs-panel-table-head">
+							<tr>
+								<th>time</th>
+								<th>level</th>
+								<th>agent</th>
+								<th>category</th>
+								<th>message</th>
+							</tr>
+						</thead>
+						<tbody id="logs-panel-body" class="logs-panel-table-body">
+							<tr><td colspan="5" class="logs-panel-empty">Loading logs…</td></tr>
+						</tbody>
+					</table>
+				</div>
+				<div id="logs-panel-cards" class="logs-panel-cards">
+					<div class="logs-panel-empty">Loading logs…</div>
+				</div>
 			</div>
 			<script>
 				(() => {
@@ -240,7 +500,11 @@ routes.get("/_panel", (c) => {
 					const form = root.querySelector('#logs-panel-filters');
 					const reset = root.querySelector('#logs-panel-reset');
 					const body = root.querySelector('#logs-panel-body');
+					const cards = root.querySelector('#logs-panel-cards');
 					const summary = root.querySelector('#logs-panel-summary');
+					const details = root.querySelector('#logs-panel-details');
+					const filterSummary = root.querySelector('#logs-panel-filter-summary');
+					const activeFilters = root.querySelector('#logs-panel-active-filters');
 					const levelColor = { info: '#4f9', warn: '#ff9800', error: '#f44' };
 
 					function esc(s) {
@@ -258,6 +522,37 @@ routes.get("/_panel", (c) => {
 						return String(date.getTime());
 					}
 
+					function filterEntries() {
+						const entries = [];
+						const q = form.elements.q.value.trim();
+						const agent = form.elements.agent.value.trim();
+						const level = form.elements.level.value;
+						const category = form.elements.category.value.trim();
+						const from = form.elements.from.value;
+						const to = form.elements.to.value;
+						if (q) entries.push('search: ' + q);
+						if (agent) entries.push('agent: ' + agent);
+						if (level) entries.push('level: ' + level);
+						if (category) entries.push('category: ' + category);
+						if (from) entries.push('from: ' + new Date(from).toLocaleString());
+						if (to) entries.push('to: ' + new Date(to).toLocaleString());
+						return entries;
+					}
+
+					function syncFilterSummary() {
+						const entries = filterEntries();
+						filterSummary.textContent = entries.length ? entries.length + ' active' : 'all logs';
+						activeFilters.innerHTML = entries.length
+							? entries.map((entry) => '<div class="logs-panel-chip">' + esc(entry) + '</div>').join('')
+							: '<div class="logs-panel-chip">no extra filters</div>';
+					}
+
+					function renderEmpty(message, isError = false) {
+						const klass = isError ? 'logs-panel-empty logs-panel-error' : 'logs-panel-empty';
+						body.innerHTML = '<tr><td colspan="5" class="' + klass + '">' + esc(message) + '</td></tr>';
+						cards.innerHTML = '<div class="' + klass + '">' + esc(message) + '</div>';
+					}
+
 					async function loadLogs() {
 						const params = new URLSearchParams();
 						const q = form.elements.q.value.trim();
@@ -265,38 +560,57 @@ routes.get("/_panel", (c) => {
 						const to = form.elements.to.value;
 						const level = form.elements.level.value;
 						const agent = form.elements.agent.value.trim();
+						const category = form.elements.category.value.trim();
 						if (q) params.set('q', q);
 						if (from) params.set('since', toEpoch(from));
 						if (to) params.set('until', toEpoch(to, true));
 						if (level) params.set('level', level);
 						if (agent) params.set('agent', agent);
+						if (category) params.set('category', category);
 
 						summary.textContent = 'Loading…';
+						syncFilterSummary();
 						const res = await fetch(\`\${window.location.origin}/logs/?\${params.toString()}\`);
 						const data = await res.json();
 						if (!res.ok) {
 							summary.textContent = data.error || 'Failed to load logs';
-							body.innerHTML = \`<tr><td colspan="5" style="padding:12px;color:#f55">\${esc(data.error || 'Failed to load logs')}</td></tr>\`;
+							renderEmpty(data.error || 'Failed to load logs', true);
 							return;
 						}
 
 						const logs = data.logs || [];
 						summary.textContent = \`\${data.totalCount ?? logs.length} matching log(s)\${logs.length !== (data.totalCount ?? logs.length) ? \` · showing \${logs.length}\` : ''}\`;
 						if (!logs.length) {
-							body.innerHTML = '<tr><td colspan="5" style="padding:12px;color:#666;font-style:italic">No logs match the current filters.</td></tr>';
+							renderEmpty('No logs match the current filters.');
 							return;
 						}
 
 						body.innerHTML = logs.map((log) => {
 							const created = new Date(log.createdAt).toLocaleString();
-							const meta = log.metadata ? \` — \${JSON.stringify(log.metadata)}\` : '';
-							return \`<tr style="border-bottom:1px solid #161616">
-								<td style="padding:6px 8px;color:#888;white-space:nowrap">\${esc(created)}</td>
-								<td style="padding:6px 8px;color:\${levelColor[log.level] || '#ccc'};white-space:nowrap">\${esc(log.level)}</td>
-								<td style="padding:6px 8px;color:#64b5f6;white-space:nowrap">\${esc(log.agentName)}</td>
-								<td style="padding:6px 8px;color:#888;white-space:nowrap">\${esc(log.category || '')}</td>
-								<td style="padding:6px 8px;word-break:break-word">\${esc(log.message + meta)}</td>
+							const meta = log.metadata ? esc(JSON.stringify(log.metadata)) : '';
+							return \`<tr>
+								<td style="color:#888;white-space:nowrap">\${esc(created)}</td>
+								<td style="color:\${levelColor[log.level] || '#ccc'};white-space:nowrap">\${esc(log.level)}</td>
+								<td style="color:#64b5f6;white-space:nowrap">\${esc(log.agentName)}</td>
+								<td style="color:#888;white-space:nowrap">\${esc(log.category || '')}</td>
+								<td style="word-break:break-word">\${esc(log.message)}\${meta ? '<div class="logs-panel-meta">' + meta + '</div>' : ''}</td>
 							</tr>\`;
+						}).join('');
+
+						cards.innerHTML = logs.map((log) => {
+							const created = new Date(log.createdAt).toLocaleString();
+							const categoryLabel = log.category || 'uncategorized';
+							const meta = log.metadata ? '<div class="logs-panel-meta">' + esc(JSON.stringify(log.metadata)) + '</div>' : '';
+							return \`<article class="logs-panel-card">
+								<div class="logs-panel-card-top">
+									<span class="logs-panel-level \${esc(log.level)}">\${esc(log.level)}</span>
+									<div class="logs-panel-time">\${esc(created)}</div>
+								</div>
+								<div class="logs-panel-agent">\${esc(log.agentName)}</div>
+								<div class="logs-panel-category">\${esc(categoryLabel)}</div>
+								<div class="logs-panel-message">\${esc(log.message)}</div>
+								\${meta}
+							</article>\`;
 						}).join('');
 					}
 
@@ -304,17 +618,28 @@ routes.get("/_panel", (c) => {
 						event.preventDefault();
 						loadLogs().catch((error) => {
 							summary.textContent = error.message || 'Failed to load logs';
+							renderEmpty(error.message || 'Failed to load logs', true);
 						});
 					});
 					reset.addEventListener('click', () => {
 						form.reset();
+						syncFilterSummary();
 						loadLogs().catch((error) => {
 							summary.textContent = error.message || 'Failed to load logs';
+							renderEmpty(error.message || 'Failed to load logs', true);
 						});
 					});
+					form.addEventListener('input', syncFilterSummary);
+					form.addEventListener('change', syncFilterSummary);
 
+					if (window.matchMedia && !window.matchMedia('(max-width: 760px)').matches) {
+						details.open = true;
+					}
+
+					syncFilterSummary();
 					loadLogs().catch((error) => {
 						summary.textContent = error.message || 'Failed to load logs';
+						renderEmpty(error.message || 'Failed to load logs', true);
 					});
 				})();
 			</script>
