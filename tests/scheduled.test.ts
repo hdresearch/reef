@@ -128,6 +128,31 @@ describe("scheduled orchestration checks", () => {
     expect(signalsAfterRetick).toHaveLength(1);
   });
 
+  test('normalizes targetAgent "root" to the actual root agent name', async () => {
+    const server = await createServer({ modules: [vmTree, scheduled] });
+
+    const created = await json(server.app, "/scheduled", {
+      method: "POST",
+      body: {
+        kind: "follow_up",
+        message: "wake root through alias",
+        targetAgent: "root",
+        dueAt: Date.now() - 10,
+      },
+    });
+
+    expect(created.status).toBe(201);
+    expect(created.data.targetAgent).toBe("root-reef");
+
+    await json(server.app, "/scheduled/_tick", { method: "POST" });
+
+    const fired = await json(server.app, `/scheduled?status=fired&targetAgent=${encodeURIComponent("root-reef")}`);
+    expect(fired.status).toBe(200);
+    expect(fired.data.count).toBe(1);
+    expect(fired.data.checks[0].id).toBe(created.data.id);
+    expect(fired.data.checks[0].statusReason).toContain("delivered to root-reef");
+  });
+
   test("supersedes pending checks when the auto-cancel condition already matches", async () => {
     const server = await createServer({ modules: [vmTree, scheduled] });
     const vmTreeStore = server.ctx.getStore<any>("vm-tree")!.vmTreeStore;
@@ -229,6 +254,48 @@ describe("scheduled orchestration checks", () => {
       scheduledCheckId: created.data.id,
       kind: "await_store",
       message: "peer-c is ready",
+    });
+  });
+
+  test("emits a scheduled:fired event when a due check is delivered", async () => {
+    const server = await createServer({ modules: [vmTree, scheduled] });
+    const vmTreeStore = server.ctx.getStore<any>("vm-tree")!.vmTreeStore;
+    const targetAgent = `peer-d-${Date.now()}`;
+    const firedEvents: any[] = [];
+
+    server.events.on("scheduled:fired", (data: any) => {
+      firedEvents.push(data);
+    });
+
+    vmTreeStore.upsertVM({
+      vmId: `vm-${targetAgent}`,
+      name: targetAgent,
+      parentId: process.env.VERS_VM_ID!,
+      category: "agent_vm",
+      status: "running",
+    });
+    vmTreeStore.updateVM(`vm-${targetAgent}`, { rpcStatus: "connected" });
+
+    const created = await json(server.app, "/scheduled", {
+      method: "POST",
+      body: {
+        kind: "follow_up",
+        message: "check if peer-d finished",
+        targetAgent,
+        dueAt: Date.now() - 10,
+      },
+    });
+
+    expect(created.status).toBe(201);
+
+    await json(server.app, "/scheduled/_tick", { method: "POST" });
+
+    expect(firedEvents).toHaveLength(1);
+    expect(firedEvents[0]).toMatchObject({
+      checkId: created.data.id,
+      targetAgent,
+      kind: "follow_up",
+      message: "check if peer-d finished",
     });
   });
 });

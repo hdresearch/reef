@@ -98,6 +98,42 @@ function profileContext(): string {
   return `[user profile]\n${parts.join("\n")}`;
 }
 
+function buildScheduledWakePrompt(data: {
+  checkId: string;
+  kind: string;
+  message: string;
+  reason?: string | null;
+  payload?: Record<string, unknown> | null;
+}) {
+  const lines = [
+    "A scheduled check fired while root was idle.",
+    "Treat this as a new bounded supervisory turn.",
+    "",
+    `Scheduled check ID: ${data.checkId}`,
+    `Kind: ${data.kind}`,
+    `Message: ${data.message}`,
+  ];
+
+  if (data.reason) lines.push(`Reason: ${data.reason}`);
+  if (data.payload && Object.keys(data.payload).length > 0) {
+    lines.push(`Payload: ${JSON.stringify(data.payload)}`);
+  }
+
+  lines.push(
+    "",
+    "Use current reef world state to decide whether action is needed. If no action is needed, say so briefly and conclude the turn.",
+  );
+  return lines.join("\n");
+}
+
+function pickScheduledWakeConversation(tree: ConversationTree): string | null {
+  const candidates = tree
+    .listTasks()
+    .filter((task) => !task.info.closed)
+    .sort((a, b) => b.info.lastActivityAt - a.info.lastActivityAt);
+  return candidates[0]?.name || null;
+}
+
 let taskCounter = 0;
 export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6";
 const ROOT_REEF_PROVIDER = "vers";
@@ -780,6 +816,53 @@ export async function createReef(config: ReefConfig = {}) {
 
     return { taskId, userNode, continuing };
   }
+
+  events.on("scheduled:fired", async (data: any) => {
+    const rootAgentName = process.env.VERS_AGENT_NAME || "root-reef";
+    if (!data || data.targetAgent !== rootAgentName) return;
+    if (data.targetCategory === "resource_vm") return;
+
+    const runningTasks = [...piProcesses.values()].filter((task) => task.status === "running");
+    if (runningTasks.length > 0) {
+      broadcast({
+        type: "scheduled_attention_queued",
+        targetAgent: rootAgentName,
+        checkId: data.checkId,
+        reason: "root already has a running turn",
+      });
+      return;
+    }
+
+    const prompt = buildScheduledWakePrompt({
+      checkId: data.checkId,
+      kind: data.kind,
+      message: data.message,
+      reason: data.reason || null,
+      payload: data.payload || null,
+    });
+    const conversationId = pickScheduledWakeConversation(tree) || `scheduled-${data.checkId}`;
+
+    try {
+      const result = await submitPrompt({
+        prompt,
+        conversationId,
+      });
+      broadcast({
+        type: "scheduled_attention_started",
+        targetAgent: rootAgentName,
+        checkId: data.checkId,
+        conversationId: result.taskId,
+        nodeId: result.userNode.id,
+      });
+    } catch (err: any) {
+      broadcast({
+        type: "scheduled_attention_error",
+        targetAgent: rootAgentName,
+        checkId: data.checkId,
+        error: err?.message || String(err),
+      });
+    }
+  });
 
   reef.post("/submit", async (c) => {
     const body = await c.req.json();

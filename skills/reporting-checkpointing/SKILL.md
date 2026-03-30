@@ -27,6 +27,8 @@ When signaling `blocked` or `failed`, include:
 Do not optimize for a clean-looking signal.
 Optimize for handoff quality.
 
+Before you send your final `done`, do one bounded inbox catch-up. If new parent/child/peer attention arrived after you finished the main task, either handle a small in-scope follow-up immediately or mention it explicitly in your final signal.
+
 ## Checkpointing
 
 Use `reef_checkpoint` when:

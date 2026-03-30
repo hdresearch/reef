@@ -50,6 +50,117 @@ describe("reef", () => {
     expect(data.totalNodes).toBe(1); // system prompt
   });
 
+  test("scheduled:fired resumes the most recent open root conversation when idle", async () => {
+    const prevDataDir = process.env.REEF_DATA_DIR;
+    const prevVmId = process.env.VERS_VM_ID;
+    const prevAgentName = process.env.VERS_AGENT_NAME;
+    const localDir = `${TEST_DATA_DIR}-scheduled-idle`;
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+
+    process.env.REEF_DATA_DIR = localDir;
+    process.env.VERS_VM_ID = "vm-root-scheduled-idle";
+    process.env.VERS_AGENT_NAME = "root-reef";
+
+    const local = await createReef({ server: { modules: [] } });
+    const existing = local.tree.startTask("main-chat", "main visible chat", local.tree.getRef("main") ?? null);
+    local.tree.completeTask("main-chat", { summary: "initial turn complete", filesChanged: [] });
+    local.tree.setRef("main-chat", existing.id);
+
+    await local.events.emit("scheduled:fired", {
+      checkId: "check-idle-1",
+      targetAgent: "root-reef",
+      targetCategory: "infra_vm",
+      kind: "follow_up",
+      message: "wake root while idle",
+      reason: "delivered to root-reef",
+    });
+
+    const task = local.tree.getTask("main-chat");
+    expect(task).toBeTruthy();
+    expect(task!.status).toBe("running");
+    const leafId = local.tree.getRef("main-chat");
+    expect(leafId).toBeTruthy();
+    const leaf = local.tree.get(leafId!);
+    expect(leaf?.role).toBe("user");
+    expect(leaf?.content).toContain("wake root while idle");
+    expect(local.tree.getTask("scheduled-check-idle-1")).toBeUndefined();
+
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    process.env.REEF_DATA_DIR = prevDataDir;
+    process.env.VERS_VM_ID = prevVmId;
+    process.env.VERS_AGENT_NAME = prevAgentName;
+  });
+
+  test("scheduled:fired falls back to a scheduled conversation when no open conversation exists", async () => {
+    const prevDataDir = process.env.REEF_DATA_DIR;
+    const prevVmId = process.env.VERS_VM_ID;
+    const prevAgentName = process.env.VERS_AGENT_NAME;
+    const localDir = `${TEST_DATA_DIR}-scheduled-idle-fallback`;
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+
+    process.env.REEF_DATA_DIR = localDir;
+    process.env.VERS_VM_ID = "vm-root-scheduled-idle-fallback";
+    process.env.VERS_AGENT_NAME = "root-reef";
+
+    const local = await createReef({ server: { modules: [] } });
+
+    await local.events.emit("scheduled:fired", {
+      checkId: "check-idle-fallback-1",
+      targetAgent: "root-reef",
+      targetCategory: "infra_vm",
+      kind: "follow_up",
+      message: "wake root with fallback conversation",
+      reason: "delivered to root-reef",
+    });
+
+    const task = local.tree.getTask("scheduled-check-idle-fallback-1");
+    expect(task).toBeTruthy();
+    expect(task!.trigger).toContain("wake root with fallback conversation");
+
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    process.env.REEF_DATA_DIR = prevDataDir;
+    process.env.VERS_VM_ID = prevVmId;
+    process.env.VERS_AGENT_NAME = prevAgentName;
+  });
+
+  test("scheduled:fired stays queued when root already has a running turn", async () => {
+    const prevDataDir = process.env.REEF_DATA_DIR;
+    const prevVmId = process.env.VERS_VM_ID;
+    const prevAgentName = process.env.VERS_AGENT_NAME;
+    const localDir = `${TEST_DATA_DIR}-scheduled-busy`;
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+
+    process.env.REEF_DATA_DIR = localDir;
+    process.env.VERS_VM_ID = "vm-root-scheduled-busy";
+    process.env.VERS_AGENT_NAME = "root-reef";
+
+    const local = await createReef({ server: { modules: [] } });
+    local.piProcesses.set("busy-task", {
+      id: "busy-task",
+      prompt: "busy",
+      status: "running",
+      output: "",
+      events: [],
+      startedAt: Date.now(),
+    });
+
+    await local.events.emit("scheduled:fired", {
+      checkId: "check-busy-1",
+      targetAgent: "root-reef",
+      targetCategory: "infra_vm",
+      kind: "follow_up",
+      message: "do not interrupt busy root",
+      reason: "delivered to root-reef",
+    });
+
+    expect(local.tree.getTask("scheduled-check-busy-1")).toBeUndefined();
+
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    process.env.REEF_DATA_DIR = prevDataDir;
+    process.env.VERS_VM_ID = prevVmId;
+    process.env.VERS_AGENT_NAME = prevAgentName;
+  });
+
   test("GET /reef/tree — has system root", async () => {
     const { data } = await json("/reef/tree");
     expect(data.root).toBeTruthy();

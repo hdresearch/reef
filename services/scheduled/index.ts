@@ -45,6 +45,24 @@ interface ScheduledCheck {
 let vmTreeStore: VMTreeStore | null = null;
 let db: Database | null = null;
 let schedulerTimer: ReturnType<typeof setInterval> | null = null;
+let serviceEvents: ServiceContext["events"] | null = null;
+
+function resolveRootAgentName(): string {
+  return process.env.VERS_AGENT_NAME || "root-reef";
+}
+
+function normalizeScheduledTargetAgent(targetAgent?: string | null): string | null {
+  if (!targetAgent) return null;
+  const normalized = targetAgent.trim();
+  if (!normalized) return null;
+  if (normalized === "root") return resolveRootAgentName();
+  return normalized;
+}
+
+function formatScheduledTime(dueAt: number): string {
+  if (dueAt <= 0) return "no-timeout";
+  return new Date(dueAt).toISOString();
+}
 
 function parseDelay(delay?: string): number | null {
   if (!delay) return null;
@@ -276,7 +294,7 @@ function shouldAutoCancel(check: ScheduledCheck): string | null {
 
 function fireScheduled(check: ScheduledCheck, reason?: string) {
   if (!vmTreeStore) return;
-  const targetName = check.targetAgent || check.ownerAgent;
+  const targetName = normalizeScheduledTargetAgent(check.targetAgent) || check.ownerAgent;
   const target =
     (check.targetVmId && vmTreeStore.getVM(check.targetVmId)) ||
     (targetName && vmTreeStore.getVMByName(targetName, { activeOnly: false }));
@@ -298,6 +316,20 @@ function fireScheduled(check: ScheduledCheck, reason?: string) {
       payload,
     });
     updateScheduledStatus(check.id, "fired", reason || `delivered to ${target.name}`);
+    serviceEvents?.fire("scheduled:fired", {
+      checkId: check.id,
+      ownerAgent: check.ownerAgent,
+      ownerVmId: check.ownerVmId,
+      targetAgent: target.name,
+      targetVmId: target.vmId,
+      targetCategory: target.category,
+      targetStatus: target.status,
+      kind: check.kind,
+      message: check.message,
+      payload: check.payload,
+      reason: reason || `delivered to ${target.name}`,
+      signalId: signal.id,
+    });
     return signal;
   }
 
@@ -414,7 +446,7 @@ app.post("/", async (c) => {
   const created = insertScheduled({
     ownerAgent: actorName,
     ownerVmId: actorVmId,
-    targetAgent: targetAgent || null,
+    targetAgent: normalizeScheduledTargetAgent(targetAgent || null),
     targetVmId: targetVmId || null,
     taskId: taskId || null,
     subtreeRootVmId: subtreeRootVmId || null,
@@ -491,6 +523,7 @@ const mod: ServiceModule = {
     const handle = ctx.getStore<any>("vm-tree");
     if (!handle?.vmTreeStore) return;
     vmTreeStore = handle.vmTreeStore as VMTreeStore;
+    serviceEvents = ctx.events;
     db = vmTreeStore.getDb();
     initTable();
 
@@ -559,7 +592,7 @@ const mod: ServiceModule = {
         try {
           const result = await client.api<any>("POST", "/scheduled", params);
           return client.ok(
-            `Scheduled ${result.kind} check ${result.id} for ${new Date(result.dueAt).toLocaleString()}.`,
+            `Scheduled ${result.kind} check ${result.id} for ${formatScheduledTime(result.dueAt)}.`,
             result,
           );
         } catch (e: any) {
@@ -604,7 +637,7 @@ const mod: ServiceModule = {
           const result = await client.api<any>("GET", `/scheduled${qs.toString() ? `?${qs.toString()}` : ""}`);
           const lines = (result.checks || []).map(
             (check: any) =>
-              `[${check.status}] ${check.id} ${check.kind} -> ${check.targetAgent || check.ownerAgent} @ ${check.dueAt > 0 ? new Date(check.dueAt).toLocaleTimeString() : "no-timeout"} :: ${check.message}`,
+              `[${check.status}] ${check.id} ${check.kind} -> ${check.targetAgent || check.ownerAgent} @ ${formatScheduledTime(check.dueAt)} :: ${check.message}`,
           );
           return client.ok(lines.length ? lines.join("\n") : "No scheduled checks.", result);
         } catch (e: any) {

@@ -45,6 +45,21 @@ Prefer:
 - `reef_store_wait(key)` for exact logical conditions
 - `reef_schedule_check` when the attention should outlive the current turn
 
+## Post-task inbox catch-up
+
+After finishing your current work, do one final `reef_inbox` pass before you fully conclude.
+
+Use this bounded catch-up to notice:
+- late parent commands
+- child completion/failure you have not yet acknowledged
+- late sibling peer signals
+
+If something meaningful arrived:
+- handle a small in-scope follow-up immediately, or
+- mention it explicitly in your final signal to your parent
+
+Do not turn this into an infinite linger loop. One bounded catch-up pass is the rule.
+
 ## When to use peer signals
 
 Use `reef_peer_signal` for:
@@ -69,6 +84,10 @@ Prefer:
 - `reef_inbox_wait({ direction: "up" })` when you need to block briefly for the next child signal inside the current turn
 - `reef_swarm_wait` when the child is a swarm worker you already dispatched through the swarm tools and you want the swarm-specific completion/result path
 - store waits only when the protocol actually depends on shared state
+
+For swarm workers:
+- use `reef_swarm_wait` when you are the parent agent collecting swarm completion/results
+- if you are a swarm worker about to exit, still do one bounded inbox catch-up in case a sibling or parent sent a late message
 
 ## Which wait to use
 

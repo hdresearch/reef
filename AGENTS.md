@@ -208,6 +208,8 @@ Your inbox is a unified stream of everything addressed to you — commands from 
 
 **Check your inbox periodically.** Your parent may steer or abort you at any time. Your children may signal done, blocked, or failed. The behavior timer checks every 10 seconds, but you should also check before starting new work and after completing a major step.
 
+**Before you conclude, do one final inbox catch-up.** After finishing your current work, check `reef_inbox` once more before you signal `done` or fully disengage. This applies to root, lieutenants, agent VMs, and swarm workers. It is a bounded catch-up pass, not indefinite monitoring.
+
 **No cross-branch authority.** If you need something from another branch of the tree, signal upward and let the common ancestor coordinate.
 
 Use the right primitive for the job:
