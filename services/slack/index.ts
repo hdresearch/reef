@@ -112,17 +112,34 @@ routes.get("/channels", async (c) => {
   }
 });
 
-routes.get("/invite", (c) => {
+routes.get("/invite", async (c) => {
   const url = getSlackInviteUrl();
   const clientId = resolveClientId();
-  const isPlaceholder = clientId === DEFAULT_SLACK_CLIENT_ID;
+  const token = resolveToken();
+
+  if (token) {
+    try {
+      const result = await slackRequest("auth.test", token);
+      const socketConnected = socket.ws !== null && socket.ws.readyState === WebSocket.OPEN;
+      return c.json({
+        url,
+        clientId,
+        connected: true,
+        team: result.team,
+        user: result.user,
+        socket: socketConnected,
+        instructions: `Already connected to ${result.team} as ${result.user}. ${socketConnected ? "Socket Mode is live — the bot is listening for mentions and DMs." : "Socket Mode is not connected — the bot can send but not receive messages."}`,
+      });
+    } catch {
+      // Token exists but is invalid — fall through to invite link
+    }
+  }
+
   return c.json({
     url,
     clientId,
-    placeholder: isPlaceholder,
-    instructions: isPlaceholder
-      ? "Using a temporary Slack app. Click the URL to add it to your workspace."
-      : "Click the URL to add the Vers bot to your Slack workspace.",
+    connected: false,
+    instructions: "Click the URL to add the Vers bot to your Slack workspace.",
   });
 });
 
@@ -425,7 +442,23 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
     async execute() {
       if (!client.getBaseUrl()) return client.noUrl();
       try {
-        const result = await client.api<{ url: string; instructions: string }>("GET", "/slack/invite");
+        const result = await client.api<{
+          url: string;
+          connected: boolean;
+          team?: string;
+          user?: string;
+          socket?: boolean;
+          instructions: string;
+        }>("GET", "/slack/invite");
+        if (result.connected) {
+          return client.ok(
+            `Slack is already connected to **${result.team}** as **${result.user}**.` +
+              (result.socket
+                ? " Socket Mode is live — the bot is listening for @mentions and DMs."
+                : " The bot can send messages but Socket Mode is not connected for receiving.") +
+              "\n\nTell me which channel to use for notifications, or just @mention the bot in Slack.",
+          );
+        }
         return client.ok(
           "**Add the Vers bot to your Slack workspace:**\n\n" +
             result.url +

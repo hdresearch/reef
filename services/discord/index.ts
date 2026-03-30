@@ -482,17 +482,34 @@ routes.get("/guilds", async (c) => {
   }
 });
 
-routes.get("/invite", (c) => {
+routes.get("/invite", async (c) => {
   const url = getInviteUrl();
   const appId = resolveAppId();
-  const isPlaceholder = appId === DEFAULT_DISCORD_APP_ID;
+  const token = resolveToken();
+
+  if (token) {
+    try {
+      const user = await discordRequest("GET", "/users/@me", token);
+      const gwConnected = gateway.ws !== null && gateway.ws.readyState === WebSocket.OPEN;
+      return c.json({
+        url,
+        appId,
+        connected: true,
+        botUsername: `${user.username}#${user.discriminator}`,
+        gateway: gwConnected,
+        instructions: `Already connected as ${user.username}. ${gwConnected ? "Gateway is live — the bot is listening for mentions and DMs." : "Gateway is not connected — the bot can send but not receive messages."}`,
+      });
+    } catch {
+      // Token exists but is invalid — fall through to invite link
+    }
+  }
+
   return c.json({
     url,
     appId,
-    placeholder: isPlaceholder,
-    instructions: isPlaceholder
-      ? "The official Vers bot is not yet configured. Set DISCORD_APP_ID or use reef_discord_configure with a BYO bot token."
-      : "Click the URL to add the Vers bot to your Discord server. Once added, tell the agent which channel to use for notifications.",
+    connected: false,
+    instructions:
+      "Click the URL to add the Vers bot to your Discord server. Once added, tell the agent which channel to use for notifications.",
   });
 });
 
@@ -642,15 +659,20 @@ function registerTools(pi: ExtensionAPI, client: FleetClient) {
     async execute() {
       if (!client.getBaseUrl()) return client.noUrl();
       try {
-        const result = await client.api<{ url: string; placeholder: boolean; instructions: string }>(
-          "GET",
-          "/discord/invite",
-        );
-        if (result.placeholder) {
+        const result = await client.api<{
+          url: string;
+          connected: boolean;
+          botUsername?: string;
+          gateway?: boolean;
+          instructions: string;
+        }>("GET", "/discord/invite");
+        if (result.connected) {
           return client.ok(
-            "The official Vers Discord bot is not yet configured.\n\n" +
-              "For now, you can bring your own bot token using reef_discord_configure.\n" +
-              "To create a bot: discord.com/developers/applications → New App → Bot → copy token.",
+            `Discord is already connected as **${result.botUsername}**.` +
+              (result.gateway
+                ? " The bot is live and listening for @mentions and DMs."
+                : " The bot can send messages but the Gateway is not connected for receiving.") +
+              "\n\nTell me which channel to use for notifications, or just @mention the bot in Discord.",
           );
         }
         return client.ok(
