@@ -215,6 +215,7 @@ Use the right primitive for the job:
 - `reef_inbox_wait` for waiting on a message arrival inside the current turn
 - `reef_store_wait` for shared state conditions
 - `reef_schedule_check` when future attention must survive after the current turn
+- `reef_swarm_wait` when you dispatched work through the swarm tools and want the swarm-specific completion helper instead of raw inbox handling
 
 ## Coordination Via Store
 

@@ -18,6 +18,7 @@ Use:
 - `reef_signal` for child -> parent reporting
 - `reef_peer_signal` for same-parent sibling coordination
 - `reef_inbox_wait` for waiting on message arrival inside the current turn
+- `reef_swarm_wait` for swarm-task completion when you already dispatched work through the swarm helper tools
 - `reef_store_list` for discovery
 - `reef_store_wait` for synchronization
 - `reef_schedule_check` for future attention beyond the current turn
@@ -39,6 +40,7 @@ Use:
 
 Prefer:
 - `reef_inbox_wait` when you are waiting for a child/parent/peer message to arrive now
+- `reef_swarm_wait` when you need completion/results from swarm workers you tasked via `reef_swarm_task`
 - `reef_store_wait(prefix)` for barriers and rendezvous
 - `reef_store_wait(key)` for exact logical conditions
 - `reef_schedule_check` when the attention should outlive the current turn
@@ -65,11 +67,13 @@ Do not invent polling loops for child completion if inbox/signals already answer
 Prefer:
 - `reef_inbox({ direction: "up" })` for child `done` / `blocked` / `failed`
 - `reef_inbox_wait({ direction: "up" })` when you need to block briefly for the next child signal inside the current turn
+- `reef_swarm_wait` when the child is a swarm worker you already dispatched through the swarm tools and you want the swarm-specific completion/result path
 - store waits only when the protocol actually depends on shared state
 
 ## Which wait to use
 
 - `reef_inbox` — read what is already waiting for you now
 - `reef_inbox_wait` — wait briefly for message arrival inside the current turn
+- `reef_swarm_wait` — wait for swarm-task completion/results through the swarm helper layer
 - `reef_store_wait` — wait for shared state conditions, barriers, or rendezvous
 - `reef_schedule_check` — durable follow-up when attention must survive after the current turn ends
