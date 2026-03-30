@@ -416,4 +416,120 @@ describe("authority model", () => {
     expect(leaf?.status).toBe("stopped");
     expect(leaf?.rpcStatus).toBe("disconnected");
   });
+
+  test("reef_inbox_wait matches arriving child signals and auto-acknowledges them", async () => {
+    const server = await createServer({ modules: [vmTree, signals] });
+    const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
+    expect(store).toBeDefined();
+    const ids = seedHierarchy(store!, `${Date.now()}-inbox-wait`);
+
+    const lieutenantHeaders = authHeaders({
+      "X-Reef-Agent-Name": ids.ltName,
+      "X-Reef-VM-ID": ids.ltVmId,
+      "X-Reef-Category": "lieutenant",
+    });
+    const agentHeaders = authHeaders({
+      "X-Reef-Agent-Name": ids.agentName,
+      "X-Reef-VM-ID": ids.agentVmId,
+      "X-Reef-Category": "agent_vm",
+    });
+
+    const waitPromise = json(server.app, "/signals/wait", {
+      method: "POST",
+      headers: lieutenantHeaders,
+      body: {
+        direction: "up",
+        type: "done",
+        from: ids.agentName,
+        timeoutSeconds: 1,
+        pollMs: 50,
+      },
+    });
+
+    setTimeout(() => {
+      void json(server.app, "/signals/", {
+        method: "POST",
+        headers: agentHeaders,
+        body: {
+          fromAgent: ids.agentName,
+          toAgent: ids.ltName,
+          direction: "up",
+          signalType: "done",
+          payload: { summary: "leaf finished" },
+        },
+      });
+    }, 100);
+
+    const result = await waitPromise;
+    expect(result.status).toBe(200);
+    expect(result.data.matched).toBe(true);
+    expect(result.data.timedOut).toBe(false);
+    expect(result.data.count).toBe(1);
+    expect(result.data.toAgent).toBe(ids.ltName);
+    expect(result.data.signals[0].fromAgent).toBe(ids.agentName);
+    expect(result.data.signals[0].signalType).toBe("done");
+
+    const unacked = await json(
+      server.app,
+      `/signals/?to=${encodeURIComponent(ids.ltName)}&direction=up&acknowledged=false&limit=10`,
+      { headers: lieutenantHeaders },
+    );
+    expect(unacked.status).toBe(200);
+    expect(unacked.data.count).toBe(0);
+  });
+
+  test("reef_inbox_wait times out cleanly when no message arrives", async () => {
+    const server = await createServer({ modules: [vmTree, signals] });
+    const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
+    expect(store).toBeDefined();
+    const ids = seedHierarchy(store!, `${Date.now()}-inbox-timeout`);
+
+    const lieutenantHeaders = authHeaders({
+      "X-Reef-Agent-Name": ids.ltName,
+      "X-Reef-VM-ID": ids.ltVmId,
+      "X-Reef-Category": "lieutenant",
+    });
+
+    const result = await json(server.app, "/signals/wait", {
+      method: "POST",
+      headers: lieutenantHeaders,
+      body: {
+        direction: "up",
+        type: "done",
+        from: ids.agentName,
+        timeoutSeconds: 0.1,
+        pollMs: 50,
+      },
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.data.matched).toBe(false);
+    expect(result.data.timedOut).toBe(true);
+    expect(result.data.count).toBe(0);
+  });
+
+  test("reef_inbox_wait is scoped to the requester's own inbox", async () => {
+    const server = await createServer({ modules: [vmTree, signals] });
+    const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
+    expect(store).toBeDefined();
+    const ids = seedHierarchy(store!, `${Date.now()}-inbox-scope`);
+
+    const lieutenantHeaders = authHeaders({
+      "X-Reef-Agent-Name": ids.ltName,
+      "X-Reef-VM-ID": ids.ltVmId,
+      "X-Reef-Category": "lieutenant",
+    });
+
+    const result = await json(server.app, "/signals/wait", {
+      method: "POST",
+      headers: lieutenantHeaders,
+      body: {
+        toAgent: ids.agentName,
+        timeoutSeconds: 0.1,
+      },
+    });
+
+    expect(result.status).toBe(403);
+    expect(result.data.error).toContain("may only wait on their own inbox");
+  });
 });

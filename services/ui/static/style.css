@@ -291,7 +291,7 @@ header h1 {
 
 .memex-card {
   min-width: 0;
-  min-height: 126px;
+  min-height: 145px;
   display: flex;
   flex-direction: column;
   border: 1px solid rgba(79, 255, 153, 0.12);
@@ -312,8 +312,8 @@ header h1 {
 .memex-card-body {
   flex: 1 1 auto;
   min-height: 0;
-  height: 72px;
-  max-height: 118px;
+  height: 83px;
+  max-height: 136px;
   overflow-y: auto;
   overscroll-behavior: contain;
   color: var(--text);

@@ -106,7 +106,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           spawnedBy: client.agentName,
         });
         return client.ok(
-          `Spawned ${result.count} agent(s):\n${result.messages.join("\n")}\n\n${result.count} workers ready.`,
+          `Spawned ${result.count} worker(s):\n${result.messages.join("\n")}\n\n${result.count} workers ready.\nRequested labels are context hints; the actual worker IDs used for follow-up tools are the names returned in the result.`,
           { agents: result.agents },
         );
       } catch (e: any) {

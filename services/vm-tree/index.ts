@@ -142,6 +142,7 @@ routes.get("/tree", (c) => {
       : [
           "Active view shows only operationally relevant nodes by default.",
           "Running resource infrastructure may be promoted under the nearest active ancestor for visibility without mutating stored lineage.",
+          "Stopped worker descendants are hidden from the active view; use includeHistory=true when you need the full historical subtree.",
         ],
   });
 });

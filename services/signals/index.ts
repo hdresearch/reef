@@ -4,14 +4,15 @@
  * Upward signals: child → parent (done, blocked, failed, progress, need-resources, checkpoint)
  * Downward commands: parent → child (abort, pause, resume, steer)
  *
- * All agents read/write through reef_signal, reef_command, and reef_inbox tools.
+ * All agents read/write through reef_signal, reef_command, reef_inbox, and reef_inbox_wait tools.
  * Signals are persisted to SQLite (signals table in the unified fleet.sqlite).
  * Auto-triggers a root task when a direct child signals failed or blocked.
  *
- * Tools (3):
+ * Tools (4):
  *   reef_signal  — send upward to parent
  *   reef_command — send downward to a child
  *   reef_inbox   — unified inbox with filters (direction, type, from)
+ *   reef_inbox_wait — bounded wait for a matching inbox message
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -74,6 +75,54 @@ function isActiveSignalTarget(target: VMNode): boolean {
 
 function isDurableCoordinator(target: VMNode): boolean {
   return target.category === "lieutenant";
+}
+
+async function waitForInboxMessage(options: {
+  toAgent: string;
+  fromAgent?: string;
+  direction?: "up" | "down" | "peer";
+  signalType?: string;
+  timeoutSeconds?: number;
+  pollMs?: number;
+  acknowledge?: boolean;
+}) {
+  const timeoutMs = Math.max(1, options.timeoutSeconds || 60) * 1000;
+  const pollMs = Math.max(50, options.pollMs || 250);
+  const startedAt = Date.now();
+
+  const check = () =>
+    vmTreeStore?.querySignals({
+      toAgent: options.toAgent,
+      fromAgent: options.fromAgent,
+      direction: options.direction,
+      signalType: options.signalType as any,
+      acknowledged: false,
+    }) || [];
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const signals = check();
+    if (signals.length > 0) {
+      if (options.acknowledge !== false) {
+        vmTreeStore?.acknowledgeSignals(signals.map((s) => s.id));
+      }
+      return {
+        matched: true,
+        timedOut: false,
+        elapsedSeconds: Number(((Date.now() - startedAt) / 1000).toFixed(2)),
+        signals,
+        count: signals.length,
+      };
+    }
+    await Bun.sleep(pollMs);
+  }
+
+  return {
+    matched: false,
+    timedOut: true,
+    elapsedSeconds: Number(((Date.now() - startedAt) / 1000).toFixed(2)),
+    signals: [] as unknown[],
+    count: 0,
+  };
 }
 
 function ensureSwarmCompletionSignal(data: {
@@ -317,6 +366,44 @@ routes.post("/acknowledge", async (c) => {
     }
     vmTreeStore.acknowledgeSignals(ids);
     return c.json({ acknowledged: ids.length });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// POST /wait — wait for a matching inbox message
+routes.post("/wait", async (c) => {
+  if (!vmTreeStore) return c.json({ error: "vm-tree store not available" }, 503);
+
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const actor = resolveRequestActor(c.req.raw);
+    const identityError = requestIdentityError(actor);
+    if (identityError) {
+      return c.json({ error: identityError }, 403);
+    }
+
+    const requestedToAgent = body.toAgent as string | undefined;
+    const resolvedToAgent = isOperatorRequest(actor) ? requestedToAgent : actor.vm?.name || actor.agentName;
+
+    if (!resolvedToAgent) {
+      return c.json({ error: "toAgent is required for operator wait requests" }, 400);
+    }
+    if (!isOperatorRequest(actor) && requestedToAgent && requestedToAgent !== resolvedToAgent) {
+      return c.json({ error: `agents may only wait on their own inbox (${resolvedToAgent})` }, 403);
+    }
+
+    const result = await waitForInboxMessage({
+      toAgent: resolvedToAgent,
+      fromAgent: body.from as string | undefined,
+      direction: body.direction as "up" | "down" | "peer" | undefined,
+      signalType: body.type as string | undefined,
+      timeoutSeconds: body.timeoutSeconds as number | undefined,
+      pollMs: body.pollMs as number | undefined,
+      acknowledge: body.acknowledge as boolean | undefined,
+    });
+
+    return c.json({ ...result, toAgent: resolvedToAgent });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }
@@ -590,6 +677,56 @@ Messages are auto-acknowledged when you read them.`,
     },
   });
 
+  pi.registerTool({
+    name: "reef_inbox_wait",
+    label: "Inbox: Wait For Message",
+    description: `Wait for a matching inbox message inside the current turn instead of writing your own sleep+poll loop.
+
+Use this for:
+  - child done / blocked / failed signals
+  - parent steer / abort / pause / resume commands
+  - sibling peer messages during live coordination
+
+Do not use this for:
+  - durable shared state conditions (use reef_store_wait)
+  - future attention beyond the current turn (use reef_schedule_check)
+  - open-ended monitoring`,
+    parameters: Type.Object({
+      direction: Type.Optional(
+        Type.Union([Type.Literal("up"), Type.Literal("down"), Type.Literal("peer")], {
+          description: "Filter by direction",
+        }),
+      ),
+      type: Type.Optional(Type.String({ description: "Filter by signal/command type" })),
+      from: Type.Optional(Type.String({ description: "Filter by sender agent name" })),
+      timeoutSeconds: Type.Optional(Type.Number({ description: "Max seconds to wait (default: 60)" })),
+    }),
+    async execute(_id, params) {
+      if (!client.getBaseUrl()) return client.noUrl();
+      try {
+        const data = await client.api<any>("POST", "/signals/wait", {
+          direction: params.direction,
+          type: params.type,
+          from: params.from,
+          timeoutSeconds: params.timeoutSeconds,
+        });
+
+        if (!data.matched) {
+          return client.ok(`Inbox wait timed out after ${data.elapsedSeconds}s.`, data);
+        }
+
+        const lines = (data.signals || []).map((s: any) => {
+          const dir = s.direction === "up" ? "↑" : s.direction === "down" ? "↓" : "↔";
+          const payload = s.payload ? ` — ${JSON.stringify(s.payload).slice(0, 200)}` : "";
+          return `${dir} [${s.signalType}] from ${s.fromAgent}${payload}`;
+        });
+        return client.ok(`Inbox wait matched in ${data.elapsedSeconds}s.\n${lines.join("\n")}`, data);
+      } catch (e: any) {
+        return client.err(e.message);
+      }
+    },
+  });
+
   // reef_fleet_status — live view of direct children
   pi.registerTool({
     name: "reef_fleet_status",
@@ -810,6 +947,19 @@ const routeDocs: Record<string, RouteDocs> = {
     body: { ids: { type: "string[]", required: true, description: "Signal IDs to acknowledge" } },
     response: "{ acknowledged: count }",
   },
+  "POST /wait": {
+    summary: "Wait for a matching inbox message with a bounded timeout",
+    body: {
+      toAgent: { type: "string", description: "Target inbox; required only for operator wait requests" },
+      from: { type: "string", description: "Optional sender filter" },
+      direction: { type: "string", description: "up | down | peer" },
+      type: { type: "string", description: "Optional signal/command type filter" },
+      timeoutSeconds: { type: "number", description: "Max seconds to wait (default: 60)" },
+      pollMs: { type: "number", description: "Polling interval in milliseconds (default: 250)" },
+      acknowledge: { type: "boolean", description: "Auto-acknowledge matched messages (default: true)" },
+    },
+    response: "{ matched, timedOut, elapsedSeconds, count, signals, toAgent }",
+  },
   "GET /_panel": { summary: "HTML debug view of recent signals", response: "text/html" },
 };
 
@@ -835,7 +985,7 @@ const signals: ServiceModule = {
   },
 
   dependencies: ["vm-tree"],
-  capabilities: ["agent.signal", "agent.command", "agent.inbox", "agent.peer_signal"],
+  capabilities: ["agent.signal", "agent.command", "agent.inbox", "agent.inbox_wait", "agent.peer_signal"],
 };
 
 export default signals;

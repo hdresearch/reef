@@ -431,7 +431,10 @@ function spawnTask(
         if (isCreditExhaustedError(raw)) {
           output = "Error: No credits available on your Vers account and no alternate provider was available.";
         } else if (isTransientProviderError(raw)) {
-          output = `Error: Provider request failed after retries: ${raw}`;
+          output =
+            `Transient provider/backend failure after retries. Your prompt was not rejected, but this turn could not complete. ` +
+            `Retry the request or send a short follow-up message to continue from the existing conversation context.\n\n` +
+            `Provider error: ${raw}`;
         } else {
           output = `Error: ${raw}`;
         }

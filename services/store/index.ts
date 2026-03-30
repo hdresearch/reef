@@ -259,7 +259,7 @@ app.put("/:key", async (c) => {
     if (!key.startsWith(prefix)) {
       return c.json(
         {
-          error: `Store namespacing: key must start with "${prefix}" (your agent name). Got "${key}". Try "${prefix}${key}" for your own writes. Use reef_store_list or reef_store_wait with a prefix for cross-agent coordination.`,
+          error: `Store namespacing: key must start with "${prefix}" (your agent name). Got "${key}". Try "${prefix}${key}" for your own writes. Do not pre-prefix another agent's name into your write key; use reef_store_list or reef_store_wait with a prefix for cross-agent coordination.`,
         },
         403,
       );
@@ -282,7 +282,7 @@ app.delete("/:key", (c) => {
     if (!key.startsWith(prefix)) {
       return c.json(
         {
-          error: `Store namespacing: key must start with "${prefix}" (your agent name). Got "${key}". Try "${prefix}${key}" for your own writes. Use reef_store_list or reef_store_wait with a prefix for cross-agent coordination.`,
+          error: `Store namespacing: key must start with "${prefix}" (your agent name). Got "${key}". Try "${prefix}${key}" for your own writes. Do not pre-prefix another agent's name into your write key; use reef_store_list or reef_store_wait with a prefix for cross-agent coordination.`,
         },
         403,
       );
@@ -443,7 +443,7 @@ const mod: ServiceModule = {
             const prefix = `${client.agentName}:`;
             if (!params.key.startsWith(prefix)) {
               return client.err(
-                `Store namespacing: key must start with "${prefix}" (your agent name). Got "${params.key}". Try "${prefix}${params.key}" for your own writes. Use reef_store_list or reef_store_wait with a prefix for cross-agent coordination.`,
+                `Store namespacing: key must start with "${prefix}" (your agent name). Got "${params.key}". Try "${prefix}${params.key}" for your own writes. Do not pre-prefix another agent's name into your write key; use reef_store_list or reef_store_wait with a prefix for cross-agent coordination.`,
               );
             }
           }
