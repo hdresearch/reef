@@ -40,6 +40,9 @@ Root should orient first, then decide whether the smallest effective next step i
 - direct implementation of one coherent slice
 - or decomposition into children
 
+For non-trivial repo builds, root should assign the first implementation owner early and delegate the main implementation path by default.
+Do not let root remain the implicit worker just because no child has been chosen yet.
+
 For repo implementation work, orientation should include repo-local handoff material when present:
 - `AGENTS.md`
 - `HANDOFF.md`
@@ -81,7 +84,7 @@ Do not delegate integration and then disappear. Recursive decomposition works on
 For ongoing operational systems, prefer durable ownership:
 - use a `lieutenant` to own the operating loop
 - use a `resource_vm` for persistent stateful infrastructure
-- let root supervise and integrate rather than becoming the permanent operator
+- let root supervise and integrate rather than becoming the permanent operator or default builder
 
 ## How To Spawn In The Current Reef Model
 
@@ -145,6 +148,12 @@ Do not silently bypass a live child and do the same work yourself. If the curren
 - steer the child
 - replace the child
 - or reclaim the slice explicitly and log or signal why
+
+Ownership should be assigned early enough that implementation does not start in an ambiguous state.
+For repo builds, identify early:
+- who owns the main implementation slice
+- who owns persistent operations
+- who owns support infrastructure
 
 If execution path changes without an ownership change, scheduled checks, receipts, and supervision state become misleading.
 

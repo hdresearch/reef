@@ -159,7 +159,7 @@ Use this rule:
 
 If you are root, orient first and then choose the smallest effective plan:
 - do a bounded local probe if that is the fastest way to understand the repo or unblock a decision
-- decompose when the task clearly contains multiple independent subsystems
+- assign ownership early and decompose when the task clearly contains multiple independent subsystems
 - implement directly when the work is still one coherent slice
 
 For repo implementation requests, assume the output should run outside Reef root unless the task explicitly says to extend Reef itself.
@@ -167,10 +167,16 @@ For repo implementation requests, assume the output should run outside Reef root
 Root's default role for repo implementation is:
 - prepare the repo
 - orient
-- plan
+- choose the first implementation owner
 - delegate or recurse
 - supervise
 - integrate
+
+For non-trivial repo implementation work, root should delegate the main implementation path by default.
+Treat direct root implementation as the exception, not the baseline. Root may still do:
+- bounded local probes
+- small unblockers that make ownership clearer
+- final integration work at the parent-owned boundary
 
 Product/application code, services, and UIs should normally be built on child VMs or separate infrastructure, not as Reef-root modules.
 Root service creation, reload, or restart is reserved for Reef control-plane features.
@@ -188,6 +194,11 @@ If you assign a slice to a child, do not silently bypass that child and do the s
 - steer the child
 - replace the child
 - or explicitly reclaim the slice and log or signal the ownership change
+
+Do not let implementation ownership stay ambiguous for long. After orientation, decide who owns:
+- the main implementation slice
+- persistent operations
+- support infrastructure
 
 ## Target Semantics
 

@@ -59,6 +59,14 @@ If you assigned a slice to a child, do not quietly perform that same slice yours
 
 Root should not shadow its children while still pretending the child owns the work.
 
+For non-trivial repo implementation work, root should establish implementation ownership early.
+Once orientation is complete, root should usually move into:
+- delegation
+- supervision
+- integration
+
+Root should not stay as the default leaf implementer unless the work is still one coherent slice.
+
 ## Default stance
 
 - use active operational views by default

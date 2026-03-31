@@ -29,6 +29,13 @@ After orientation, decide where the work belongs:
 - multi-subsystem build -> decompose
 - support infrastructure or a side environment -> consider whether a child or `resource_vm` is warranted
 
+For non-trivial repo builds, make the ownership decision early:
+- who owns the main implementation slice
+- who owns persistent operations
+- who owns support infrastructure
+
+Root should not remain the implicit main worker while those decisions are still vague.
+
 For repo implementation requests, assume the output should run outside Reef root unless the user explicitly asked to extend Reef itself.
 Root's default role is to orient, delegate, supervise, and integrate. Do not make root the default home for the product you are building.
 
