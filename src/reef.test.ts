@@ -16,6 +16,56 @@ afterAll(() => {
   if (existsSync(TEST_DATA_DIR)) rmSync(TEST_DATA_DIR, { recursive: true });
 });
 
+function writeResponsivePiScript(dir: string): string {
+  const scriptPath = join(process.cwd(), dir, "responsive-pi.js");
+  writeFileSync(
+    scriptPath,
+    String.raw`#!/usr/bin/env node
+const readline = require("node:readline");
+
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
+
+  if (msg.type === "get_state") {
+    process.stdout.write(JSON.stringify({ type: "response", id: msg.id, command: "get_state", data: {} }) + "\n");
+    return;
+  }
+
+  if (msg.type === "set_auto_retry") {
+    process.stdout.write(JSON.stringify({ type: "response", id: msg.id, command: "set_auto_retry", data: {} }) + "\n");
+    return;
+  }
+
+  if (msg.type === "set_model") {
+    process.stdout.write(JSON.stringify({ type: "response", id: msg.id, command: "set_model", data: {} }) + "\n");
+    return;
+  }
+});
+
+setInterval(() => {}, 1000);
+`,
+  );
+  chmodSync(scriptPath, 0o755);
+  return scriptPath;
+}
+
+function killTaskChildren(local: { piProcesses: Map<string, { child?: { kill: (signal?: string) => void } }> }) {
+  for (const task of local.piProcesses.values()) {
+    try {
+      task.child?.kill("SIGTERM");
+    } catch {
+      // ignore cleanup errors in tests
+    }
+  }
+}
+
 describe("reef", () => {
   let app: any;
   let tree: ConversationTree;
@@ -55,12 +105,15 @@ describe("reef", () => {
     const prevDataDir = process.env.REEF_DATA_DIR;
     const prevVmId = process.env.VERS_VM_ID;
     const prevAgentName = process.env.VERS_AGENT_NAME;
+    const prevPiPath = process.env.PI_PATH;
     const localDir = `${TEST_DATA_DIR}-scheduled-idle`;
     if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    mkdirSync(localDir, { recursive: true });
 
     process.env.REEF_DATA_DIR = localDir;
     process.env.VERS_VM_ID = "vm-root-scheduled-idle";
     process.env.VERS_AGENT_NAME = "root-reef";
+    process.env.PI_PATH = writeResponsivePiScript(localDir);
 
     const local = await createReef({ server: { modules: [] } });
     const existing = local.tree.startTask("main-chat", "main visible chat", local.tree.getRef("main") ?? null);
@@ -86,22 +139,27 @@ describe("reef", () => {
     expect(leaf?.content).toContain("wake root while idle");
     expect(local.tree.getTask("scheduled-check-idle-1")).toBeUndefined();
 
+    killTaskChildren(local);
     if (existsSync(localDir)) rmSync(localDir, { recursive: true });
     process.env.REEF_DATA_DIR = prevDataDir;
     process.env.VERS_VM_ID = prevVmId;
     process.env.VERS_AGENT_NAME = prevAgentName;
+    process.env.PI_PATH = prevPiPath;
   });
 
   test("scheduled:fired falls back to a scheduled conversation when no open conversation exists", async () => {
     const prevDataDir = process.env.REEF_DATA_DIR;
     const prevVmId = process.env.VERS_VM_ID;
     const prevAgentName = process.env.VERS_AGENT_NAME;
+    const prevPiPath = process.env.PI_PATH;
     const localDir = `${TEST_DATA_DIR}-scheduled-idle-fallback`;
     if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    mkdirSync(localDir, { recursive: true });
 
     process.env.REEF_DATA_DIR = localDir;
     process.env.VERS_VM_ID = "vm-root-scheduled-idle-fallback";
     process.env.VERS_AGENT_NAME = "root-reef";
+    process.env.PI_PATH = writeResponsivePiScript(localDir);
 
     const local = await createReef({ server: { modules: [] } });
 
@@ -116,12 +174,15 @@ describe("reef", () => {
 
     const task = local.tree.getTask("scheduled-check-idle-fallback-1");
     expect(task).toBeTruthy();
+    expect(task!.status).toBe("running");
     expect(task!.trigger).toContain("wake root with fallback conversation");
 
+    killTaskChildren(local);
     if (existsSync(localDir)) rmSync(localDir, { recursive: true });
     process.env.REEF_DATA_DIR = prevDataDir;
     process.env.VERS_VM_ID = prevVmId;
     process.env.VERS_AGENT_NAME = prevAgentName;
+    process.env.PI_PATH = prevPiPath;
   });
 
   test("scheduled:fired stays queued when root already has a running turn", async () => {
