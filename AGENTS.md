@@ -72,6 +72,7 @@ Any agent can self-organize with compute. If you need to parallelize, decompose,
 | `reef_swarm_wait` | Wait for workers to finish | All agent types |
 | `reef_swarm_read` | Read a worker's output | All agent types |
 | `reef_agent_spawn` | Spawn a single autonomous agent VM | Lieutenants, agent VMs |
+| `reef_agent_task` | Send a new bounded task to an alive idle agent VM | Lieutenants, agent VMs |
 | `reef_fleet_status` | Live view of your direct children: status, last signal, context, child count | Any agent with children |
 
 **Root** (`infra_vm`) has all of the above plus: `reef_lt_create` (spawn lieutenants), commits management, service management, UI. Only root can spawn lieutenants.
@@ -194,6 +195,14 @@ For concrete coordination procedures, read `skills/coordination-patterns/SKILL.m
 - Use this to control work you own
 - Send steer, abort, pause, resume to descendants in your subtree by name
 - Downward commands are authoritative; children should treat parent direction as control, not a suggestion
+- Use `steer` when a child is still actively working on its current task
+- If a child is alive and idle, give it a new bounded assignment instead of treating that as a steer of the old task
+- If a child is stopped or destroyed, do not treat it as a live task target
+- When assigning work, you may also specify post-task disposition if you need it:
+  - `stay_idle` when you expect likely near-term follow-up work and want the child to remain available
+  - `stop_when_done` when the work is one-shot and there is no real reuse plan
+- Use post-task disposition intentionally. Reuse is good when you have an actual follow-up plan. Keeping children warm without a reason is wasteful.
+- Spawn-time disposition sets the child's baseline after creation. A later explicit task or command disposition overrides that baseline for future completion decisions.
 
 **Sending laterally** — use `reef_peer_signal`:
 - Use this to coordinate with siblings
@@ -208,7 +217,7 @@ Your inbox is a unified stream of everything addressed to you — commands from 
 
 **Check your inbox periodically.** Your parent may steer or abort you at any time. Your children may signal done, blocked, or failed. The behavior timer checks every 10 seconds, but you should also check before starting new work and after completing a major step.
 
-**Before you conclude, do one final inbox catch-up.** After finishing your current work, check `reef_inbox` once more before you signal `done` or fully disengage. This applies to root, lieutenants, agent VMs, and swarm workers. It is a bounded catch-up pass, not indefinite monitoring.
+**Before you conclude, do one final inbox catch-up.** After finishing your current work, check `reef_inbox` once more before you signal `done` or fully disengage. This always applies to root, lieutenants, and agent VMs. For swarm workers, do it when your runtime/task path leaves you alive long enough to perform one bounded final pass. It is a bounded catch-up pass, not indefinite monitoring.
 
 **No cross-branch authority.** If you need something from another branch of the tree, signal upward and let the common ancestor coordinate.
 
@@ -218,6 +227,48 @@ Use the right primitive for the job:
 - `reef_store_wait` for shared state conditions
 - `reef_schedule_check` when future attention must survive after the current turn
 - `reef_swarm_wait` when you dispatched work through the swarm tools and want the swarm-specific completion helper instead of raw inbox handling
+
+## Child Task State Model
+
+For agent-bearing children (`lieutenant`, `agent_vm`, `swarm_vm`), use this state model consistently:
+
+- **working**: the child is alive and actively executing its current task
+- **idle**: the child is alive, available, and not currently executing a task
+- **stopped/destroyed**: the child is no longer a live task target
+
+Behavior rules:
+- if a child is **working**, you may `steer` it
+- if a child is **idle**, you may reuse it for a new bounded task
+- if a child is **stopped/destroyed**, do not address it as if it were still live
+
+This does not depend on whether the child is a lieutenant, a single agent VM, or a swarm worker. Category affects typical lifecycle, not whether an alive idle child is reusable.
+
+Do not blur these cases:
+- `steer` means modify in-flight work
+- a new assignment means give fresh bounded work to an alive idle child
+- a stopped child must be restored or replaced before it can receive work again
+
+## Post-Task Disposition
+
+When you finish your current task, decide whether to remain idle or stop in this order:
+
+1. **Explicit parent disposition**
+   - if your parent explicitly told you `stay_idle` or `stop_when_done`, start there
+2. **Category default baseline**
+   - `lieutenant` -> default to staying idle
+   - `agent_vm` -> default to stopping when done
+   - `swarm_vm` -> default to stopping when done
+3. **Final inbox/context override before exit**
+   - before you actually stop, do one bounded inbox catch-up and consider immediate operational context
+   - if a concrete reason to remain alive appeared, it is valid to remain idle instead of stopping
+
+Concrete reasons to remain alive include:
+- a meaningful late inbox item arrived during the final catch-up
+- active children still depend on you
+- your parent has already given you clear follow-up work
+- your current role obviously implies continued availability
+
+This is meant to preserve recursive, self-assembling fleet behavior without making every worker immortal. Use defaults as baselines, not as blind shutdown rules.
 
 ## Coordination Via Store
 

@@ -74,10 +74,10 @@ export function createRoutes(store: LieutenantStore, getRuntime: () => Lieutenan
   routes.post("/lieutenants/:name/send", async (c) => {
     try {
       const body = await c.req.json();
-      const { message, mode } = body;
+      const { message, mode, postTaskDisposition } = body;
       if (!message || typeof message !== "string") return c.json({ error: "message is required" }, 400);
 
-      const result = await getRuntime().send(c.req.param("name"), message, mode);
+      const result = await getRuntime().send(c.req.param("name"), message, mode, postTaskDisposition);
       return c.json(result);
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);

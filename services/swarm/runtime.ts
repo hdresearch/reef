@@ -23,7 +23,7 @@ import {
   waitForRpcReady,
   waitForSshReady,
 } from "../lieutenant/rpc.js";
-import type { VMCategory, VMTreeStore } from "../vm-tree/store.js";
+import type { PostTaskDisposition, VMCategory, VMTreeStore } from "../vm-tree/store.js";
 
 // =============================================================================
 // Types
@@ -59,6 +59,7 @@ export interface SpawnParams {
   context?: string; // v2: situational context appended to inherited AGENTS.md
   category?: string; // v2: override category (default: swarm_vm, agent_vm for reef_agent_spawn)
   directive?: string; // v2: hard guardrails (VERS_AGENT_DIRECTIVE)
+  postTaskDisposition?: PostTaskDisposition | null;
   effort?: string; // v2: thinking effort level (low, medium, high)
   parentVmId?: string | null;
   spawnedBy?: string;
@@ -454,23 +455,19 @@ export class SwarmRuntime {
         if (agent.status !== "working") continue;
         const silentMs = now - agent.lastActivityAt;
         if (silentMs >= SwarmRuntime.ACTIVITY_TIMEOUT_MS) {
+          const task = agent.task;
           console.error(
             `[swarm] Agent '${id}' silent for ${Math.round(silentMs / 1000)}s while "working" — auto-transitioning to "done"`,
           );
-          agent.status = "done";
-          this.clearWatchdog(id);
+          this.completeAgent(agent, `Silent for ${Math.round(silentMs / 1000)}s, auto-completed`, {
+            silentMs,
+            task,
+          });
           this.pushLifecycle(agent, {
             type: "watchdog_alert",
             timestamp: Date.now(),
             detail: `Silent for ${Math.round(silentMs / 1000)}s, auto-completed`,
             metadata: { silentMs },
-          });
-          this.events.fire("swarm:agent_completed", {
-            vmId: agent.vmId,
-            label: id,
-            task: agent.task,
-            outputLength: agent.lastOutput.length,
-            elapsed: Math.round(silentMs / 1000),
           });
           this.events.fire("reef:event", {
             type: "swarm_watchdog_alert",
@@ -539,28 +536,12 @@ export class SwarmRuntime {
       if (event.type === "agent_start") {
         agent.status = "working";
       } else if (event.type === "agent_end") {
+        const task = agent.task;
         const elapsed = agent.taskStartedAt ? Math.round((Date.now() - agent.taskStartedAt) / 1000) : 0;
-        agent.status = "done";
-        this.clearWatchdog(agent.id);
-        this.requestUsageSnapshot(agent, { force: true });
-        this.pushLifecycle(agent, {
-          type: "completed",
-          timestamp: Date.now(),
-          detail: `Completed (${agent.lastOutput.length} chars, ${elapsed}s)`,
-          metadata: { outputLength: agent.lastOutput.length, elapsed },
-        });
-        this.events.fire("swarm:agent_completed", {
-          vmId: agent.vmId,
-          label: agent.label,
-          task: agent.task,
+        this.completeAgent(agent, `Completed (${agent.lastOutput.length} chars, ${elapsed}s)`, {
           outputLength: agent.lastOutput.length,
           elapsed,
-        });
-        this.events.fire("reef:event", {
-          type: "swarm_agent_completed",
-          source: "swarm",
-          name: agent.label,
-          vmId: agent.vmId,
+          task,
         });
       } else if (event.type === "message_end" && event.message?.role === "assistant") {
         this.events.fire("usage:message", {
@@ -637,6 +618,7 @@ export class SwarmRuntime {
             parentId: (params.parentVmId ?? process.env.VERS_VM_ID) || null,
             context: params.context,
             directive: params.directive,
+            postTaskDisposition: params.postTaskDisposition,
             model,
             effort: params.effort,
             spawnedBy: params.spawnedBy || process.env.VERS_AGENT_NAME || "reef",
@@ -948,10 +930,19 @@ export class SwarmRuntime {
     if (this.orphanTimer.unref) this.orphanTimer.unref();
   }
 
-  sendTask(agentId: string, task: string): void {
+  sendTask(agentId: string, task: string, postTaskDisposition?: PostTaskDisposition | null): void {
     const agent = this.agents.get(agentId);
     if (!agent)
       throw new NotFoundError(`Agent '${agentId}' not found. Available: ${Array.from(this.agents.keys()).join(", ")}`);
+
+    if (agent.status === "working") {
+      throw new ValidationError(
+        `Agent '${agentId}' is working. Use steer for in-flight changes or wait for it to become idle.`,
+      );
+    }
+    if (agent.status === "done" || agent.status === "error") {
+      throw new ValidationError(`Agent '${agentId}' is ${agent.status} and is not a live task target.`);
+    }
 
     const handle = this.handles.get(agentId);
     if (!handle) throw new Error(`No RPC handle for agent '${agentId}'`);
@@ -961,6 +952,9 @@ export class SwarmRuntime {
     agent.lastOutput = "";
     agent.lastActivityAt = Date.now();
     agent.taskStartedAt = Date.now();
+    if (postTaskDisposition && this.vmTreeStore) {
+      this.vmTreeStore.updateVM(agent.vmId, { postTaskDisposition });
+    }
 
     handle.send({ type: "prompt", message: task });
     this.startWatchdog(agentId);
@@ -1270,22 +1264,13 @@ export class SwarmRuntime {
             vmId: agent.vmId,
           });
         } else {
+          const task = agent.task;
           console.error(
             `[swarm] Agent '${agentId}' pi alive but silent for ${Math.round(staleDuration / 1000)}s — marking as done`,
           );
-          agent.status = "done";
-          this.pushLifecycle(agent, {
-            type: "watchdog_alert",
-            timestamp: Date.now(),
-            detail: `Silent for ${Math.round(staleDuration / 1000)}s, auto-completed`,
-            metadata: { staleDurationMs: staleDuration },
-          });
-          this.events.fire("swarm:agent_completed", {
-            vmId: agent.vmId,
-            label: agentId,
-            task: agent.task,
-            outputLength: agent.lastOutput.length,
-            elapsed: Math.round(staleDuration / 1000),
+          this.completeAgent(agent, `Silent for ${Math.round(staleDuration / 1000)}s, auto-completed`, {
+            staleDurationMs: staleDuration,
+            task,
           });
           this.events.fire("reef:event", {
             type: "swarm_watchdog_alert",
@@ -1313,6 +1298,43 @@ export class SwarmRuntime {
       this.watchdogs.delete(agentId);
     }
   }
+
+  private desiredPostTaskDisposition(agent: SwarmAgent): PostTaskDisposition {
+    const vm = this.vmTreeStore?.getVM(agent.vmId);
+    return (
+      vm?.effectivePostTaskDisposition ||
+      (vm?.category === "agent_vm" || vm?.category === "swarm_vm" ? "stop_when_done" : "stay_idle")
+    );
+  }
+
+  private completeAgent(agent: SwarmAgent, detail: string, metadata: Record<string, unknown>) {
+    const elapsed = agent.taskStartedAt ? Math.round((Date.now() - agent.taskStartedAt) / 1000) : 0;
+    const stayIdle = this.desiredPostTaskDisposition(agent) === "stay_idle";
+    agent.status = stayIdle ? "idle" : "done";
+    agent.task = undefined;
+    agent.taskStartedAt = undefined;
+    this.clearWatchdog(agent.id);
+    this.requestUsageSnapshot(agent, { force: true });
+    this.pushLifecycle(agent, {
+      type: "completed",
+      timestamp: Date.now(),
+      detail,
+      metadata: { ...metadata, elapsed, postTaskDisposition: stayIdle ? "stay_idle" : "stop_when_done" },
+    });
+    this.events.fire("swarm:agent_completed", {
+      vmId: agent.vmId,
+      label: agent.label,
+      task: metadata.task ?? null,
+      outputLength: agent.lastOutput.length,
+      elapsed,
+    });
+    this.events.fire("reef:event", {
+      type: "swarm_agent_completed",
+      source: "swarm",
+      name: agent.label,
+      vmId: agent.vmId,
+    });
+  }
 }
 
 // =============================================================================
@@ -1323,5 +1345,12 @@ export class NotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "NotFoundError";
+  }
+}
+
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
   }
 }

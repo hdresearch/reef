@@ -28,6 +28,17 @@ Do not optimize for a clean-looking signal.
 Optimize for handoff quality.
 
 Before you send your final `done`, do one bounded inbox catch-up. If new parent/child/peer attention arrived after you finished the main task, either handle a small in-scope follow-up immediately or mention it explicitly in your final signal.
+For swarm workers, only claim a final inbox catch-up if your runtime/task path actually left you a bounded final pass before exit. Do not imply a universal self-directed catch-up when the swarm runtime completed atomically.
+
+## Disposition-aware conclusion
+
+Before fully disengaging, decide post-task state in this order:
+1. explicit parent disposition (`stay_idle` / `stop_when_done`)
+2. category default baseline
+3. final inbox/context override if a concrete reason to remain alive appeared
+
+If you remain alive and idle, make that explicit in your final signal so your parent knows you are available for reuse.
+If you stop when done, make sure your final signal contains enough artifact pointers that replacement or follow-up work can resume cleanly.
 
 ## Checkpointing
 

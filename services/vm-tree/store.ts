@@ -24,6 +24,8 @@ import { ulid } from "ulid";
 
 export type VMCategory = "infra_vm" | "lieutenant" | "agent_vm" | "swarm_vm" | "resource_vm";
 export type VMStatus = "creating" | "running" | "paused" | "stopped" | "error" | "destroyed" | "rewound";
+export type PostTaskDisposition = "stay_idle" | "stop_when_done";
+export type PostTaskDispositionSource = "explicit" | "default";
 export type SignalDirection = "up" | "down" | "peer";
 export type UpwardSignalType = "done" | "blocked" | "failed" | "progress" | "need-resources" | "checkpoint";
 export type DownwardCommandType = "abort" | "pause" | "resume" | "steer";
@@ -61,6 +63,9 @@ export interface VMNode {
   // Agent identity
   context: string | null;
   directive: string | null;
+  postTaskDisposition: PostTaskDisposition | null;
+  effectivePostTaskDisposition: PostTaskDisposition | null;
+  postTaskDispositionSource: PostTaskDispositionSource | null;
   model: string | null;
   effort: string | null;
   grants: Record<string, unknown> | null;
@@ -103,6 +108,7 @@ export interface CreateVMInput {
   lastHeartbeat?: number;
   context?: string;
   directive?: string;
+  postTaskDisposition?: PostTaskDisposition | null;
   model?: string;
   effort?: string;
   grants?: Record<string, unknown>;
@@ -122,6 +128,7 @@ export interface UpdateVMInput {
   spawnedBy?: string;
   context?: string;
   directive?: string;
+  postTaskDisposition?: PostTaskDisposition | null;
   model?: string;
   effort?: string;
   grants?: Record<string, unknown>;
@@ -310,6 +317,17 @@ function normalizeDiscovery(value: unknown): DiscoveryHints | null {
   };
 }
 
+function normalizePostTaskDisposition(value: unknown): PostTaskDisposition | null {
+  if (value === "stay_idle" || value === "stop_when_done") return value;
+  return null;
+}
+
+function defaultPostTaskDispositionForCategory(category?: VMCategory | null): PostTaskDisposition | null {
+  if (category === "lieutenant") return "stay_idle";
+  if (category === "agent_vm" || category === "swarm_vm") return "stop_when_done";
+  return null;
+}
+
 // =============================================================================
 // Store
 // =============================================================================
@@ -346,6 +364,7 @@ export class VMTreeStore {
 
 				context         TEXT,
 				directive       TEXT,
+				post_task_disposition TEXT,
 				model           TEXT,
 				effort          TEXT,
 				grants          TEXT,
@@ -375,6 +394,7 @@ export class VMTreeStore {
 
     this.ensureColumn("vm_tree", "service_endpoints", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("vm_tree", "discovery", "TEXT");
+    this.ensureColumn("vm_tree", "post_task_disposition", "TEXT");
 
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_vm_tree_name ON vm_tree(name, status)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_vm_tree_parent ON vm_tree(parent_id)");
@@ -556,8 +576,8 @@ export class VMTreeStore {
     const now = Date.now();
 
     this.db.run(
-      `INSERT INTO vm_tree (id, name, parent_id, category, address, service_endpoints, context, directive, model, effort, grants, reef_config, discovery, status, last_heartbeat, spawned_by, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO vm_tree (id, name, parent_id, category, address, service_endpoints, context, directive, post_task_disposition, model, effort, grants, reef_config, discovery, status, last_heartbeat, spawned_by, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         vmId,
         input.name.trim(),
@@ -567,6 +587,7 @@ export class VMTreeStore {
         JSON.stringify(normalizeServiceEndpoints(input.serviceEndpoints)),
         input.context || null,
         input.directive || null,
+        normalizePostTaskDisposition(input.postTaskDisposition),
         input.model || null,
         input.effort || null,
         input.grants ? JSON.stringify(input.grants) : null,
@@ -621,6 +642,7 @@ export class VMTreeStore {
       ["spawnedBy", "spawned_by"],
       ["context", "context"],
       ["directive", "directive"],
+      ["postTaskDisposition", "post_task_disposition"],
       ["model", "model"],
       ["effort", "effort"],
       ["rpcStatus", "rpc_status"],
@@ -688,6 +710,7 @@ export class VMTreeStore {
       lastHeartbeat: input.lastHeartbeat,
       context: input.context ?? existing.context,
       directive: input.directive ?? existing.directive,
+      postTaskDisposition: input.postTaskDisposition ?? existing.postTaskDisposition,
       model: input.model ?? existing.model,
       effort: input.effort ?? existing.effort,
       grants: input.grants ?? existing.grants,
@@ -1785,6 +1808,8 @@ export class VMTreeStore {
 // =============================================================================
 
 function rowToVMNode(row: any): VMNode {
+  const explicitDisposition = normalizePostTaskDisposition(row.post_task_disposition);
+  const effectiveDisposition = explicitDisposition || defaultPostTaskDispositionForCategory(row.category);
   return {
     vmId: row.id,
     name: row.name,
@@ -1794,6 +1819,9 @@ function rowToVMNode(row: any): VMNode {
     serviceEndpoints: normalizeServiceEndpoints(JSON.parse(row.service_endpoints || "[]")),
     context: row.context || null,
     directive: row.directive || null,
+    postTaskDisposition: explicitDisposition,
+    effectivePostTaskDisposition: effectiveDisposition,
+    postTaskDispositionSource: explicitDisposition ? "explicit" : effectiveDisposition ? "default" : null,
     model: row.model || null,
     effort: row.effort || null,
     grants: row.grants ? JSON.parse(row.grants) : null,

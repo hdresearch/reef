@@ -79,6 +79,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       "Branch N VMs from a golden commit and start pi coding agents on each.",
       "Each agent runs pi in RPC mode, ready to receive tasks.",
       "Workers default to claude-sonnet-4-6.",
+      "You may optionally set post-task disposition to keep workers idle for reuse or stop them when done.",
     ].join(" "),
     parameters: Type.Object({
       commitId: Type.Optional(Type.String({ description: "Golden image commit ID (defaults to configured golden)" })),
@@ -91,6 +92,11 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       context: Type.Optional(
         Type.String({ description: "Situational context appended to inherited AGENTS.md for all workers" }),
       ),
+      postTaskDisposition: Type.Optional(
+        Type.Union([Type.Literal("stay_idle"), Type.Literal("stop_when_done")], {
+          description: "What workers should do after the current task completes",
+        }),
+      ),
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
@@ -102,6 +108,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           llmProxyKey: params.llmProxyKey,
           model: params.model,
           context: params.context,
+          postTaskDisposition: params.postTaskDisposition,
           parentVmId: client.vmId,
           spawnedBy: client.agentName,
         });
@@ -118,19 +125,30 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   pi.registerTool({
     name: "reef_swarm_task",
     label: "Send Task to Worker",
-    description: "Send a task (prompt) to a specific swarm worker. The agent will begin working on it autonomously.",
+    description:
+      "Send a task (prompt) to a specific swarm worker. The agent will begin working on it autonomously. You may optionally specify whether it should stay idle for reuse or stop when the task is done.",
     parameters: Type.Object({
       agentId: Type.String({ description: "Agent label/ID to send task to" }),
       task: Type.String({ description: "The task prompt to send" }),
+      postTaskDisposition: Type.Optional(
+        Type.Union([Type.Literal("stay_idle"), Type.Literal("stop_when_done")], {
+          description: "What the worker should do after this task completes",
+        }),
+      ),
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
       try {
         await client.api("POST", `/swarm/agents/${encodeURIComponent(params.agentId)}/task`, {
           task: params.task,
+          postTaskDisposition: params.postTaskDisposition,
         });
         const taskPreview = params.task.length > 100 ? `${params.task.slice(0, 100)}...` : params.task;
-        return client.ok(`Task sent to ${params.agentId}: "${taskPreview}"`, { agentId: params.agentId });
+        const note = params.postTaskDisposition ? `\nPost-task disposition: ${params.postTaskDisposition}` : "";
+        return client.ok(`Task sent to ${params.agentId}: "${taskPreview}"${note}`, {
+          agentId: params.agentId,
+          postTaskDisposition: params.postTaskDisposition || null,
+        });
       } catch (e: any) {
         return client.err(e.message);
       }
@@ -203,6 +221,27 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           timeoutSeconds: params.timeoutSeconds,
         });
 
+        const completedIds = (result.agents || []).map((a: any) => a.id).filter(Boolean);
+        if (completedIds.length > 0) {
+          try {
+            const ackIds: string[] = [];
+            for (const workerId of completedIds) {
+              const matched = await client.api<any>(
+                "GET",
+                `/signals/?to=${encodeURIComponent(client.agentName)}&from=${encodeURIComponent(workerId)}&direction=up&signalType=done&acknowledged=false&limit=20`,
+              );
+              for (const signal of matched.signals || []) {
+                if (signal?.id) ackIds.push(signal.id);
+              }
+            }
+            if (ackIds.length > 0) {
+              await client.api("POST", "/signals/acknowledge", { ids: ackIds });
+            }
+          } catch {
+            // Best effort only. swarm_wait result delivery should not fail because of signal ack cleanup.
+          }
+        }
+
         const agentResults = result.agents
           .map((a: any) => {
             const events = (a.lifecycle || [])
@@ -272,6 +311,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       "The agent VM can spawn its own sub-agents (more agent VMs, swarms, resource VMs).",
       "",
       "Pick model and effort based on task complexity. Default: sonnet/medium.",
+      "You may optionally set post-task disposition so the spawned agent stays idle for follow-up work or stops when done.",
     ].join("\n"),
     parameters: Type.Object({
       name: Type.String({ description: "Agent name (must be unique in the fleet)" }),
@@ -280,6 +320,11 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       directive: Type.Optional(Type.String({ description: "Hard guardrails (VERS_AGENT_DIRECTIVE)" })),
       model: Type.Optional(Type.String({ description: "LLM model (default: claude-sonnet-4-6)" })),
       commitId: Type.Optional(Type.String({ description: "Golden image commit (default: auto-resolved)" })),
+      postTaskDisposition: Type.Optional(
+        Type.Union([Type.Literal("stay_idle"), Type.Literal("stop_when_done")], {
+          description: "What the agent VM should do after its current task completes",
+        }),
+      ),
     }),
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
@@ -293,6 +338,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           context: params.context,
           category: "agent_vm",
           directive: params.directive,
+          postTaskDisposition: params.postTaskDisposition,
           parentVmId: client.vmId,
           spawnedBy: client.agentName,
         });
@@ -311,6 +357,43 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
         ].filter(Boolean);
 
         return client.ok(lines.join("\n"), { agent, vmId: agent.vmId, name: params.name });
+      } catch (e: any) {
+        return client.err(e.message);
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "reef_agent_task",
+    label: "Send Task to Agent VM",
+    description: [
+      "Send a new bounded task to an alive idle agent VM.",
+      "Use this to reuse an existing agent VM without recreating it.",
+      "Do not use this for in-flight changes while the agent is already working; steer working children instead.",
+      "Optional post-task disposition controls whether the agent stays idle for follow-up work or stops when done.",
+    ].join(" "),
+    parameters: Type.Object({
+      name: Type.String({ description: "Existing agent VM name" }),
+      task: Type.String({ description: "New bounded task to assign" }),
+      postTaskDisposition: Type.Optional(
+        Type.Union([Type.Literal("stay_idle"), Type.Literal("stop_when_done")], {
+          description: "What the agent VM should do after this task completes",
+        }),
+      ),
+    }),
+    async execute(_id, params) {
+      if (!client.getBaseUrl()) return client.noUrl();
+      try {
+        await client.api("POST", `/swarm/agents/${encodeURIComponent(params.name)}/task`, {
+          task: params.task,
+          postTaskDisposition: params.postTaskDisposition,
+        });
+        const preview = params.task.length > 120 ? `${params.task.slice(0, 120)}...` : params.task;
+        const note = params.postTaskDisposition ? `\nPost-task disposition: ${params.postTaskDisposition}` : "";
+        return client.ok(`Task sent to agent VM ${params.name}: "${preview}"${note}`, {
+          name: params.name,
+          postTaskDisposition: params.postTaskDisposition || null,
+        });
       } catch (e: any) {
         return client.err(e.message);
       }

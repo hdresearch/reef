@@ -184,6 +184,22 @@ export class LieutenantRuntime {
     const lt = typeof input === "string" ? this.store.getByName(input) : input;
     if (!lt || !lt.vmId) return lt;
 
+    const treeVm = this.vmTreeStore?.getVM(lt.vmId);
+    if (treeVm) {
+      if (treeVm.status === "destroyed" || treeVm.status === "rewound") {
+        return this.store.update(lt.name, { status: "destroyed" });
+      }
+      if (treeVm.status === "stopped") {
+        return this.store.update(lt.name, { status: "stopped" });
+      }
+      if (treeVm.status === "paused") {
+        return this.store.update(lt.name, { status: "paused" });
+      }
+      if (treeVm.status === "error") {
+        return this.store.update(lt.name, { status: "error" });
+      }
+    }
+
     try {
       const vmState = await this.getVmState(lt.vmId);
       if (vmState === "Paused" || vmState === "paused") {
@@ -438,9 +454,30 @@ export class LieutenantRuntime {
     name: string,
     message: string,
     mode?: "prompt" | "steer" | "followUp",
+    postTaskDisposition?: "stay_idle" | "stop_when_done",
   ): Promise<{ sent: boolean; mode: string; note?: string }> {
     const lt = this.store.getByName(name);
     if (!lt || lt.status === "destroyed") throw new NotFoundError(`Lieutenant '${name}' not found`);
+    const treeVm = lt.vmId ? this.vmTreeStore?.getVM(lt.vmId) : undefined;
+    if (treeVm?.status === "destroyed" || treeVm?.status === "rewound") {
+      this.store.update(name, { status: "destroyed" });
+      throw new NotFoundError(`Lieutenant '${name}' not found`);
+    }
+    if (treeVm?.status === "stopped") {
+      this.store.update(name, { status: "stopped" });
+      throw new ValidationError(`Lieutenant '${name}' is stopped and is not a live task target.`);
+    }
+    if (treeVm?.status === "paused") {
+      this.store.update(name, { status: "paused" });
+      throw new ValidationError(`Lieutenant '${name}' is paused. Resume it first.`);
+    }
+    if (treeVm?.status === "error") {
+      this.store.update(name, { status: "error" });
+      throw new ValidationError(`Lieutenant '${name}' is in error state and is not a live task target.`);
+    }
+    if (lt.status === "stopped") {
+      throw new ValidationError(`Lieutenant '${name}' is stopped and is not a live task target.`);
+    }
     if (lt.status === "paused") throw new ValidationError(`Lieutenant '${name}' is paused. Resume it first.`);
 
     let handle = this.handles.get(name);
@@ -457,6 +494,10 @@ export class LieutenantRuntime {
     if (lt.status === "working" && actualMode === "prompt") {
       actualMode = "followUp";
       note = "auto-queued as follow-up since lieutenant is working";
+    }
+
+    if (this.vmTreeStore && lt.vmId && postTaskDisposition) {
+      this.vmTreeStore.updateVM(lt.vmId, { postTaskDisposition });
     }
 
     if (actualMode === "prompt") {

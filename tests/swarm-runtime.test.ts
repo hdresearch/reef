@@ -263,6 +263,44 @@ describe("swarm completion surfacing", () => {
       elapsed: 17,
     });
   });
+
+  test("keeps a swarm worker running when postTaskDisposition is stay_idle", async () => {
+    const startedAt = Date.now();
+    const rootAgentName = `root-reef-${startedAt}`;
+    const workerName = `staging-worker-${startedAt}`;
+    process.env.VERS_VM_ID = `vm-root-${startedAt}-signals`;
+    process.env.VERS_AGENT_NAME = rootAgentName;
+    const workerVmId = `vm-worker-${startedAt}-signals`;
+
+    const server = await createServer({
+      modules: [vmTree, signals],
+    });
+
+    const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
+    expect(store).toBeDefined();
+
+    store!.createVM({
+      vmId: workerVmId,
+      name: workerName,
+      category: "swarm_vm",
+      parentId: process.env.VERS_VM_ID!,
+      status: "running",
+      rpcStatus: "connected",
+      postTaskDisposition: "stay_idle",
+    });
+
+    await server.events.emit("swarm:agent_completed", {
+      vmId: workerVmId,
+      label: workerName,
+      task: "build staging SQL",
+      outputLength: 321,
+      elapsed: 17,
+    });
+
+    const worker = store!.getVM(workerVmId);
+    expect(worker?.status).toBe("running");
+    expect(worker?.rpcStatus).toBe("connected");
+  });
 });
 
 describe("swarm wait", () => {
@@ -305,6 +343,56 @@ describe("swarm wait", () => {
     expect(result.timedOut).toBe(false);
     expect(result.agents.some((a) => a.id === "idle-worker")).toBe(false);
     expect(result.agents.find((a) => a.id === "active-worker")?.status).toBe("done");
+
+    await runtime.shutdown();
+  });
+});
+
+describe("swarm task targeting", () => {
+  test("allows re-tasking an idle agent VM and rejects stopped workers", async () => {
+    const runtime = new SwarmRuntime({ events: new ServiceEventBus() });
+    const internal = runtime as any;
+
+    let sent: any = null;
+    internal.agents.set("idle-agent", {
+      id: "idle-agent",
+      vmId: "vm-idle-agent",
+      label: "idle-agent",
+      status: "idle",
+      lastOutput: "",
+      events: [],
+      lifecycle: [],
+      lastActivityAt: Date.now(),
+      createdAt: Date.now(),
+    });
+    internal.handles.set("idle-agent", {
+      send(cmd: any) {
+        sent = cmd;
+      },
+    });
+
+    runtime.sendTask("idle-agent", "second bounded task", "stay_idle");
+    const idleAgent = internal.agents.get("idle-agent");
+    expect(idleAgent.status).toBe("working");
+    expect(idleAgent.task).toBe("second bounded task");
+    expect(sent).toMatchObject({ type: "prompt", message: "second bounded task" });
+
+    internal.agents.set("stopped-worker", {
+      id: "stopped-worker",
+      vmId: "vm-stopped-worker",
+      label: "stopped-worker",
+      status: "done",
+      lastOutput: "",
+      events: [],
+      lifecycle: [],
+      lastActivityAt: Date.now(),
+      createdAt: Date.now(),
+    });
+    internal.handles.set("stopped-worker", { send() {} });
+
+    expect(() => runtime.sendTask("stopped-worker", "should fail")).toThrow(
+      "Agent 'stopped-worker' is done and is not a live task target.",
+    );
 
     await runtime.shutdown();
   });

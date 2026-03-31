@@ -4,7 +4,7 @@
 
 import { Hono } from "hono";
 import type { SwarmRuntime } from "./runtime.js";
-import { NotFoundError } from "./runtime.js";
+import { NotFoundError, ValidationError } from "./runtime.js";
 
 export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
   const routes = new Hono();
@@ -22,6 +22,7 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
         context,
         category,
         directive,
+        postTaskDisposition,
         effort,
         parentVmId,
         spawnedBy,
@@ -40,6 +41,7 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
         context,
         category,
         directive,
+        postTaskDisposition,
         effort,
         parentVmId,
         spawnedBy,
@@ -100,13 +102,14 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
   routes.post("/agents/:id/task", async (c) => {
     try {
       const body = await c.req.json();
-      const { task } = body;
+      const { task, postTaskDisposition } = body;
       if (!task || typeof task !== "string") return c.json({ error: "task is required" }, 400);
 
-      getRuntime().sendTask(c.req.param("id"), task);
-      return c.json({ sent: true, agentId: c.req.param("id"), task });
+      getRuntime().sendTask(c.req.param("id"), task, postTaskDisposition);
+      return c.json({ sent: true, agentId: c.req.param("id"), task, postTaskDisposition: postTaskDisposition || null });
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
+      if (e instanceof ValidationError) return c.json({ error: e.message }, 400);
       throw e;
     }
   });

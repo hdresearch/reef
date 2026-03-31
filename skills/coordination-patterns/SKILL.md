@@ -87,6 +87,7 @@ Prefer:
 
 For swarm workers:
 - use `reef_swarm_wait` when you are the parent agent collecting swarm completion/results
+- when you use `reef_swarm_wait`, treat it as the authoritative swarm completion path; matching worker `done` signals are operationally consumed rather than fresh pending attention
 - if you are a swarm worker about to exit, still do one bounded inbox catch-up in case a sibling or parent sent a late message
 
 ## Which wait to use

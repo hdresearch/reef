@@ -20,7 +20,7 @@ import { Type } from "@sinclair/typebox";
 import { Hono } from "hono";
 import type { ServiceEventBus } from "../../src/core/events.js";
 import type { FleetClient, RouteDocs, ServiceContext, ServiceModule } from "../../src/core/types.js";
-import type { VMNode, VMTreeStore } from "../vm-tree/store.js";
+import type { PostTaskDisposition, VMNode, VMTreeStore } from "../vm-tree/store.js";
 
 let vmTreeStore: VMTreeStore | null = null;
 let events: ServiceEventBus | null = null;
@@ -75,6 +75,18 @@ function isActiveSignalTarget(target: VMNode): boolean {
 
 function isDurableCoordinator(target: VMNode): boolean {
   return target.category === "lieutenant";
+}
+
+function resolvePostTaskDisposition(value: unknown): PostTaskDisposition | null {
+  return value === "stay_idle" || value === "stop_when_done" ? value : null;
+}
+
+function shouldRemainLiveAfterDone(target: VMNode, payload: Record<string, unknown> | null | undefined): boolean {
+  const payloadDisposition = resolvePostTaskDisposition(payload?.postTaskDisposition);
+  const disposition = payloadDisposition || target.effectivePostTaskDisposition;
+  if (disposition === "stay_idle") return true;
+  if (disposition === "stop_when_done") return false;
+  return isDurableCoordinator(target);
 }
 
 async function waitForInboxMessage(options: {
@@ -141,7 +153,11 @@ function ensureSwarmCompletionSignal(data: {
   if (!parent?.name) return;
 
   try {
-    vmTreeStore.updateVM(child.vmId, { status: "stopped", rpcStatus: "disconnected" });
+    const stayIdle = shouldRemainLiveAfterDone(child, null);
+    vmTreeStore.updateVM(child.vmId, {
+      status: stayIdle ? "running" : "stopped",
+      rpcStatus: stayIdle ? child.rpcStatus || "connected" : "disconnected",
+    });
   } catch {
     /* best effort */
   }
@@ -231,7 +247,7 @@ routes.post("/", async (c) => {
         }
       }
 
-      if (direction === "down" && !isRootActor(actor)) {
+      if (direction === "down") {
         const target = vmTreeStore.getVMByName(toAgent, { activeOnly: false });
         if (!target) {
           return c.json({ error: `target agent "${toAgent}" not found in vm-tree` }, 404);
@@ -239,8 +255,13 @@ routes.post("/", async (c) => {
         if (!isActiveSignalTarget(target)) {
           return c.json({ error: `target agent "${toAgent}" is not active (status: ${target.status})` }, 409);
         }
-        if (!isDescendant(actor.vm.vmId, target.vmId)) {
+        if (!isRootActor(actor) && !isDescendant(actor.vm.vmId, target.vmId)) {
           return c.json({ error: `target agent "${toAgent}" is outside the requester's subtree` }, 403);
+        }
+
+        const requestedDisposition = resolvePostTaskDisposition(payload?.postTaskDisposition);
+        if (requestedDisposition) {
+          vmTreeStore.updateVM(target.vmId, { postTaskDisposition: requestedDisposition });
         }
       }
 
@@ -276,13 +297,16 @@ routes.post("/", async (c) => {
         const sender = vmTreeStore.getVMByName(fromAgent, { activeOnly: false });
         if (sender) {
           if (signalType === "done" || signalType === "failed") {
-            if (isDurableCoordinator(sender)) {
+            if (signalType === "done" && shouldRemainLiveAfterDone(sender, payload)) {
               vmTreeStore.updateVM(sender.vmId, {
-                status: signalType === "failed" ? "error" : "running",
+                status: "running",
                 rpcStatus: sender.rpcStatus || "connected",
               });
             } else {
-              vmTreeStore.updateVM(sender.vmId, { status: "stopped", rpcStatus: "disconnected" });
+              vmTreeStore.updateVM(sender.vmId, {
+                status: signalType === "failed" ? "error" : "stopped",
+                rpcStatus: signalType === "failed" ? sender.rpcStatus || "connected" : "disconnected",
+              });
             }
             // Completion snapshot — best effort, non-blocking
             // Note: actual vers_vm_commit would require pi-vers VersClient access
@@ -426,8 +450,8 @@ routes.get("/_panel", (c) => {
     .map((s) => {
       const dir = s.direction === "up" ? "&#x2191;" : s.direction === "down" ? "&#x2193;" : "&#x2194;";
       const ack = s.acknowledged
-        ? '<span style="color:#4f9">&#x2713;</span>'
-        : '<span style="color:#ff9800">&#x25cf;</span>';
+        ? '<span title="Acknowledged: this signal was already read/consumed from inbox." aria-label="Acknowledged signal" style="color:#4f9;cursor:help">&#x2713;</span>'
+        : '<span title="Unacknowledged: this signal is still unread and may need attention." aria-label="Unacknowledged signal" style="color:#ff9800;cursor:help">&#x25cf;</span>';
       const age = Math.round((Date.now() - s.createdAt) / 1000);
       const payload = s.payload ? JSON.stringify(s.payload).slice(0, 80) : "";
       return `<tr>
@@ -448,11 +472,16 @@ routes.get("/_panel", (c) => {
 			<div style="margin-bottom:8px;color:#888">
 				${unacked.length} unacknowledged signal${unacked.length !== 1 ? "s" : ""}
 			</div>
+			<div style="margin-bottom:8px;color:#666;font-size:11px">
+				<span title="Acknowledged: this signal was already read/consumed from inbox." style="color:#4f9;cursor:help">&#x2713;</span> acknowledged
+				&nbsp;&nbsp;
+				<span title="Unacknowledged: this signal is still unread and may need attention." style="color:#ff9800;cursor:help">&#x25cf;</span> unread / needs attention
+			</div>
 			${
         recent.length > 0
           ? `<table style="width:100%;border-collapse:collapse">
 						<thead><tr style="color:#666;font-size:11px;text-align:left;border-bottom:1px solid #333">
-							<th style="padding:2px 6px">Ack</th>
+							<th style="padding:2px 6px" title="Ack status. Hover icons for meaning." aria-label="Acknowledgement status">Ack</th>
 							<th style="padding:2px 6px">Dir</th>
 							<th style="padding:2px 6px">From</th>
 							<th></th>
@@ -539,16 +568,25 @@ Signal types:
     label: "Command: Send to Child",
     description: `Send a command downward to one of your child agents.
 
-Command types:
-  - "steer"  — course correction, new context, new direction. Payload should include message.
-  - "abort"  — stop everything, tear down sub-fleet, self-terminate.
-  - "pause"  — suspend work, hold state.
-  - "resume" — continue from where you stopped.`,
+	Command types:
+	  - "steer"  — course correction, new context, new direction. Payload should include message.
+	  - "abort"  — stop everything, tear down sub-fleet, self-terminate.
+	  - "pause"  — suspend work, hold state.
+	  - "resume" — continue from where you stopped.
+
+	Optional post-task disposition:
+	  - "stay_idle" — remain alive and idle after current work completes
+	  - "stop_when_done" — stop after current work completes unless immediate context overrides it.`,
     parameters: Type.Object({
       to: Type.String({ description: "Child agent name to send the command to" }),
       command: Type.Union(
         [Type.Literal("steer"), Type.Literal("abort"), Type.Literal("pause"), Type.Literal("resume")],
         { description: "Command type" },
+      ),
+      postTaskDisposition: Type.Optional(
+        Type.Union([Type.Literal("stay_idle"), Type.Literal("stop_when_done")], {
+          description: "Optional post-task lifecycle instruction for the child",
+        }),
       ),
       payload: Type.Optional(
         Type.Record(Type.String(), Type.Any(), { description: "Command payload (message, reason, etc.)" }),
@@ -557,12 +595,15 @@ Command types:
     async execute(_id, params) {
       if (!client.getBaseUrl()) return client.noUrl();
       try {
+        const payload = params.postTaskDisposition
+          ? { ...(params.payload || {}), postTaskDisposition: params.postTaskDisposition }
+          : params.payload;
         const result = await client.api<any>("POST", "/signals/", {
           fromAgent: client.agentName,
           toAgent: params.to,
           direction: "down",
           signalType: params.command,
-          payload: params.payload,
+          payload,
         });
 
         return client.ok(`Command "${params.command}" sent to ${params.to}.`, { signal: result });

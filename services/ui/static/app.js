@@ -1234,9 +1234,14 @@ async function fetchPanel(name) {
 
 async function refreshPanel(name) {
   if (!loadedPanels.has(name)) return;
+  const existing = loadedPanels.get(name);
+  if (existing?.__panelRefresh) {
+    await existing.__panelRefresh();
+    return;
+  }
   const panel = await fetchPanel(name);
   if (!panel) return;
-  injectPanel(loadedPanels.get(name), panel.html);
+  injectPanel(existing, panel.html);
 }
 
 async function loadProfilePanel() {

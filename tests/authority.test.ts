@@ -113,6 +113,134 @@ function seedHierarchy(store: VMTreeStore, suffix: string) {
 }
 
 describe("authority model", () => {
+  test("agent_vm done honors stay_idle disposition", async () => {
+    const server = await createServer({ modules: [vmTree, signals] });
+    const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
+    expect(store).toBeDefined();
+    const suffix = `${Date.now()}-stay-idle`;
+
+    const rootVmId = `root-${suffix}`;
+    const ltVmId = `lt-${suffix}`;
+    const agentVmId = `agent-${suffix}`;
+    const rootName = `root-reef-${suffix}`;
+    const ltName = `lt-${suffix}`;
+    const agentName = `agent-${suffix}`;
+
+    store!.upsertVM({ vmId: rootVmId, name: rootName, category: "infra_vm", status: "running" });
+    store!.upsertVM({ vmId: ltVmId, name: ltName, category: "lieutenant", status: "running", parentId: rootVmId });
+    store!.upsertVM({
+      vmId: agentVmId,
+      name: agentName,
+      category: "agent_vm",
+      status: "running",
+      parentId: ltVmId,
+      rpcStatus: "connected",
+      postTaskDisposition: "stay_idle",
+    });
+
+    const agentHeaders = authHeaders({
+      "X-Reef-Agent-Name": agentName,
+      "X-Reef-VM-ID": agentVmId,
+      "X-Reef-Category": "agent_vm",
+    });
+
+    const done = await json(server.app, "/signals/", {
+      method: "POST",
+      headers: agentHeaders,
+      body: {
+        fromAgent: agentName,
+        toAgent: ltName,
+        direction: "up",
+        signalType: "done",
+        payload: { summary: "task finished" },
+      },
+    });
+
+    expect(done.status).toBe(201);
+    const agent = store!.getVM(agentVmId);
+    expect(agent?.status).toBe("running");
+    expect(agent?.rpcStatus).toBe("connected");
+    expect(agent?.postTaskDisposition).toBe("stay_idle");
+    expect(agent?.effectivePostTaskDisposition).toBe("stay_idle");
+    expect(agent?.postTaskDispositionSource).toBe("explicit");
+  });
+
+  test("lieutenant done honors stop_when_done disposition", async () => {
+    const server = await createServer({ modules: [vmTree, signals] });
+    const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
+    expect(store).toBeDefined();
+    const suffix = `${Date.now()}-lt-stop`;
+
+    const rootVmId = `root-${suffix}`;
+    const ltVmId = `lt-${suffix}`;
+    const rootName = `root-reef-${suffix}`;
+    const ltName = `lt-${suffix}`;
+
+    store!.upsertVM({ vmId: rootVmId, name: rootName, category: "infra_vm", status: "running" });
+    store!.upsertVM({
+      vmId: ltVmId,
+      name: ltName,
+      category: "lieutenant",
+      status: "running",
+      parentId: rootVmId,
+      rpcStatus: "connected",
+      postTaskDisposition: "stop_when_done",
+    });
+
+    const ltHeaders = authHeaders({
+      "X-Reef-Agent-Name": ltName,
+      "X-Reef-VM-ID": ltVmId,
+      "X-Reef-Category": "lieutenant",
+    });
+
+    const done = await json(server.app, "/signals/", {
+      method: "POST",
+      headers: ltHeaders,
+      body: {
+        fromAgent: ltName,
+        toAgent: rootName,
+        direction: "up",
+        signalType: "done",
+        payload: { summary: "temporary lieutenant complete" },
+      },
+    });
+
+    expect(done.status).toBe(201);
+    const lt = store!.getVM(ltVmId);
+    expect(lt?.status).toBe("stopped");
+    expect(lt?.rpcStatus).toBe("disconnected");
+  });
+
+  test("default agent disposition remains inferred rather than materialized", async () => {
+    const server = await createServer({ modules: [vmTree, signals] });
+    const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;
+    expect(store).toBeDefined();
+    const suffix = `${Date.now()}-agent-default`;
+
+    const rootVmId = `root-${suffix}`;
+    const ltVmId = `lt-${suffix}`;
+    const agentVmId = `agent-${suffix}`;
+    const rootName = `root-reef-${suffix}`;
+    const ltName = `lt-${suffix}`;
+    const agentName = `agent-${suffix}`;
+
+    store!.upsertVM({ vmId: rootVmId, name: rootName, category: "infra_vm", status: "running" });
+    store!.upsertVM({ vmId: ltVmId, name: ltName, category: "lieutenant", status: "running", parentId: rootVmId });
+    store!.upsertVM({
+      vmId: agentVmId,
+      name: agentName,
+      category: "agent_vm",
+      status: "running",
+      parentId: ltVmId,
+      rpcStatus: "connected",
+    });
+
+    const agent = store!.getVM(agentVmId);
+    expect(agent?.postTaskDisposition).toBeNull();
+    expect(agent?.effectivePostTaskDisposition).toBe("stop_when_done");
+    expect(agent?.postTaskDispositionSource).toBe("default");
+  });
+
   test("reef_command is enforced to the requester's subtree", async () => {
     const server = await createServer({ modules: [vmTree, signals] });
     const store = server.ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree")?.vmTreeStore;

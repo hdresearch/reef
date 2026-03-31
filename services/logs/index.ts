@@ -461,12 +461,20 @@ routes.get("/_panel", (c) => {
 								<input name="category" type="text" placeholder="decision, state_change, health…" />
 							</label>
 							<label class="logs-panel-field">
-								<span>from</span>
-								<input name="from" type="datetime-local" />
+								<span>from date</span>
+								<input name="fromDate" type="date" />
 							</label>
 							<label class="logs-panel-field">
-								<span>to</span>
-								<input name="to" type="datetime-local" />
+								<span>from time</span>
+								<input name="fromTime" type="time" />
+							</label>
+							<label class="logs-panel-field">
+								<span>to date</span>
+								<input name="toDate" type="date" />
+							</label>
+							<label class="logs-panel-field">
+								<span>to time</span>
+								<input name="toTime" type="time" />
 							</label>
 						</div>
 						<div id="logs-panel-active-filters" class="logs-panel-filter-chips"></div>
@@ -497,6 +505,7 @@ routes.get("/_panel", (c) => {
 			<script>
 				(() => {
 					const root = document.currentScript.parentElement;
+					const panelView = root.closest('.panel-view');
 					const apiBase = window.PANEL_API || '/ui/api';
 					const form = root.querySelector('#logs-panel-filters');
 					const reset = root.querySelector('#logs-panel-reset');
@@ -507,6 +516,9 @@ routes.get("/_panel", (c) => {
 					const filterSummary = root.querySelector('#logs-panel-filter-summary');
 					const activeFilters = root.querySelector('#logs-panel-active-filters');
 					const levelColor = { info: '#4f9', warn: '#ff9800', error: '#f44' };
+					let requestCounter = 0;
+					let inFlight = false;
+					let queuedRefresh = false;
 
 					function esc(s) {
 						return String(s)
@@ -515,11 +527,12 @@ routes.get("/_panel", (c) => {
 							.replace(/>/g, '&gt;');
 					}
 
-					function toEpoch(value, endOfMinute = false) {
-						if (!value) return '';
-						const date = new Date(value);
+					function toEpoch(dateValue, timeValue, endOfWindow = false) {
+						if (!dateValue) return '';
+						const normalizedTime = timeValue || (endOfWindow ? '23:59' : '00:00');
+						const date = new Date(dateValue + 'T' + normalizedTime);
 						if (Number.isNaN(date.getTime())) return '';
-						if (endOfMinute) date.setSeconds(59, 999);
+						if (endOfWindow) date.setSeconds(59, 999);
 						return String(date.getTime());
 					}
 
@@ -529,14 +542,16 @@ routes.get("/_panel", (c) => {
 						const agent = form.elements.agent.value.trim();
 						const level = form.elements.level.value;
 						const category = form.elements.category.value.trim();
-						const from = form.elements.from.value;
-						const to = form.elements.to.value;
+						const fromDate = form.elements.fromDate.value;
+						const fromTime = form.elements.fromTime.value;
+						const toDate = form.elements.toDate.value;
+						const toTime = form.elements.toTime.value;
 						if (q) entries.push('search: ' + q);
 						if (agent) entries.push('agent: ' + agent);
 						if (level) entries.push('level: ' + level);
 						if (category) entries.push('category: ' + category);
-						if (from) entries.push('from: ' + new Date(from).toLocaleString());
-						if (to) entries.push('to: ' + new Date(to).toLocaleString());
+						if (fromDate) entries.push('from: ' + new Date(fromDate + 'T' + (fromTime || '00:00')).toLocaleString());
+						if (toDate) entries.push('to: ' + new Date(toDate + 'T' + (toTime || '23:59')).toLocaleString());
 						return entries;
 					}
 
@@ -555,64 +570,87 @@ routes.get("/_panel", (c) => {
 					}
 
 					async function loadLogs() {
+						if (inFlight) {
+							queuedRefresh = true;
+							return;
+						}
+						inFlight = true;
+						const requestId = ++requestCounter;
 						const params = new URLSearchParams();
 						const q = form.elements.q.value.trim();
-						const from = form.elements.from.value;
-						const to = form.elements.to.value;
+						const fromDate = form.elements.fromDate.value;
+						const fromTime = form.elements.fromTime.value;
+						const toDate = form.elements.toDate.value;
+						const toTime = form.elements.toTime.value;
 						const level = form.elements.level.value;
 						const agent = form.elements.agent.value.trim();
 						const category = form.elements.category.value.trim();
 						if (q) params.set('q', q);
-						if (from) params.set('since', toEpoch(from));
-						if (to) params.set('until', toEpoch(to, true));
+						if (fromDate) params.set('since', toEpoch(fromDate, fromTime));
+						if (toDate) params.set('until', toEpoch(toDate, toTime, true));
 						if (level) params.set('level', level);
 						if (agent) params.set('agent', agent);
 						if (category) params.set('category', category);
 
 						summary.textContent = 'Loading…';
 						syncFilterSummary();
-						const res = await fetch(\`\${apiBase}/logs/?\${params.toString()}\`, { credentials: 'same-origin' });
-						const data = await res.json();
-						if (!res.ok) {
-							summary.textContent = data.error || 'Failed to load logs';
-							renderEmpty(data.error || 'Failed to load logs', true);
-							return;
+						try {
+							const res = await fetch(\`\${apiBase}/logs/?\${params.toString()}\`, { credentials: 'same-origin' });
+							const data = await res.json();
+							if (requestId !== requestCounter) return;
+							if (!res.ok) {
+								summary.textContent = data.error || 'Failed to load logs';
+								renderEmpty(data.error || 'Failed to load logs', true);
+								return;
+							}
+
+							const logs = data.logs || [];
+							summary.textContent = \`\${data.totalCount ?? logs.length} matching log(s)\${logs.length !== (data.totalCount ?? logs.length) ? \` · showing \${logs.length}\` : ''}\`;
+							if (!logs.length) {
+								renderEmpty('No logs match the current filters.');
+								return;
+							}
+
+							body.innerHTML = logs.map((log) => {
+								const created = new Date(log.createdAt).toLocaleString();
+								const meta = log.metadata ? esc(JSON.stringify(log.metadata)) : '';
+								return \`<tr>
+									<td style="color:#888;white-space:nowrap">\${esc(created)}</td>
+									<td style="color:\${levelColor[log.level] || '#ccc'};white-space:nowrap">\${esc(log.level)}</td>
+									<td style="color:#64b5f6;white-space:nowrap">\${esc(log.agentName)}</td>
+									<td style="color:#888;white-space:nowrap">\${esc(log.category || '')}</td>
+									<td style="word-break:break-word">\${esc(log.message)}\${meta ? '<div class="logs-panel-meta">' + meta + '</div>' : ''}</td>
+								</tr>\`;
+							}).join('');
+
+							cards.innerHTML = logs.map((log) => {
+								const created = new Date(log.createdAt).toLocaleString();
+								const categoryLabel = log.category || 'uncategorized';
+								const meta = log.metadata ? '<div class="logs-panel-meta">' + esc(JSON.stringify(log.metadata)) + '</div>' : '';
+								return \`<article class="logs-panel-card">
+									<div class="logs-panel-card-top">
+										<span class="logs-panel-level \${esc(log.level)}">\${esc(log.level)}</span>
+										<div class="logs-panel-time">\${esc(created)}</div>
+									</div>
+									<div class="logs-panel-agent">\${esc(log.agentName)}</div>
+									<div class="logs-panel-category">\${esc(categoryLabel)}</div>
+									<div class="logs-panel-message">\${esc(log.message)}</div>
+									\${meta}
+								</article>\`;
+							}).join('');
+						} catch (error) {
+							if (requestId !== requestCounter) return;
+							summary.textContent = error.message || 'Failed to load logs';
+							renderEmpty(error.message || 'Failed to load logs', true);
+						} finally {
+							if (requestId === requestCounter) {
+								inFlight = false;
+								if (queuedRefresh) {
+									queuedRefresh = false;
+									loadLogs();
+								}
+							}
 						}
-
-						const logs = data.logs || [];
-						summary.textContent = \`\${data.totalCount ?? logs.length} matching log(s)\${logs.length !== (data.totalCount ?? logs.length) ? \` · showing \${logs.length}\` : ''}\`;
-						if (!logs.length) {
-							renderEmpty('No logs match the current filters.');
-							return;
-						}
-
-						body.innerHTML = logs.map((log) => {
-							const created = new Date(log.createdAt).toLocaleString();
-							const meta = log.metadata ? esc(JSON.stringify(log.metadata)) : '';
-							return \`<tr>
-								<td style="color:#888;white-space:nowrap">\${esc(created)}</td>
-								<td style="color:\${levelColor[log.level] || '#ccc'};white-space:nowrap">\${esc(log.level)}</td>
-								<td style="color:#64b5f6;white-space:nowrap">\${esc(log.agentName)}</td>
-								<td style="color:#888;white-space:nowrap">\${esc(log.category || '')}</td>
-								<td style="word-break:break-word">\${esc(log.message)}\${meta ? '<div class="logs-panel-meta">' + meta + '</div>' : ''}</td>
-							</tr>\`;
-						}).join('');
-
-						cards.innerHTML = logs.map((log) => {
-							const created = new Date(log.createdAt).toLocaleString();
-							const categoryLabel = log.category || 'uncategorized';
-							const meta = log.metadata ? '<div class="logs-panel-meta">' + esc(JSON.stringify(log.metadata)) + '</div>' : '';
-							return \`<article class="logs-panel-card">
-								<div class="logs-panel-card-top">
-									<span class="logs-panel-level \${esc(log.level)}">\${esc(log.level)}</span>
-									<div class="logs-panel-time">\${esc(created)}</div>
-								</div>
-								<div class="logs-panel-agent">\${esc(log.agentName)}</div>
-								<div class="logs-panel-category">\${esc(categoryLabel)}</div>
-								<div class="logs-panel-message">\${esc(log.message)}</div>
-								\${meta}
-							</article>\`;
-						}).join('');
 					}
 
 					form.addEventListener('submit', (event) => {
@@ -637,11 +675,12 @@ routes.get("/_panel", (c) => {
 						details.open = true;
 					}
 
+					if (panelView) {
+						panelView.__panelRefresh = () => loadLogs();
+					}
+
 					syncFilterSummary();
-					loadLogs().catch((error) => {
-						summary.textContent = error.message || 'Failed to load logs';
-						renderEmpty(error.message || 'Failed to load logs', true);
-					});
+					loadLogs();
 				})();
 			</script>
 		</div>

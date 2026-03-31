@@ -323,6 +323,94 @@ describe("vm-tree lieutenant event wiring", () => {
   });
 });
 
+describe("lieutenant live-target gating", () => {
+  test("rejects sends to stopped lieutenants", async () => {
+    const store = new LieutenantStore(join(TMP_DIR, "stopped-send.sqlite"));
+    const remote = createFakeRemoteHandle();
+    const runtime = new LieutenantRuntime({
+      events: new ServiceEventBus(),
+      store,
+      getVmState: async () => "running",
+      reconnectRemoteHandle: async () => remote.handle as any,
+      waitForRemoteSession: async () => {},
+    });
+    const app = createRoutes(store, () => runtime);
+
+    const registered = await json(app, "/lieutenants/register", {
+      method: "POST",
+      body: {
+        name: "stopped-lt",
+        role: "stopped lieutenant",
+        vmId: "vm-stopped-1",
+      },
+    });
+    expect(registered.status).toBe(201);
+
+    store.update("stopped-lt", { status: "stopped" });
+
+    const sent = await json(app, "/lieutenants/stopped-lt/send", {
+      method: "POST",
+      body: { message: "should not deliver" },
+    });
+
+    expect(sent.status).toBe(400);
+    expect(sent.data.error).toContain("is stopped and is not a live task target");
+
+    await runtime.shutdown();
+    store.close();
+  });
+
+  test("rejects sends when vm-tree already marked the lieutenant stopped", async () => {
+    const store = new LieutenantStore(join(TMP_DIR, "vm-tree-stopped-send.sqlite"));
+    const vmTreeStore = new VMTreeStore(join(TMP_DIR, "vm-tree-stopped-send-fleet.sqlite"));
+    const remote = createFakeRemoteHandle();
+    const runtime = new LieutenantRuntime({
+      events: new ServiceEventBus(),
+      store,
+      vmTreeStore,
+      getVmState: async () => "running",
+      reconnectRemoteHandle: async () => remote.handle as any,
+      waitForRemoteSession: async () => {},
+    });
+    const app = createRoutes(store, () => runtime);
+
+    vmTreeStore.createVM({
+      vmId: "vm-stopped-tree-1",
+      name: "tree-stopped-lt",
+      category: "lieutenant",
+      status: "stopped",
+      parentId: "vm-root-1",
+      rpcStatus: "disconnected",
+    });
+
+    const registered = await json(app, "/lieutenants/register", {
+      method: "POST",
+      body: {
+        name: "tree-stopped-lt",
+        role: "stopped in vm-tree",
+        vmId: "vm-stopped-tree-1",
+      },
+    });
+    expect(registered.status).toBe(201);
+
+    // Simulate the race seen live: lieutenant store has not yet converged away from idle.
+    store.update("tree-stopped-lt", { status: "idle" });
+
+    const sent = await json(app, "/lieutenants/tree-stopped-lt/send", {
+      method: "POST",
+      body: { message: "should not deliver" },
+    });
+
+    expect(sent.status).toBe(400);
+    expect(sent.data.error).toContain("is stopped and is not a live task target");
+    expect(store.getByName("tree-stopped-lt")?.status).toBe("stopped");
+
+    await runtime.shutdown();
+    store.close();
+    vmTreeStore.close();
+  });
+});
+
 describe("vm-tree lieutenant discovery", () => {
   test("discovers lieutenants from vm-tree without registry", async () => {
     const store = new LieutenantStore(join(TMP_DIR, "discover-vm-tree.sqlite"));

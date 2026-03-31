@@ -71,6 +71,9 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       "  'prompt' (default when idle) — start a new task",
       "  'steer' — interrupt current work and redirect",
       "  'followUp' — queue message for after current task finishes",
+      "Optional post-task disposition:",
+      "  'stay_idle' — remain alive and idle after current work completes",
+      "  'stop_when_done' — stop after current work completes unless immediate context overrides it",
     ].join("\n"),
     parameters: Type.Object({
       name: Type.String({ description: "Lieutenant name" }),
@@ -78,6 +81,11 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       mode: Type.Optional(
         Type.Union([Type.Literal("prompt"), Type.Literal("steer"), Type.Literal("followUp")], {
           description: "Message mode (default: prompt, auto-selects followUp if busy)",
+        }),
+      ),
+      postTaskDisposition: Type.Optional(
+        Type.Union([Type.Literal("stay_idle"), Type.Literal("stop_when_done")], {
+          description: "What the lieutenant should do after the current task completes",
         }),
       ),
     }),
@@ -90,6 +98,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           {
             message: params.message,
             mode: params.mode,
+            postTaskDisposition: params.postTaskDisposition,
           },
         );
         const msg = params.message;
