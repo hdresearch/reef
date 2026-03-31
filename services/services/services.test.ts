@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "../../src/core/server.js";
 
@@ -157,6 +157,35 @@ describe("services manager module", () => {
 
     const { status } = await json(app, "/mgr-newcomer");
     expect(status).toBe(200);
+  });
+
+  test("POST /services/reload picks up symlinked service directories", async () => {
+    const linkedSrc = join(TEST_DIR, ".linked-src");
+    mkdirSync(linkedSrc, { recursive: true });
+    const actualDir = join(linkedSrc, "mgr-symlinked");
+    mkdirSync(actualDir, { recursive: true });
+    writeFileSync(
+      join(actualDir, "index.ts"),
+      `
+import { Hono } from "hono";
+const routes = new Hono();
+routes.get("/", (c) => c.json({ ok: true, linked: true }));
+export default { name: "mgr-symlinked", routes, requiresAuth: false };
+`,
+    );
+    symlinkSync(actualDir, join(TEST_DIR, "mgr-symlinked"));
+
+    const { app } = await createWithManager();
+    const reload = await json(app, "/services/reload", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+    });
+    const names = reload.data.results.map((r: any) => r.name);
+    expect(names).toContain("mgr-symlinked");
+
+    const { status, data } = await json(app, "/mgr-symlinked");
+    expect(status).toBe(200);
+    expect(data.linked).toBe(true);
   });
 
   test("POST /services/reload removes deleted services", async () => {
@@ -439,16 +468,35 @@ export default {
     const { status, data } = await json(app, "/services/deploy", {
       method: "POST",
       auth: AUTH_TOKEN,
-      body: { name: "deploy-good" },
+      body: { name: "deploy-good", controlPlane: true, reason: "test control-plane module" },
     });
 
     expect(status).toBe(200);
     expect(data.deployed).toBe(true);
-    expect(data.steps.length).toBeGreaterThanOrEqual(3); // validate, test (skipped), load, verify
+    expect(data.steps.length).toBeGreaterThanOrEqual(4); // intent, validate, test (skipped), load, verify
+    expect(data.steps.find((s: any) => s.step === "intent").status).toBe("passed");
     expect(data.steps.find((s: any) => s.step === "validate").status).toBe("passed");
     expect(data.steps.find((s: any) => s.step === "test").status).toBe("skipped");
     expect(data.steps.find((s: any) => s.step === "load").status).toBe("passed");
     expect(data.steps.find((s: any) => s.step === "verify").status).toBe("passed");
+    expect(data.diagnostics.servicesDir).toContain(TEST_DIR);
+  });
+
+  test("deploy rejects missing controlPlane intent", async () => {
+    writeService("deploy-no-intent");
+    const { app } = await createWithManager();
+
+    const { status, data } = await json(app, "/services/deploy", {
+      method: "POST",
+      auth: AUTH_TOKEN,
+      body: { name: "deploy-no-intent" },
+    });
+
+    expect(status).toBe(400);
+    expect(data.deployed).toBe(false);
+    expect(data.steps[0].step).toBe("intent");
+    expect(data.steps[0].status).toBe("failed");
+    expect(data.diagnostics.servicesDir).toContain(TEST_DIR);
   });
 
   test("deploy fails on missing directory", async () => {
@@ -457,13 +505,15 @@ export default {
     const { status, data } = await json(app, "/services/deploy", {
       method: "POST",
       auth: AUTH_TOKEN,
-      body: { name: "nonexistent" },
+      body: { name: "nonexistent", controlPlane: true },
     });
 
     expect(status).toBe(400);
     expect(data.deployed).toBe(false);
-    expect(data.steps[0].step).toBe("validate");
-    expect(data.steps[0].status).toBe("failed");
+    expect(data.steps[1].step).toBe("validate");
+    expect(data.steps[1].status).toBe("failed");
+    expect(data.diagnostics.servicesDir).toContain(TEST_DIR);
+    expect(data.diagnostics.dirPath).toContain("nonexistent");
   });
 
   test("deploy fails on missing index.ts", async () => {
@@ -474,13 +524,16 @@ export default {
     const { status, data } = await json(app, "/services/deploy", {
       method: "POST",
       auth: AUTH_TOKEN,
-      body: { name: "no-index" },
+      body: { name: "no-index", controlPlane: true },
     });
 
     expect(status).toBe(400);
     expect(data.deployed).toBe(false);
-    expect(data.steps[0].status).toBe("failed");
-    expect(data.steps[0].detail).toContain("index.ts");
+    expect(data.steps[0].step).toBe("intent");
+    expect(data.steps[0].status).toBe("passed");
+    expect(data.steps[1].step).toBe("validate");
+    expect(data.steps[1].status).toBe("failed");
+    expect(data.steps[1].detail).toContain("index.ts");
   });
 
   test("deploy fails on invalid module export", async () => {
@@ -492,14 +545,16 @@ export default {
     const { status, data } = await json(app, "/services/deploy", {
       method: "POST",
       auth: AUTH_TOKEN,
-      body: { name: "bad-export" },
+      body: { name: "bad-export", controlPlane: true },
     });
 
     expect(status).toBe(400);
     expect(data.deployed).toBe(false);
-    expect(data.steps[0].step).toBe("validate");
-    expect(data.steps[0].status).toBe("failed");
-    expect(data.steps[0].detail).toContain("name");
+    expect(data.steps[0].step).toBe("intent");
+    expect(data.steps[0].status).toBe("passed");
+    expect(data.steps[1].step).toBe("validate");
+    expect(data.steps[1].status).toBe("failed");
+    expect(data.steps[1].detail).toContain("name");
   });
 
   test("deploy requires name", async () => {
@@ -541,7 +596,7 @@ test("basic math", () => { expect(1 + 1).toBe(2); });
     const { status, data } = await json(app, "/services/deploy", {
       method: "POST",
       auth: AUTH_TOKEN,
-      body: { name: "deploy-tested" },
+      body: { name: "deploy-tested", controlPlane: true, reason: "test deploy" },
     });
 
     expect(status).toBe(200);
@@ -576,7 +631,7 @@ test("this fails", () => { expect(1).toBe(2); });
     const { status, data } = await json(app, "/services/deploy", {
       method: "POST",
       auth: AUTH_TOKEN,
-      body: { name: "deploy-fail-test" },
+      body: { name: "deploy-fail-test", controlPlane: true },
     });
 
     expect(status).toBe(400);

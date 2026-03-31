@@ -51,6 +51,14 @@ If a child is drifting or stuck:
 - recover or replace it if needed
 - escalate only when you cannot restore momentum yourself
 
+If you assigned a slice to a child, do not quietly perform that same slice yourself. Root may do:
+- a small diagnostic probe
+- a steering intervention
+- a replacement decision
+- an explicit ownership reclaim
+
+Root should not shadow its children while still pretending the child owns the work.
+
 ## Default stance
 
 - use active operational views by default
@@ -63,3 +71,4 @@ If a child is drifting or stuck:
 - keep the conversation in `running` just to supervise
 - micromanage every child step
 - confuse active operational state with historical lineage
+- bypass a child-owned slice without recording the ownership change

@@ -44,6 +44,14 @@ interface CachedToken {
 const tokenCache = new Map<string, CachedToken>();
 
 const REFRESH_MARGIN_MS = 10 * 60 * 1000; // refresh when <10 min left
+const GITHUB_HTTP_TIMEOUT_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.REEF_GITHUB_HTTP_TIMEOUT_MS ?? "15000", 10) || 15000,
+);
+const GIT_COMMAND_TIMEOUT_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.REEF_GIT_COMMAND_TIMEOUT_MS ?? "60000", 10) || 60000,
+);
 
 function cacheKey(repositories?: string[], permissions?: Record<string, string>): string {
   const repos = repositories ? [...repositories].sort().join(",") : "*";
@@ -149,6 +157,8 @@ async function mintToken(options?: {
   if (options?.repositories?.length) body.repositories = options.repositories;
   if (options?.permissions && Object.keys(options.permissions).length) body.permissions = options.permissions;
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GITHUB_HTTP_TIMEOUT_MS);
   const res = await fetch(`${baseUrl}/api/github/installation-token`, {
     method: "POST",
     headers: {
@@ -156,7 +166,8 @@ async function mintToken(options?: {
       "Content-Type": "application/json",
     },
     body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined,
-  });
+    signal: controller.signal,
+  }).finally(() => clearTimeout(timeout));
 
   if (!res.ok) {
     const text = await res.text();
@@ -306,8 +317,17 @@ function runShell(command: string, cwd: string): Promise<{ stdout: string; stder
     child.stderr.on("data", (data: Buffer) => {
       stderr += data.toString();
     });
+    const timeout = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+      rejectPromise(new Error(`Timed out after ${GIT_COMMAND_TIMEOUT_MS}ms: ${command}`));
+    }, GIT_COMMAND_TIMEOUT_MS);
     child.on("error", (err) => rejectPromise(err));
     child.on("close", (code) => {
+      clearTimeout(timeout);
       if (code === 0) {
         resolvePromise({ stdout, stderr });
       } else {
@@ -359,7 +379,7 @@ ${GITHUB_RULES}`,
         }),
       ),
     }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
+    async execute(_id, params, _signal, onUpdate, ctx) {
       if (!client.getBaseUrl()) return client.noUrl();
 
       try {
@@ -376,9 +396,11 @@ ${GITHUB_RULES}`,
         if (!existsSync(rootDir)) mkdirSync(rootDir, { recursive: true });
 
         if (!existsSync(workDir)) {
+          onUpdate?.(`cloning ${repo} into ${workDir}`);
           await runShell(`git clone https://github.com/${repo}.git ${sh(workDir)}`, rootDir);
         }
 
+        onUpdate?.(`minting GitHub token for ${repo}`);
         const tokenResult = await client.api<{
           token: string;
           expires_at: string;
@@ -403,10 +425,16 @@ printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=%s
         );
         chmodSync(helperPath, 0o700);
 
+        onUpdate?.(`configuring local git auth for ${repo}`);
         await runShell(`git config --local credential.https://github.com.helper ${sh(helperPath)}`, workDir);
         await runShell("git config --local credential.useHttpPath true", workDir);
         await runShell(`git remote set-url origin https://github.com/${repo}.git`, workDir);
-        await runShell(`git fetch origin ${sh(baseBranch)}`, workDir);
+        const remoteTrackingRef = `refs/remotes/origin/${baseBranch}`;
+        const branchFetchRefspec = `+refs/heads/${baseBranch}:${remoteTrackingRef}`;
+        onUpdate?.(`fetching origin/${baseBranch}`);
+        await runShell(`git fetch origin ${sh(branchFetchRefspec)}`, workDir);
+        await runShell(`git rev-parse --verify ${sh(remoteTrackingRef)}`, workDir);
+        onUpdate?.(`checking out ${baseBranch} and feature branch ${branch}`);
         await runShell(`git checkout -B ${sh(baseBranch)} origin/${baseBranch}`, workDir);
         await runShell(`git checkout -B ${sh(branch)}`, workDir);
 

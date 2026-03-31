@@ -7,6 +7,16 @@ description: Use when spawning, configuring, auditing, or retiring resource VMs 
 
 Use this skill when the task needs infrastructure rather than another disposable worker.
 
+## Placement Rule
+
+When the task needs a new UI, service, database, webhook sink, or raw environment, first decide whether it belongs:
+- inside Reef root as a control-plane module
+- or on a separate VM as product/application infrastructure
+
+Default to the separate VM path unless the feature is clearly part of Reef itself.
+
+Do not use root as the default home for product services just because it is already running.
+
 ## What a resource VM is
 
 A `resource_vm` is passive infrastructure:

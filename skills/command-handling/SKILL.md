@@ -67,6 +67,14 @@ If parent intent is explicit, it overrides your category default. If parent inte
 
 If you were created with an explicit spawn-time disposition, treat that as your current baseline until a later task or command explicitly changes it.
 
+## Code-work examples
+
+- mid-flight scope adjustment to an active child -> `steer`
+- second bounded module after the child finished task 1 and is idle -> new bounded task, not `steer`
+- stopped child -> do not retask it; recreate or replace it instead
+
+For recursive code work, this distinction matters more than the category name. The key question is whether the child is still working, alive and idle, or no longer a live target.
+
 ## Urgency rule
 
 - `abort` and `pause` are urgent

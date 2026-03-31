@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createReef, isCreditExhaustedError, isTransientProviderError } from "./reef.js";
 import type { ConversationTree } from "./tree.js";
 
@@ -252,6 +253,58 @@ describe("reef", () => {
     const node = tree.get(data.nodeId);
     const mainId = tree.getRef("main");
     expect(node!.parentId).toBe(mainId);
+  });
+
+  test("POST /reef/submit — startup timeout retries once before failing a silent agent", async () => {
+    const prevDataDir = process.env.REEF_DATA_DIR;
+    const prevPiPath = process.env.PI_PATH;
+    const prevTimeout = process.env.REEF_TASK_STARTUP_TIMEOUT_MS;
+    const prevAttempts = process.env.REEF_TASK_STARTUP_MAX_ATTEMPTS;
+    const localDir = `${TEST_DATA_DIR}-startup-timeout`;
+    const scriptPath = join(process.cwd(), localDir, "silent-pi.sh");
+
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    mkdirSync(localDir, { recursive: true });
+    writeFileSync(
+      scriptPath,
+      `#!/bin/sh
+while true; do
+  sleep 1
+done
+`,
+    );
+    chmodSync(scriptPath, 0o755);
+
+    process.env.REEF_DATA_DIR = localDir;
+    process.env.PI_PATH = scriptPath;
+    process.env.REEF_TASK_STARTUP_TIMEOUT_MS = "50";
+    process.env.REEF_TASK_STARTUP_MAX_ATTEMPTS = "2";
+
+    const local = await createReef({ server: { modules: [] } });
+    const res = await local.app.fetch(
+      new Request("http://localhost/reef/submit", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ task: "hang on startup", taskId: "startup-timeout" }),
+      }),
+    );
+    expect(res.status).toBe(202);
+
+    let finalTask = local.tree.getTask("startup-timeout");
+    for (let i = 0; i < 20 && finalTask?.status === "running"; i += 1) {
+      await Bun.sleep(25);
+      finalTask = local.tree.getTask("startup-timeout");
+    }
+
+    expect(finalTask).toBeTruthy();
+    expect(finalTask!.status).toBe("error");
+    expect(finalTask!.artifacts?.error).toContain("pi startup timed out before first response after 2 attempts");
+
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    process.env.REEF_DATA_DIR = prevDataDir;
+    process.env.PI_PATH = prevPiPath;
+    process.env.REEF_TASK_STARTUP_TIMEOUT_MS = prevTimeout;
+    process.env.REEF_TASK_STARTUP_MAX_ATTEMPTS = prevAttempts;
   });
 
   test("POST /reef/conversations — creates persisted conversation metadata", async () => {

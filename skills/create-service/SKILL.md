@@ -5,6 +5,17 @@ description: Create a new service module for reef. Use when adding a new capabil
 
 # Create a Service Module
 
+Before creating a new service, decide whether it should actually be a Reef-root module.
+
+Use a Reef service when the feature is clearly part of the Reef control plane or operator UI.
+If the feature is product/application behavior that could live outside root, prefer a separate VM or service first.
+
+Creating or changing root services has high blast radius. Do not treat it as the default deployment target.
+
+If the user says "implement this repo" or asks for a product/application UI, that does not by itself authorize creating a Reef-root service. Treat Reef-root service creation as a specific control-plane choice, not the default deployment path.
+
+If the work is really product/application deployment, use `skills/app-deployment/SKILL.md` instead.
+
 Service modules are self-contained plugins — a folder in `services/` with an `index.ts` that exports a `ServiceModule`. Modules present at startup are discovered automatically. New modules added at runtime are loaded via the services manager (`POST /services/reload`) or the installer (`POST /installer/install`). No import wiring, no registration.
 
 ## Before You Start

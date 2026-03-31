@@ -11,7 +11,7 @@
  *   DELETE /services/:name         — unload a module
  */
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
@@ -37,6 +37,49 @@ interface SeedMeta {
 }
 
 let ctx: ServiceContext;
+
+function isServiceDirCandidate(
+  baseDir: string,
+  entry: { name: string; isDirectory(): boolean; isSymbolicLink(): boolean },
+): boolean {
+  if (entry.isDirectory()) return true;
+  if (!entry.isSymbolicLink()) return false;
+  const entryPath = join(baseDir, entry.name);
+  try {
+    return existsSync(entryPath) && statSync(entryPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function servicePathDiagnostics(name: string) {
+  const dirPath = join(ctx.servicesDir, name);
+  const indexPath = join(dirPath, "index.ts");
+  const candidates = [
+    join("/root/reef/services", name),
+    join("/root/reef/services-active", name),
+    join("/opt/reef/services", name),
+    join("/opt/reef/services-active", name),
+  ];
+
+  const candidateMatches = candidates
+    .filter((p, i, arr) => arr.indexOf(p) === i)
+    .map((path) => ({
+      path,
+      exists: existsSync(path),
+      hasIndex: existsSync(join(path, "index.ts")),
+    }))
+    .filter((c) => c.exists || c.hasIndex);
+
+  return {
+    servicesDir: ctx.servicesDir,
+    dirPath,
+    indexPath,
+    dirExists: existsSync(dirPath),
+    hasIndex: existsSync(indexPath),
+    candidateMatches,
+  };
+}
 
 /** Compute the full set of substrate capabilities from base + environment + services */
 function getSubstrateCapabilities(): Set<string> {
@@ -481,22 +524,47 @@ routes.post("/deploy", async (c) => {
 
   const name = String(body.name).trim();
   const dirPath = join(ctx.servicesDir, name);
+  const diagnostics = servicePathDiagnostics(name);
 
   const result: {
     name: string;
     steps: Array<{ step: string; status: "passed" | "failed" | "skipped"; detail?: string }>;
     deployed: boolean;
+    diagnostics?: ReturnType<typeof servicePathDiagnostics>;
   } = { name, steps: [], deployed: false };
+
+  if (body.controlPlane !== true) {
+    result.steps.push({
+      step: "intent",
+      status: "failed",
+      detail:
+        "Reef-root deployment requires controlPlane: true. Product/app work should normally deploy on a child VM or separate infrastructure.",
+    });
+    result.diagnostics = diagnostics;
+    return c.json(result, 400);
+  }
+
+  result.steps.push({
+    step: "intent",
+    status: "passed",
+    detail: body.reason ? `control-plane deploy: ${String(body.reason)}` : "control-plane deploy authorized",
+  });
 
   // Step 1: Validate — directory and index.ts exist
   if (!existsSync(dirPath)) {
-    result.steps.push({ step: "validate", status: "failed", detail: `Directory not found: ${name}/` });
+    result.steps.push({
+      step: "validate",
+      status: "failed",
+      detail: `Directory not found in active services root: ${dirPath}`,
+    });
+    result.diagnostics = diagnostics;
     return c.json(result, 400);
   }
 
   const indexPath = join(dirPath, "index.ts");
   if (!existsSync(indexPath)) {
-    result.steps.push({ step: "validate", status: "failed", detail: `No index.ts in ${name}/` });
+    result.steps.push({ step: "validate", status: "failed", detail: `No index.ts at ${indexPath}` });
+    result.diagnostics = diagnostics;
     return c.json(result, 400);
   }
 
@@ -506,12 +574,14 @@ routes.post("/deploy", async (c) => {
     const svc = mod.default;
     if (!svc?.name) {
       result.steps.push({ step: "validate", status: "failed", detail: "default export missing 'name' property" });
+      result.diagnostics = diagnostics;
       return c.json(result, 400);
     }
     result.steps.push({ step: "validate", status: "passed", detail: `exports ServiceModule "${svc.name}"` });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     result.steps.push({ step: "validate", status: "failed", detail: `import error: ${msg}` });
+    result.diagnostics = diagnostics;
     return c.json(result, 400);
   }
 
@@ -539,6 +609,7 @@ routes.post("/deploy", async (c) => {
           status: "failed",
           detail: `${passed} passed, ${failed} failed\n${output}`,
         });
+        result.diagnostics = diagnostics;
         return c.json(result, 400);
       }
 
@@ -560,6 +631,7 @@ routes.post("/deploy", async (c) => {
         status: "failed",
         detail: `${passed} passed, ${failed} failed\n${output.slice(-2000)}`,
       });
+      result.diagnostics = diagnostics;
       return c.json(result, 400);
     }
   } else {
@@ -578,6 +650,7 @@ routes.post("/deploy", async (c) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     result.steps.push({ step: "load", status: "failed", detail: msg });
+    result.diagnostics = diagnostics;
     return c.json(result, 400);
   }
 
@@ -593,9 +666,11 @@ routes.post("/deploy", async (c) => {
     result.deployed = true;
   } else {
     result.steps.push({ step: "verify", status: "failed", detail: "module not found after load" });
+    result.diagnostics = diagnostics;
     return c.json(result, 500);
   }
 
+  result.diagnostics = diagnostics;
   return c.json(result);
 });
 
@@ -612,7 +687,7 @@ routes.post("/reload", async (c) => {
   const errors: Array<{ dir: string; error: string }> = [];
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (!isServiceDirCandidate(servicesDir, entry)) continue;
     if (!existsSync(join(servicesDir, entry.name, "index.ts"))) continue;
 
     try {
@@ -627,7 +702,7 @@ routes.post("/reload", async (c) => {
   }
 
   // Remove modules whose directories no longer exist
-  const currentDirs = new Set(entries.filter((e) => e.isDirectory()).map((e) => e.name));
+  const currentDirs = new Set(entries.filter((e) => isServiceDirCandidate(servicesDir, e)).map((e) => e.name));
   for (const mod of ctx.getModules()) {
     // Don't remove modules that still have a directory
     if (currentDirs.has(mod.name)) continue;
@@ -649,7 +724,10 @@ routes.post("/reload/:name", async (c) => {
   // Check if it exists as a directory
   const dirPath = join(ctx.servicesDir, name);
   if (!existsSync(join(dirPath, "index.ts"))) {
-    return c.json({ error: `No service directory "${name}" with index.ts found` }, 404);
+    return c.json(
+      { error: `No service directory "${name}" with index.ts found`, diagnostics: servicePathDiagnostics(name) },
+      404,
+    );
   }
 
   try {
@@ -772,8 +850,18 @@ const services: ServiceModule = {
       summary: "Validate, test, and load a service in one atomic operation. Returns structured step-by-step results.",
       body: {
         name: { type: "string", required: true, description: "Service directory name to deploy" },
+        controlPlane: {
+          type: "boolean",
+          required: true,
+          description: "Must be true to confirm this is Reef control-plane work rather than product/app deployment",
+        },
+        reason: {
+          type: "string",
+          required: false,
+          description: "Why this belongs inside Reef root instead of a separate VM",
+        },
       },
-      response: "{ name, steps: [{ step, status, detail? }], deployed: boolean }",
+      response: "{ name, steps: [{ step, status, detail? }], deployed: boolean, diagnostics }",
     },
     "POST /reload": {
       summary: "Re-scan services directory — load new, update changed, remove deleted",
@@ -834,15 +922,23 @@ const services: ServiceModule = {
       description:
         "Deploy a service module — validates the module exports, runs its tests (if any), " +
         "loads it into the server, and verifies it's live. Returns structured step-by-step " +
-        "results. Use after writing or editing service files to activate them. If tests fail, " +
-        "the service is not loaded and you get the test output to debug.",
+        "results. Use only for Reef control-plane work after writing or editing service files. " +
+        "This is not the default deployment path for product/app work. If tests fail, the service is not loaded and you get the test output to debug.",
       parameters: Type.Object({
         name: Type.String({ description: "Service directory name (the folder name under services/)" }),
+        controlPlane: Type.Boolean({
+          description: "Must be true to confirm this belongs in Reef root as control-plane work",
+        }),
+        reason: Type.Optional(Type.String({ description: "Why this belongs in Reef root instead of a separate VM" })),
       }),
       async execute(_id, params) {
         if (!client.getBaseUrl()) return client.noUrl();
         try {
-          const result = await client.api("POST", "/services/deploy", { name: params.name });
+          const result = await client.api("POST", "/services/deploy", {
+            name: params.name,
+            controlPlane: params.controlPlane,
+            reason: params.reason,
+          });
           const r = result as any;
           const summary = r.deployed ? `✓ ${r.name} deployed successfully` : `✗ ${r.name} deployment failed`;
           const steps = (r.steps || [])
@@ -851,7 +947,10 @@ const services: ServiceModule = {
                 `  ${s.status === "passed" ? "✓" : s.status === "skipped" ? "–" : "✗"} ${s.step}: ${s.detail || ""}`,
             )
             .join("\n");
-          return client.ok(`${summary}\n${steps}`, { result });
+          const diagnostics = r.diagnostics
+            ? `\nservicesDir: ${r.diagnostics.servicesDir}\nchecked: ${r.diagnostics.dirPath}\nindex: ${r.diagnostics.indexPath}`
+            : "";
+          return client.ok(`${summary}\n${steps}${diagnostics}`, { result });
         } catch (e: any) {
           return client.err(e.message);
         }

@@ -257,6 +257,8 @@ function spawnTask(
 ): ChildProcess {
   const piPath = resolveAgentBinary();
   const cwd = process.env.REEF_DIR ?? process.cwd();
+  const startupTimeoutMs = Math.max(1, Number.parseInt(process.env.REEF_TASK_STARTUP_TIMEOUT_MS ?? "8000", 10) || 8000);
+  const maxStartupAttempts = Math.max(1, Number.parseInt(process.env.REEF_TASK_STARTUP_MAX_ATTEMPTS ?? "2", 10) || 2);
   let activeAttempt = 0;
 
   const startAttempt = (provider: "vers" | "anthropic"): ChildProcess => {
@@ -283,6 +285,7 @@ function spawnTask(
     let autoRetryRequested = false;
     let fallingBack = false;
     let finished = false;
+    let startupReady = false;
     let requestCounter = 0;
     let lastUsageStatsPullAt = 0;
     let usageStatsInflight: Promise<void> | null = null;
@@ -304,6 +307,47 @@ function spawnTask(
         clearInterval(readyCheck);
       }
     }, 1000);
+
+    let startupTimeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      if (attemptId !== activeAttempt || fallingBack || finished || startupReady) return;
+
+      clearInterval(readyCheck);
+      rejectPending("RPC startup timed out before first response");
+
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+
+      if (attemptId < maxStartupAttempts) {
+        opts.onEvent({
+          type: "task_retry",
+          reason: "startup_timeout",
+          attempt: attemptId,
+          nextAttempt: attemptId + 1,
+        });
+        startAttempt(provider);
+        return;
+      }
+
+      finished = true;
+      opts.onError(
+        `pi startup timed out before first response after ${attemptId} attempt${attemptId === 1 ? "" : "s"}`,
+      );
+    }, startupTimeoutMs);
+
+    const clearStartupTimeout = () => {
+      if (!startupTimeout) return;
+      clearTimeout(startupTimeout);
+      startupTimeout = null;
+    };
+
+    const markStartupReady = () => {
+      if (startupReady) return;
+      startupReady = true;
+      clearStartupTimeout();
+    };
 
     const maybeFallbackToAnthropic = (raw: string) => {
       const reason = isCreditExhaustedError(raw)
@@ -389,6 +433,7 @@ function spawnTask(
 
     async function handleEvent(event: any) {
       if (attemptId !== activeAttempt) return;
+      markStartupReady();
 
       if (event.type === "response" && event.id && pending.has(event.id)) {
         const entry = pending.get(event.id)!;
@@ -479,6 +524,7 @@ function spawnTask(
       if (event.type === "agent_end") {
         if (finished) return;
         finished = true;
+        clearStartupTimeout();
         await requestSessionStats({
           force: true,
           provider: lastUsageProvider,
@@ -512,6 +558,7 @@ function spawnTask(
 
     child.on("error", (err) => {
       clearInterval(readyCheck);
+      clearStartupTimeout();
       rejectPending(`RPC process error: ${err.message}`);
       if (attemptId !== activeAttempt) return;
       if (finished) return;
@@ -521,6 +568,7 @@ function spawnTask(
 
     child.on("close", (code) => {
       clearInterval(readyCheck);
+      clearStartupTimeout();
       rejectPending(code && code !== 0 ? `RPC process exited with code ${code}` : "RPC process closed");
       if (attemptId !== activeAttempt || fallingBack) return;
       if (finished) return;
