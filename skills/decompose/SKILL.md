@@ -9,9 +9,16 @@ Use this skill when the task is too broad for one agent to finish cleanly withou
 
 ## The Rule
 
-If the task has more than one independent subsystem, decompose it.
+Every parent delegates implementation to children when the work warrants it.
 
-If it is one coherent module or slice you can finish cleanly yourself, do it yourself.
+The decision tree:
+1. Am I root? -> Delegate. Always. Pick the right fleet shape.
+2. Does my assigned slice have multiple independent subsystems? -> Decompose into children.
+3. Is it one coherent slice I can finish cleanly? -> Do it myself.
+
+Root never reaches step 3. Root's job is orchestration. Non-root parents reach step 3 only after confirming the slice is truly coherent -- no independent subsystems hiding inside.
+
+The independence test: "Could two children do these pieces without touching each other's files?" If yes, decompose.
 
 Independent subsystems usually have:
 - separate owned paths or modules

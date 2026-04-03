@@ -99,7 +99,7 @@ fi`;
  */
 export function buildPersistKeysScript(opts: RemoteRpcOptions): string {
   const llmKey = opts.llmProxyKey || process.env.LLM_PROXY_KEY || "";
-  const anthropicKey = process.env.ANTHROPIC_API_KEY || llmKey;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY || "";
   const versKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
   const infraUrl = process.env.VERS_INFRA_URL || "";
   const goldenCommitId = process.env.VERS_GOLDEN_COMMIT_ID || "";
@@ -130,7 +130,7 @@ export function buildPersistKeysScript(opts: RemoteRpcOptions): string {
 
 export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || opts.llmProxyKey || process.env.LLM_PROXY_KEY || "";
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || "";
   const exports = [
     opts.llmProxyKey
       ? `export LLM_PROXY_KEY='${escapeEnvValue(opts.llmProxyKey)}'`

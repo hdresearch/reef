@@ -121,7 +121,7 @@ function buildWorkerEnv(
   opts: { llmProxyKey?: string; directive?: string; category?: string; parentVmId?: string; parentAgent?: string },
 ): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || opts.llmProxyKey || process.env.LLM_PROXY_KEY || "";
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || "";
   const exports = [
     opts.llmProxyKey
       ? `export LLM_PROXY_KEY='${escapeEnvValue(opts.llmProxyKey)}'`
