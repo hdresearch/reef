@@ -1334,6 +1334,29 @@ export class SwarmRuntime {
       name: agent.label,
       vmId: agent.vmId,
     });
+
+    // Auto-destroy VMs for done agents — don't leave them burning credits
+    if (!stayIdle) {
+      const agentId = agent.id;
+      const vmId = agent.vmId;
+      setTimeout(async () => {
+        try {
+          const handle = this.handles.get(agentId);
+          if (handle?.alive()) {
+            await handle.kill();
+          }
+          await this.deleteVm(vmId);
+          this.agents.delete(agentId);
+          this.handles.delete(agentId);
+          this.vmTreeStore?.updateVM(vmId, { status: "destroyed" });
+          console.log(`  [swarm] ${agentId}: VM ${vmId.slice(0, 12)} auto-destroyed (stop_when_done)`);
+        } catch (err) {
+          console.error(
+            `  [swarm] ${agentId}: auto-destroy failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }, 5000); // 5s grace period for final signal delivery
+    }
   }
 }
 
