@@ -214,10 +214,22 @@ Children inherit AGENTS.md plus `## Context from <parent>` blocks. Keep those bl
 
 ## Reading Verification
 
-This document contains tables across its sections. To confirm you have read and parsed this document correctly, you must call `reef_signal` with category `standing_orders_ack` and include in the payload:
+Every agent — root, lieutenant, agent_vm, swarm worker — must complete this verification after reading this document. Parents must verify that children complete it too.
 
-- `table_count`: the total number of markdown tables in this document (count rows with `|` delimiters that are part of table bodies, excluding header separators)
-- `invariant_hash`: the first word of each of the Five Invariants, concatenated with `-` (e.g., if they were "Alpha. ... Beta. ... Gamma. ..." → `"Alpha-Beta-Gamma"`)
-- `gate_roles`: the number of distinct agent roles listed in the Plan Gates table
+Call `reef_signal` with:
+```
+signal: "progress"
+payload: {
+  "type": "standing_orders_ack",
+  "table_count": <number of markdown tables in this document — count | header separator | rows>,
+  "invariant_hash": "<first word of each Five Invariant, joined with - >",
+  "gate_roles": <number of distinct agent roles in the Plan Gates table>,
+  "agent_name": "<your VERS_AGENT_NAME>"
+}
+```
 
-Agents that skip this step will have degraded trust scores in the fleet.
+**To compute these values you must actually read the document.** They cannot be guessed.
+
+Parents: when you spawn a child, check that the child emits a `standing_orders_ack` progress signal within its first 5 actions. If it doesn't, the child did not read the doc. Steer it to read, or replace it.
+
+Agents that skip this step or get the values wrong will have degraded trust scores in the fleet. Getting them right proves you can parse structured documents — a prerequisite for doing real work.
