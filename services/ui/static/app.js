@@ -84,6 +84,7 @@ function closeActivePanel(nextView = null) {
   $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === 'feed'));
   activePanel = null;
   $('panel-shell-title').textContent = 'panel';
+  if (location.hash) history.pushState(null, '', location.pathname);
   if (isMobileViewport()) {
     mobileView = nextView || (mobileView === 'panel' ? 'panels' : mobileView);
   }
@@ -1301,6 +1302,32 @@ async function loadProfilePanel() {
   } catch {}
 }
 
+async function loadPasskeysPanel() {
+  if (loadedPanels.has('passkeys')) return;
+  try {
+    const response = await fetch(`${API}/reef/passkeys/_panel`);
+    if (!response.ok) return;
+    if (!(response.headers.get('content-type') || '').includes('html')) return;
+    const html = await response.text();
+
+    const button = document.createElement('button');
+    button.className = 'tab';
+    button.dataset.view = 'passkeys';
+    button.textContent = '🔑 passkeys';
+    button.addEventListener('click', () => togglePanel('passkeys'));
+    $('tabs').appendChild(button);
+
+    const container = document.createElement('div');
+    container.className = 'panel-view';
+    container.id = 'panel-passkeys';
+    container.dataset.api = API;
+    panelViewsEl.appendChild(container);
+    injectPanel(container, html);
+    loadedPanels.set('passkeys', container);
+    syncMobilePanelList();
+  } catch {}
+}
+
 async function discoverPanels() {
   try {
     const response = await fetch(`${API}/services`);
@@ -1342,7 +1369,7 @@ async function discoverPanels() {
   } catch {}
 }
 
-function togglePanel(name) {
+function togglePanel(name, { updateHash = true } = {}) {
   if (activePanel === name) {
     closeActivePanel();
     return;
@@ -1352,6 +1379,7 @@ function togglePanel(name) {
   $('panel-shell-title').textContent = panelLabel(name);
   document.querySelectorAll('.panel-view').forEach((view) => view.classList.toggle('active', view.id === `panel-${name}`));
   $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === name));
+  if (updateHash) history.pushState(null, '', `#${name}`);
   // v2: Always refresh immediately when switching panels
   if (isMobileViewport()) mobileView = 'panel';
   syncMobilePanelList();
@@ -1364,18 +1392,21 @@ function refreshActivePanel() {
   refreshPanel(activePanel).catch(() => {});
 }
 
+window.injectPanel = injectPanel;
 function injectPanel(container, html) {
   const temp = document.createElement('div');
   temp.innerHTML = html;
   const scripts = [];
   temp.querySelectorAll('script').forEach((script) => {
-    scripts.push(script.textContent);
+    scripts.push({ text: script.textContent, type: script.getAttribute('type'), src: script.getAttribute('src') });
     script.remove();
   });
   container.innerHTML = temp.innerHTML;
-  for (const code of scripts) {
+  for (const info of scripts) {
     const script = document.createElement('script');
-    script.textContent = code;
+    if (info.type) script.type = info.type;
+    if (info.src) script.src = info.src;
+    else script.textContent = info.text;
     container.appendChild(script);
   }
 }
@@ -1730,7 +1761,37 @@ Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   updateStatus();
   updateMemex();
   loadProfilePanel();
+  loadPasskeysPanel();
   discoverPanels();
+
+  // Hash routing — restore panel state from URL
+  // If hash present, immediately open the panel area so there's no feed flash
+  const initialHash = location.hash.replace('#', '');
+  if (initialHash) {
+    panelAreaEl.className = 'open';
+  }
+  function restoreFromHash() {
+    const hash = location.hash.replace('#', '');
+    if (hash && loadedPanels.has(hash)) {
+      togglePanel(hash, { updateHash: false });
+    } else if (hash) {
+      // Panel not loaded yet — retry after discovery
+      const check = setInterval(() => {
+        if (loadedPanels.has(hash)) { clearInterval(check); togglePanel(hash, { updateHash: false }); }
+      }, 200);
+      setTimeout(() => clearInterval(check), 5000);
+    }
+  }
+  restoreFromHash();
+  window.addEventListener('popstate', () => {
+    const hash = location.hash.replace('#', '');
+    if (hash && loadedPanels.has(hash)) {
+      togglePanel(hash, { updateHash: false });
+    } else {
+      closeActivePanel();
+    }
+  });
+
   setInterval(discoverPanels, 30000);
   setInterval(refreshActivePanel, 2000);
   setInterval(updateStatus, 10000);

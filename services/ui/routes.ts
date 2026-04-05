@@ -120,7 +120,8 @@ export function createRoutes(): Hono {
     const queryString = url.search;
 
     const port = process.env.PORT || "3000";
-    const internalUrl = `http://127.0.0.1:${port}${apiPath}${queryString}`;
+    const proto = process.env.TLS_CERT ? "https" : "http";
+    const internalUrl = `${proto}://127.0.0.1:${port}${apiPath}${queryString}`;
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${AUTH_TOKEN}`,
@@ -132,7 +133,7 @@ export function createRoutes(): Hono {
     const body = method !== "GET" && method !== "HEAD" ? await c.req.arrayBuffer() : undefined;
 
     try {
-      const resp = await fetch(internalUrl, { method, headers, body });
+      const resp = await fetch(internalUrl, { method, headers, body, tls: { rejectUnauthorized: false } } as any);
 
       // SSE passthrough
       if (resp.headers.get("content-type")?.includes("text/event-stream")) {

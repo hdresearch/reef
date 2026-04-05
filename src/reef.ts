@@ -1204,6 +1204,229 @@ export async function createReef(config: ReefConfig = {}) {
   });
 
   // =========================================================================
+  // WebAuthn / Passkeys — multi-root principal identity
+  // =========================================================================
+
+  const webauthn = await import("./core/webauthn.js");
+
+  /** List registered passkeys (public info only) */
+  reef.get("/passkeys", (c) => {
+    const creds = webauthn.listCredentials();
+    return c.json({
+      count: creds.length,
+      credentials: creds.map((cr) => ({
+        id: cr.id,
+        providerHint: cr.providerHint,
+        label: cr.label,
+        deviceType: cr.deviceType || "unknown",
+        backedUp: cr.backedUp ?? false,
+        transports: cr.transports || [],
+        registeredAt: cr.registeredAt,
+      })),
+      policy: webauthn.readRegistry().policy,
+    });
+  });
+
+  /** Begin passkey registration — returns WebAuthn creation options */
+  reef.post("/passkeys/register/start", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const name = body.name || readProfile().name || "Operator";
+    const hint = body.hint; // "security-key" | "client-device" | "hybrid"
+    const options = await webauthn.startRegistration(name, hint);
+    return c.json(options);
+  });
+
+  /** Finish passkey registration — verifies attestation response */
+  reef.post("/passkeys/register/finish", async (c) => {
+    const body = await c.req.json();
+    const { attestation, providerHint, label } = body;
+    if (!attestation) return c.json({ error: "Missing attestation response" }, 400);
+    const result = await webauthn.finishRegistration(attestation, providerHint, label);
+    if (!result.verified) return c.json({ error: "Registration verification failed" }, 400);
+    broadcast({ type: "passkey_registered", credentialId: result.credential?.id, label });
+    return c.json({ verified: true, credential: { id: result.credential?.id, label } });
+  });
+
+  /** Begin passkey authentication — returns WebAuthn request options */
+  reef.post("/passkeys/auth/start", async (c) => {
+    const reg = webauthn.readRegistry();
+    if (reg.credentials.length === 0) {
+      return c.json({ error: "No passkeys registered — register one first" }, 400);
+    }
+    const options = await webauthn.startAuthentication();
+    return c.json(options);
+  });
+
+  /** Finish passkey authentication — verifies assertion response */
+  reef.post("/passkeys/auth/finish", async (c) => {
+    const body = await c.req.json();
+    if (!body.assertion) return c.json({ error: "Missing assertion response" }, 400);
+    const result = await webauthn.finishAuthentication(body.assertion);
+    if (!result.verified) return c.json({ error: "Authentication failed" }, 401);
+    broadcast({ type: "passkey_authenticated", credentialId: result.credentialId });
+    return c.json({ verified: true, credentialId: result.credentialId });
+  });
+
+  /** Rename a passkey */
+  reef.patch("/passkeys/:id", async (c) => {
+    const body = await c.req.json();
+    if (!body.label || typeof body.label !== "string") return c.json({ error: "Missing label" }, 400);
+    const result = webauthn.renameCredential(c.req.param("id"), body.label);
+    if (!result.renamed) return c.json({ error: "not found" }, 404);
+    return c.json(result);
+  });
+
+  /** Remove a passkey (requires at least 1 remaining) */
+  reef.delete("/passkeys/:id", (c) => {
+    const reg = webauthn.readRegistry();
+    if (reg.credentials.length <= 1) {
+      return c.json({ error: "Cannot remove last passkey" }, 400);
+    }
+    const result = webauthn.removeCredential(c.req.param("id"));
+    return c.json(result);
+  });
+
+  /** Export principal registry (for baking into child AGENTS.md / trust tree) */
+  reef.get("/passkeys/registry", (c) => {
+    const reg = webauthn.readRegistry();
+    return c.json(webauthn.exportableRegistry(reg));
+  });
+
+  /** Passkey management panel (served as HTML for iframe in UI) */
+  reef.get("/passkeys/_panel", (c) => {
+    const reg = webauthn.readRegistry();
+    const creds = reg.credentials;
+    const rows = creds
+      .map((cr) => {
+        const transports = (cr.transports || []).join(", ") || "—";
+        const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+        return `<tr>
+        <td><input class="pk-label-input" data-cred-id="${cr.id}" value="${esc(cr.label || "")}" placeholder="name this key" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 6px;border-radius:3px;font-family:inherit;font-size:12px;width:140px" /></td>
+        <td>${cr.deviceType || "?"}</td>
+        <td>${transports}</td>
+        <td>${cr.backedUp ? "✓" : "✗"}</td>
+        <td>${new Date(cr.registeredAt).toLocaleDateString()}</td>
+        <td><button class="pk-revoke-btn" data-cred-id="${cr.id}" style="background:none;border:1px solid #555;color:#f55;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px"${creds.length <= 1 ? " disabled" : ""}>revoke</button></td>
+      </tr>`;
+      })
+      .join("");
+
+    return c.html(`
+      <div style="font-family:monospace;font-size:13px;color:#ccc">
+        <div style="margin-bottom:12px;color:#888">
+          Passkeys — multi-root operator identity (${creds.length} registered)
+        </div>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:12px">
+          <thead><tr style="color:#888;font-size:11px;text-align:left">
+            <th>Name</th><th>Type</th><th>Transports</th><th>Backed up</th><th>Registered</th><th></th>
+          </tr></thead>
+          <tbody>${rows || '<tr><td colspan="6" style="color:#555">No passkeys registered</td></tr>'}</tbody>
+        </table>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="pk-register-btn" data-hint="client-device" data-label="Platform" style="background:#4f9;color:#000;border:none;padding:6px 16px;border-radius:4px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer">🔐 Platform (1Password / iCloud / Touch ID)</button>
+          <button class="pk-register-btn" data-hint="security-key" data-label="Security Key" style="background:#4f9;color:#000;border:none;padding:6px 16px;border-radius:4px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer">🔑 Security Key (YubiKey / NFC)</button>
+          <button class="pk-register-btn" data-hint="hybrid" data-label="Phone" style="background:#4f9;color:#000;border:none;padding:6px 16px;border-radius:4px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer">📱 Phone (QR scan)</button>
+        </div>
+        <div id="pk-status" style="color:#4f9;font-size:11px;min-height:16px;margin-top:8px"></div>
+        <script>
+          (async function() {
+            const { startRegistration } = await import('https://cdn.jsdelivr.net/npm/@simplewebauthn/browser/dist/bundle/index.js');
+
+            const panelEl = document.getElementById('pk-status')?.closest('[data-api]');
+            const api = panelEl?.dataset?.api || '';
+            const status = () => document.getElementById('pk-status');
+
+            document.querySelectorAll('.pk-register-btn').forEach(btn => {
+              btn.addEventListener('click', async function() {
+                const hint = this.dataset.hint;
+                const label = this.dataset.label;
+                try {
+                  status().style.color = '#4f9';
+                  status().textContent = 'Starting registration (' + label + ')...';
+
+                  const optRes = await fetch(api + '/reef/passkeys/register/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: '${reg.operatorName || "Operator"}', hint }),
+                  });
+                  const options = await optRes.json();
+                  if (!optRes.ok) throw new Error(options.error || 'Failed to get options');
+
+                  status().textContent = 'Waiting for authenticator...';
+                  const attestation = await startRegistration({ optionsJSON: options });
+
+                  const verRes = await fetch(api + '/reef/passkeys/register/finish', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ attestation, label, providerHint: hint }),
+                  });
+                  const result = await verRes.json();
+                  if (!verRes.ok) throw new Error(result.error || 'Verification failed');
+
+                  status().textContent = 'Passkey registered!';
+                  setTimeout(async () => {
+                    try {
+                      const r = await fetch(api + '/reef/passkeys/_panel');
+                      if (r.ok) {
+                        const html = await r.text();
+                        const panel = document.getElementById('panel-passkeys');
+                        if (panel) { panel.innerHTML = ''; if (typeof injectPanel === 'function') injectPanel(panel, html); else panel.innerHTML = html; }
+                      }
+                    } catch {}
+                  }, 500);
+                } catch (err) {
+                  status().style.color = '#f55';
+                  status().textContent = err.name === 'NotAllowedError'
+                    ? 'Cancelled by user'
+                    : 'Error: ' + err.message;
+                }
+              });
+            });
+
+            document.querySelectorAll('.pk-label-input').forEach(input => {
+              const save = async (el) => {
+                const id = el.dataset.credId;
+                const label = el.value.trim();
+                if (!label) return;
+                await fetch(api + '/reef/passkeys/' + encodeURIComponent(id), {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ label }),
+                }).catch(() => {});
+              };
+              input.addEventListener('blur', () => save(input));
+              input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(input); input.blur(); } });
+            });
+
+            document.querySelectorAll('.pk-revoke-btn').forEach(btn => {
+              btn.addEventListener('click', async function() {
+                const id = this.dataset.credId;
+                if (!confirm('Revoke this passkey?')) return;
+                try {
+                  const res = await fetch(api + '/reef/passkeys/' + encodeURIComponent(id), { method: 'DELETE' });
+                  const data = await res.json();
+                  if (!res.ok) throw new Error(data.error);
+                  try {
+                    const r = await fetch(api + '/reef/passkeys/_panel');
+                    if (r.ok) {
+                      const html = await r.text();
+                      const panel = document.getElementById('panel-passkeys');
+                      if (panel) { panel.innerHTML = ''; if (typeof injectPanel === 'function') injectPanel(panel, html); else panel.innerHTML = html; }
+                    }
+                  } catch {}
+                } catch (err) {
+                  status().style.color = '#f55';
+                  status().textContent = 'Error: ' + err.message;
+                }
+              });
+            });
+          })();
+        </script>
+      </div>
+    `);
+  });
+
+  // =========================================================================
   // File uploads
   // =========================================================================
 
@@ -1384,7 +1607,14 @@ export async function startReef(config: ReefConfig = {}) {
   }
   console.log(`    /reef — agent conversation + task submission`);
 
-  const server = Bun.serve({ fetch: app.fetch, port, hostname: "::", idleTimeout: 120 });
+  const tlsCert = process.env.TLS_CERT;
+  const tlsKey = process.env.TLS_KEY;
+  const serverOpts: any = { fetch: app.fetch, port, hostname: "::", idleTimeout: 120 };
+  if (tlsCert && tlsKey) {
+    serverOpts.tls = { cert: Bun.file(tlsCert), key: Bun.file(tlsKey) };
+    console.log("  tls: enabled");
+  }
+  const server = Bun.serve(serverOpts);
   console.log(`\n  reef running on :${port}\n`);
 
   async function shutdown() {

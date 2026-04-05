@@ -50,11 +50,40 @@ export function readParentAgentsMd(): string {
  * @returns The child's AGENTS.md content
  */
 export function buildChildAgentsMd(parentAgentsMd: string, parentName: string, context?: string): string {
-  if (!context) return parentAgentsMd;
+  let result = parentAgentsMd;
+
+  // Propagate principal registry if it exists
+  try {
+    const { readRegistry, exportableRegistry } = require("./webauthn.js");
+    const reg = readRegistry();
+    if (reg.credentials.length > 0) {
+      const exported = exportableRegistry(reg);
+      const pubkeys = exported.credentials
+        .map((c: any) => `- **${c.label || c.providerHint || c.id.slice(0, 12)}** (${c.deviceType}): \`${c.id}\``)
+        .join("\n");
+      const registryBlock = [
+        "\n\n## Principal Trust Registry",
+        "",
+        `Operator: **${exported.operatorName || "Unknown"}**`,
+        `Registered passkeys: ${exported.credentials.length}`,
+        `Policy: verify=${exported.policy.verifyMin}-of-N, add=${exported.policy.addRootMin}-of-N, revoke=${exported.policy.revokeMin}-of-N`,
+        "",
+        pubkeys,
+        "",
+        "These credentials were registered via WebAuthn by the operator with physical authenticator interaction.",
+        `\`\`\`json\n${JSON.stringify(exported, null, 2)}\n\`\`\``,
+      ].join("\n");
+      result += registryBlock;
+    }
+  } catch {
+    // webauthn module not available — skip registry propagation
+  }
+
+  if (!context) return result;
 
   // Always use the standard header for traceability
   const header = `## Context from ${parentName}`;
-  return `${parentAgentsMd}\n\n${header}\n\n${context}`;
+  return `${result}\n\n${header}\n\n${context}`;
 }
 
 /**

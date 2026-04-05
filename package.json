@@ -1,7 +1,7 @@
 {
   "name": "@versdotsh/reef",
   "version": "0.3.0",
-  "description": "Self-improving fleet infrastructure — the minimum kernel agents need to build their own tools",
+  "description": "Self-improving fleet infrastructure \u2014 the minimum kernel agents need to build their own tools",
   "type": "module",
   "scripts": {
     "prepare": "git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
@@ -11,15 +11,22 @@
     "lint": "biome check .",
     "lint:fix": "biome check --fix --unsafe ."
   },
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "pi": {
-    "extensions": ["./src/extension.ts"],
-    "skills": ["./skills"]
+    "extensions": [
+      "./src/extension.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
   },
   "dependencies": {
     "@hdresearch/pi-v": "github:hdresearch/pi-vers#main",
     "hono": "^4.12.2",
-    "ulid": "^3.0.2"
+    "ulid": "^3.0.2",
+    "@simplewebauthn/server": "^13.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
