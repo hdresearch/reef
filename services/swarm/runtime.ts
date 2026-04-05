@@ -1346,6 +1346,19 @@ export class SwarmRuntime {
           if (handle?.alive()) {
             await handle.kill();
           }
+          // Commit state before destroying — preserve work product
+          try {
+            const commit = await versClient.commit(vmId);
+            const cid = (commit as any)?.commitId || (commit as any)?.commit_id || (commit as any)?.id;
+            if (cid) {
+              this.vmTreeStore?.updateVM(vmId, { commitId: String(cid) });
+              console.log(`  [swarm] ${agentId}: committed ${String(cid).slice(0, 12)} before destroy`);
+            }
+          } catch (commitErr) {
+            console.error(
+              `  [swarm] ${agentId}: pre-destroy commit failed: ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`,
+            );
+          }
           await this.deleteVm(vmId);
           this.agents.delete(agentId);
           this.handles.delete(agentId);
