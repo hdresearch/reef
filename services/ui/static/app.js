@@ -1798,4 +1798,17 @@ Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
   setInterval(() => scheduleMemexRefresh(0), 4000);
   // Periodically sync conversation list to catch changes from other clients
   setInterval(syncConversationList, 15000);
+
+  // Operator presence — heartbeat on interaction
+  let lastHeartbeat = 0;
+  function presenceHeartbeat() {
+    const now = Date.now();
+    if (now - lastHeartbeat < 30000) return; // max once per 30s
+    lastHeartbeat = now;
+    fetch(`${API}/reef/presence/heartbeat`, { method: 'POST' }).catch(() => {});
+  }
+  document.addEventListener('click', presenceHeartbeat);
+  document.addEventListener('keydown', presenceHeartbeat);
+  document.addEventListener('scroll', presenceHeartbeat, { passive: true });
+  presenceHeartbeat(); // initial
 });

@@ -634,6 +634,40 @@ export async function createReef(config: ReefConfig = {}) {
 
   const piProcesses = new Map<string, Task>();
   const sseClients = new Set<ReadableStreamDefaultController>();
+
+  // =========================================================================
+  // Operator presence — distinguish "waiting for answer" from "AFK"
+  // =========================================================================
+  let operatorLastSeen = 0; // epoch ms — updated on any UI interaction
+  let operatorConnected = false; // true if at least one SSE client connected
+
+  function updatePresence() {
+    operatorLastSeen = Date.now();
+  }
+
+  function operatorPresence(): {
+    connected: boolean;
+    lastSeenMs: number;
+    lastSeenAgo: string;
+    status: "active" | "idle" | "away" | "offline";
+  } {
+    const ago = Date.now() - operatorLastSeen;
+    const connected = sseClients.size > 0;
+    const status = !connected
+      ? ("offline" as const)
+      : ago < 60_000
+        ? ("active" as const)
+        : ago < 300_000
+          ? ("idle" as const)
+          : ("away" as const);
+    const agoStr =
+      ago < 60_000
+        ? `${Math.round(ago / 1000)}s`
+        : ago < 3600_000
+          ? `${Math.round(ago / 60_000)}m`
+          : `${Math.round(ago / 3600_000)}h`;
+    return { connected, lastSeenMs: operatorLastSeen, lastSeenAgo: agoStr, status };
+  }
   const agentModel = config.agent?.model ?? DEFAULT_ROOT_REEF_MODEL;
 
   // Only add system prompt if tree is empty (fresh start)
@@ -899,7 +933,17 @@ export async function createReef(config: ReefConfig = {}) {
           "\n[operator attestation]\n⚠ Passkeys registered but AGENTS.md not yet attested. First-use trust (TOFU).";
       }
     } catch {}
-    const contextParts = [profile, attestationContext, tree.contextFor(userNode.id)].filter(Boolean);
+    // Include operator presence so agents can decide wait vs proceed
+    const presence = operatorPresence();
+    const presenceContext = `[operator presence] status: ${presence.status}, last seen: ${presence.lastSeenAgo} ago${
+      presence.status === "away" || presence.status === "offline"
+        ? "\nOperator appears AFK. For plan approval: proceed with best judgment after signaling. Do not block indefinitely."
+        : presence.status === "active"
+          ? "\nOperator is active. Signal plans and wait briefly for steer before proceeding."
+          : "\nOperator is idle. Signal plans; proceed if no response within 2 minutes."
+    }`;
+
+    const contextParts = [profile, presenceContext, attestationContext, tree.contextFor(userNode.id)].filter(Boolean);
     const context = contextParts.join("\n\n");
     launchTask(task, taskId, userNode, context, opts.attachments);
 
@@ -1592,6 +1636,21 @@ export async function createReef(config: ReefConfig = {}) {
   });
 
   // =========================================================================
+  // Operator presence
+  // =========================================================================
+
+  /** Get operator presence status — agents call this to decide wait vs proceed */
+  reef.get("/presence", (c) => {
+    return c.json(operatorPresence());
+  });
+
+  /** UI heartbeat — called by the browser to indicate operator is active */
+  reef.post("/presence/heartbeat", (c) => {
+    updatePresence();
+    return c.json({ ok: true });
+  });
+
+  // =========================================================================
   // File uploads
   // =========================================================================
 
@@ -1737,10 +1796,13 @@ export async function createReef(config: ReefConfig = {}) {
     const stream = new ReadableStream({
       start(controller) {
         sseClients.add(controller);
+        updatePresence();
+        operatorConnected = true;
         controller.enqueue(`: connected\n\n`);
       },
       cancel(controller) {
         sseClients.delete(controller);
+        operatorConnected = sseClients.size > 0;
       },
     });
     return new Response(stream, {
