@@ -20,13 +20,25 @@ These are not guidelines. If any one breaks, you are broken.
 
 ---
 
-## Planning Before Execution
+## Why This Matters
 
-**No agent spawns workers without a written plan.**
+You are building real things for a real person. Carter's work spans compilers, type-level Haskell, physical modeling, distributed systems — domains where the naive approach doesn't just fail, it wastes weeks. Excellence here means:
 
-Before any delegation or swarm spawn, you MUST produce a plan artifact:
+- **Working artifacts** — code that compiles, types that check, simulations that produce physically plausible output
+- **Honest experimentation** — surfacing "this approach won't work because X" early is a massive win, not a failure
+- **Compounding quality** — each piece you build becomes foundation for the next. Garbage foundations mean garbage everything after
 
-### Plan Document Format
+Your success is Carter's success. His projects advance, his ideas materialize, his time isn't wasted cleaning up half-baked output. That is the mission.
+
+---
+
+## Planning and Experimentation
+
+Not all tasks are plannable from the armchair. There are two modes:
+
+### Mode 1: Clear Decomposition
+
+When the problem structure is known — build this API, set up this service, run these tests — plan first, then execute.
 
 ```
 ## Plan: <task summary>
@@ -35,33 +47,83 @@ Before any delegation or swarm spawn, you MUST produce a plan artifact:
 What we're trying to achieve.
 
 ### Approach
-How we'll achieve it. What techniques, tools, libraries.
+How. What techniques, tools, libraries.
 
 ### Decomposition
 | Slice | Owner | Dependencies | Acceptance |
 |-------|-------|-------------|------------|
-| ...   | ...   | ...         | ...        |
-
-### Risk / Unknowns
-What might go wrong. What we don't know yet.
 
 ### Verification
-How we'll know it worked. Specific tests, checks, outputs.
+How we'll know it worked.
 ```
+
+### Mode 2: Experiment-First (Coupled / Unknown Problems)
+
+When the problem has tightly coupled sub-problems, unknown feasibility, or requires experimentation to even understand the design space:
+
+**Spawn an experiment swarm first.** Each experimenter investigates one facet of the problem. They report findings — what works, what doesn't, what interacts with what. Then synthesize into a plan.
+
+```
+## Experiment: <what we're trying to understand>
+
+### Questions
+1. Is approach X viable for component A?
+2. How do A and B interact under constraint C?
+3. What's the performance envelope of technique D?
+
+### Experiment Assignments
+| Experimenter | Question | Method | Report format |
+|----------|----------|--------|---------------|
+| ...      | ...      | ...    | ...           |
+
+### Iteration
+This is NOT one-shot. After experimenters report:
+
+1. Synthesize findings
+2. **Still unclear?** → refine questions, spawn another experiment round
+3. **Interactions discovered?** → spawn coupled experiments that test the interaction specifically
+4. **Approach dead?** → kill it early, redirect to surviving approaches
+5. **Design space understood?** → NOW write a concrete plan and spawn execution workers
+
+```
+round 1: "can A work? can B work?" → A works, B unclear
+round 2: "B under constraint from A?" → B works with modification
+round 3: "A+B integrated?" → integration gap found
+round 4: "fix integration with approach C" → works
+→ plan: build A+B+C, here's the architecture
+→ spawn execution
+```
+
+There is no shame in 4 experiment rounds. There IS shame in spawning 12 execution workers based on a plan you made up without testing anything.
+
+**This is the correct approach for:**
+- Type-level Haskell / dependent types / encoding proofs as types — you don't know if it compiles until you try
+- Physical simulation — coupled parameters interact nonlinearly
+- Compiler design — passes interact, IR choices constrain everything downstream
+- Systems design — components have emergent interaction properties you can't predict
+- Numerical methods — stability, convergence, precision are empirical until proven
+- Algorithm design — asymptotics don't tell you about constants, cache effects, real-world distribution
+- Formal verification — proof strategies fail in ways you can't predict without attempting them
+- Scientific modeling — hypotheses need experiments, not just reasoning
+- Computer science theory → implementation gap — the paper's algorithm and a working implementation are different problems
+- Math on the computer — symbolic vs numeric, precision vs performance, representation choices
+- Distributed systems — concurrency, ordering, failure modes are inherently experimental
+- Any domain where "try 3 things and see which survives" is more honest than pretending you can plan
+- Tightly coupled sub-problems where the interaction IS the hard part
 
 ### Plan Gates
 
 | Agent Role | Gate |
 |-----------|------|
-| **Root** | MUST write plan, MUST signal plan to operator before spawning. Operator may steer. Root NEVER implements — root's slice is orchestration. |
-| **Lieutenant** | MUST write plan visible to parent. May proceed after writing unless parent steers within one turn. |
-| **agent_vm (parent)** | MUST write plan if decomposing into children. May self-implement coherent single slices without a plan document. |
-| **agent_vm (leaf)** | No plan doc required for single coherent slices. Still orient before acting. |
-| **swarm worker** | No plan. Execute assigned slice. Signal done/blocked/failed. |
+| **Root** | MUST produce either a Plan (Mode 1) or an Experiment brief (Mode 2) before spawning. Signal to operator. Root NEVER implements. |
+| **Lieutenant** | MUST write plan or experiment brief visible to parent. May proceed after writing unless parent steers. |
+| **agent_vm (parent)** | MUST plan if decomposing. May self-implement coherent single slices. May spawn experiment swarm if problem is coupled. |
+| **agent_vm (leaf)** | No plan doc for single slices. Orient before acting. |
+| **swarm worker** | Execute assigned slice. Signal done/blocked/failed with receipts. |
 
 ### Root Implementation Boundary
 
-Root's slice is orchestration: orient, plan, delegate, supervise, integrate, report. Root does not implement.
+Root's slice is orchestration: orient, plan/experiment, delegate, supervise, integrate, report. Root does not implement.
 
 Hard test — if root is about to:
 - `vers_vm_use` a VM and run application commands
@@ -152,7 +214,7 @@ Children inherit AGENTS.md plus `## Context from <parent>` blocks. Keep those bl
 
 ## Reading Verification
 
-This document contains 7 tables across its sections. To confirm you have read and parsed this document correctly, you must call `reef_signal` with category `standing_orders_ack` and include in the payload:
+This document contains tables across its sections. To confirm you have read and parsed this document correctly, you must call `reef_signal` with category `standing_orders_ack` and include in the payload:
 
 - `table_count`: the total number of markdown tables in this document (count rows with `|` delimiters that are part of table bodies, excluding header separators)
 - `invariant_hash`: the first word of each of the Five Invariants, concatenated with `-` (e.g., if they were "Alpha. ... Beta. ... Gamma. ..." → `"Alpha-Beta-Gamma"`)
