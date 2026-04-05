@@ -442,7 +442,8 @@ function addConversationMessage(conversationId, role, content) {
 function ensureStreamingAssistant(conversationId) {
   const conversation = ensureConversation(conversationId);
   if (!conversation) return null;
-  if (!conversation.currentMsg) {
+  // Always create a new message block if we don't have one, or if the last block wasn't text
+  if (!conversation.currentMsg || conversation.currentMsg.dataset.isTool) {
     conversation.currentMsg = addConversationMessage(conversationId, 'assistant', '');
     conversation.currentText = '';
   }
@@ -450,7 +451,6 @@ function ensureStreamingAssistant(conversationId) {
 }
 
 function appendToolCall(messageEl, toolName, toolCallId, args) {
-  const body = messageEl.querySelector('.branch-msg-content');
   const preview = args
     ? Object.entries(args).map(([, value]) => {
         const text = typeof value === 'string' ? value : JSON.stringify(value);
@@ -459,30 +459,37 @@ function appendToolCall(messageEl, toolName, toolCallId, args) {
     : '';
 
   const tool = document.createElement('div');
-  tool.className = 'branch-tool';
+  tool.className = 'branch-tool branch-msg'; // act like a top-level message
   tool.dataset.toolCallId = toolCallId || '';
   tool.innerHTML = `
-    <div class="branch-tool-header">
-      <span class="branch-tool-arrow">▶</span> ${esc(toolName)}(${esc(preview)})
+    <div class="branch-msg-role tool">⚙️ ${esc(toolName)}</div>
+    <div class="branch-msg-content">
+      <div class="branch-tool-header">
+        <span class="branch-tool-arrow">▼</span> Arguments: ${esc(preview)}
+      </div>
+      <div class="branch-tool-body open"></div>
     </div>
-    <div class="branch-tool-body"></div>
   `;
+  
   tool.querySelector('.branch-tool-header').addEventListener('click', () => {
-    tool.querySelector('.branch-tool-arrow').classList.toggle('open');
-    tool.querySelector('.branch-tool-body').classList.toggle('open');
+    tool.querySelector('.branch-tool-arrow').classList.toggle('closed');
+    tool.querySelector('.branch-tool-body').classList.toggle('closed');
   });
-  body.appendChild(tool);
+
+  // Insert after the current message
+  messageEl.parentNode.appendChild(tool);
   return tool;
 }
 
 function applyToolResult(messageEl, toolCallId, result, isError) {
-  const tool = messageEl.querySelector(`[data-tool-call-id="${toolCallId}"]`);
+  // Find in the whole message container
+  const container = messageEl.parentNode || document;
+  const tool = container.querySelector(`[data-tool-call-id="${toolCallId}"]`);
   if (!tool) return;
   const body = tool.querySelector('.branch-tool-body');
   const text = result?.content?.filter((item) => item.type === 'text').map((item) => item.text).join('') || '';
   if (text) {
-    body.textContent = text.slice(-500);
-    body.classList.add('open');
+    body.textContent = text.slice(-2000); // show a bit more
   }
   if (isError) body.style.color = 'var(--error)';
 }
@@ -602,13 +609,24 @@ async function branchSend() {
   }
 
   const conversation = conversations.get(activeConversationId);
-  if (!conversation || conversation.working || conversation.closed) return;
+  if (!conversation || conversation.closed) return;
 
   const input = $('branch-text');
   const text = input.value.trim();
   if (!text && pendingFiles.length === 0) return;
   input.value = '';
   resizeInput('branch-text');
+
+  if (conversation.working) {
+    // Queue message for delivery after current task completes
+    if (!conversation._queue) conversation._queue = [];
+    conversation._queue.push({ text, files: [...pendingFiles] });
+    pendingFiles = [];
+    renderPendingFiles();
+    addConversationMessage(activeConversationId, 'user', text + '\n*(queued — will send when current task finishes)*');
+    return;
+  }
+
   try {
     const { prompt, attachments } = await uploadAndBuildPrompt(text);
     await submitConversationReply(activeConversationId, prompt, attachments);
@@ -722,6 +740,19 @@ function handleEvent(event) {
       renderConversationLists();
       renderConversationHeader();
       updateStatus();
+
+      // Drain queued messages
+      if (conversation._queue && conversation._queue.length > 0) {
+        const next = conversation._queue.shift();
+        setTimeout(async () => {
+          try {
+            const { prompt, attachments } = await uploadAndBuildPrompt(next.text, next.files);
+            await submitConversationReply(conversationId, prompt, attachments);
+          } catch (err) {
+            feedAdd(null, null, 'error', err.message, { taskId: conversationId });
+          }
+        }, 500);
+      }
       break;
     }
 

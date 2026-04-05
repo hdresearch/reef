@@ -87,6 +87,35 @@ function writeProfile(profile: UserProfile): void {
   writeFileSync(STORE_PATH, JSON.stringify(store, null, 2));
 }
 
+// Auto-populate profile from env vars on first boot if the store is empty.
+// Set REEF_USER_NAME, REEF_USER_EMAIL, REEF_USER_TIMEZONE, REEF_USER_LOCATION
+// in .env or at provision time. These seed the profile once; the UI panel
+// can override afterward. Nothing is hardcoded.
+function ensureProfileFromEnv(): void {
+  const existing = readProfile();
+  if (existing.name || existing.timezone || existing.location || existing.preferences) return;
+
+  const name = process.env.REEF_USER_NAME;
+  const email = process.env.REEF_USER_EMAIL;
+  const tz = process.env.REEF_USER_TIMEZONE;
+  const location = process.env.REEF_USER_LOCATION;
+
+  if (!name && !email && !tz && !location) return;
+
+  const profile: UserProfile = {};
+  if (name) profile.name = name;
+  if (tz) profile.timezone = tz;
+  if (location) profile.location = location;
+  // Combine email into preferences so agents know who to address
+  const prefParts: string[] = [];
+  if (email) prefParts.push(`Operator email: ${email}`);
+  prefParts.push("See AGENTS.md for full standing orders.");
+  profile.preferences = prefParts.join(" ");
+
+  writeProfile(profile);
+  console.log(`[reef] profile seeded from env: ${name || email || "anonymous"}`);
+}
+
 function profileContext(): string {
   const profile = readProfile();
   const parts: string[] = [];
@@ -1344,6 +1373,7 @@ export async function createReef(config: ReefConfig = {}) {
 }
 
 export async function startReef(config: ReefConfig = {}) {
+  ensureProfileFromEnv();
   const { app, tree, piProcesses, liveModules, sseClients } = await createReef(config);
   const port = config.server?.port ?? parseInt(process.env.PORT ?? "3000", 10);
 

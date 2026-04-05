@@ -660,15 +660,18 @@ header h1 {
 
 /* Branch tool calls */
 .branch-tool {
+  border-left: 2px solid var(--accent-dim);
+  padding-left: 8px;
+  margin: 4px 0;
   margin: 3px 0; border-left: 2px solid var(--border-light);
   padding-left: 6px; font-size: 11px;
 }
 .branch-tool-header {
-  color: var(--text-dim); cursor: pointer; user-select: none;
+  color: var(--text); cursor: pointer; user-select: none; font-size: 12px;
 }
 .branch-tool-header:hover { color: var(--text); }
 .branch-tool-body {
-  display: none; color: var(--text-dim); font-size: 10px;
+  display: none; color: var(--text); font-size: 11px;
   max-height: 80px; overflow: hidden; white-space: pre-wrap;
   margin-top: 2px;
 }
