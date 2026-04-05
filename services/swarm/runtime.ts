@@ -1339,6 +1339,7 @@ export class SwarmRuntime {
     if (!stayIdle) {
       const agentId = agent.id;
       const vmId = agent.vmId;
+      const graceMs = parseInt(process.env.REEF_DONE_GRACE_MS || "300000", 10); // default 5min
       setTimeout(async () => {
         try {
           const handle = this.handles.get(agentId);
@@ -1355,7 +1356,7 @@ export class SwarmRuntime {
             `  [swarm] ${agentId}: auto-destroy failed: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
-      }, 5000); // 5s grace period for final signal delivery
+      }, graceMs); // configurable via REEF_DONE_GRACE_MS, default 5min
     }
   }
 }
