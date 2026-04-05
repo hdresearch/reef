@@ -307,6 +307,95 @@ export function renameCredential(credentialId: string, label: string): { renamed
   return { renamed: true };
 }
 
+// ---------------------------------------------------------------------------
+// Attestation — cross-sign documents with registered passkeys
+// ---------------------------------------------------------------------------
+
+export interface AttestationSignature {
+  credentialId: string;
+  clientDataJSON: string; // base64url
+  authenticatorData: string; // base64url
+  signature: string; // base64url
+}
+
+export interface Attestation {
+  documentHash: string; // SHA-256 hex
+  document: string; // the actual text that was signed
+  summary: string; // human-readable summary of what was signed
+  signedAt: number; // epoch ms
+  signatures: AttestationSignature[];
+}
+
+export interface PrincipalRegistryWithAttestation extends PrincipalRegistry {
+  attestation?: Attestation;
+  previousAttestationHash?: string;
+}
+
+/**
+ * Build a preview of what will be attested.
+ * Includes the document, its hash, the public keys, and a diff from prior attestation.
+ */
+export function buildAttestationPreview(document: string): {
+  documentHash: string;
+  publicKeys: { id: string; label?: string; providerHint?: string }[];
+  previousHash?: string;
+  changed: boolean;
+  summary: string;
+} {
+  const crypto = require("node:crypto");
+  const hash = crypto.createHash("sha256").update(document).digest("hex");
+  const reg = readRegistry() as PrincipalRegistryWithAttestation;
+
+  const publicKeys = reg.credentials.map((c) => ({
+    id: c.id,
+    label: c.label,
+    providerHint: c.providerHint,
+  }));
+
+  const previousHash = reg.attestation?.documentHash;
+  const changed = !previousHash || previousHash !== hash;
+
+  const summary = [
+    `Attesting fleet identity document (${document.length} chars, SHA-256: ${hash.slice(0, 16)}…)`,
+    `${publicKeys.length} registered passkey${publicKeys.length === 1 ? "" : "s"} will cross-sign this document.`,
+    changed && previousHash
+      ? `⚠ Document changed since last attestation (was ${previousHash.slice(0, 16)}…)`
+      : changed
+        ? "First attestation for this fleet."
+        : "Document unchanged since last attestation.",
+    "",
+    "By signing, you certify:",
+    `• These ${publicKeys.length} passkeys are YOUR identity roots`,
+    "• The AGENTS.md content is YOUR standing orders to the fleet",
+    "• All child agents will inherit this attestation",
+  ].join("\n");
+
+  return { documentHash: hash, publicKeys, previousHash, changed, summary };
+}
+
+/**
+ * Store a completed attestation in the registry.
+ */
+export function storeAttestation(
+  documentHash: string,
+  document: string,
+  summary: string,
+  signatures: AttestationSignature[],
+): void {
+  const reg = readRegistry() as PrincipalRegistryWithAttestation;
+  if (reg.attestation) {
+    reg.previousAttestationHash = reg.attestation.documentHash;
+  }
+  reg.attestation = {
+    documentHash,
+    document,
+    summary,
+    signedAt: Date.now(),
+    signatures,
+  };
+  writeRegistry(reg);
+}
+
 export function removeCredential(credentialId: string): { removed: boolean; remaining: number } {
   const reg = readRegistry();
   const before = reg.credentials.length;

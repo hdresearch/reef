@@ -888,7 +888,19 @@ export async function createReef(config: ReefConfig = {}) {
       continuing,
     });
     const profile = profileContext();
-    const context = profile ? `${profile}\n\n${tree.contextFor(userNode.id)}` : tree.contextFor(userNode.id);
+    // Include attestation provenance if available
+    let attestationContext = "";
+    try {
+      const reg = (await import("./core/webauthn.js")).readRegistry() as any;
+      if (reg.attestation) {
+        attestationContext = `\n[operator attestation]\nAGENTS.md attested by operator at ${new Date(reg.attestation.signedAt).toISOString()}\nDocument hash: ${reg.attestation.documentHash}\nSigned by ${reg.attestation.signatures.length} passkey(s)\nThis task was dispatched from an attested fleet.`;
+      } else if (reg.credentials?.length > 0) {
+        attestationContext =
+          "\n[operator attestation]\n⚠ Passkeys registered but AGENTS.md not yet attested. First-use trust (TOFU).";
+      }
+    } catch {}
+    const contextParts = [profile, attestationContext, tree.contextFor(userNode.id)].filter(Boolean);
+    const context = contextParts.join("\n\n");
     launchTask(task, taskId, userNode, context, opts.attachments);
 
     return { taskId, userNode, continuing };
@@ -1286,6 +1298,58 @@ export async function createReef(config: ReefConfig = {}) {
     return c.json(result);
   });
 
+  // --- Attestation: cross-sign AGENTS.md with passkeys ---
+
+  /** Preview what will be attested */
+  reef.get("/passkeys/attest/preview", async (c) => {
+    const { readParentAgentsMd } = await import("./core/agents-md.js");
+    const agentsMd = readParentAgentsMd();
+    const preview = webauthn.buildAttestationPreview(agentsMd);
+    return c.json({ ...preview, document: agentsMd });
+  });
+
+  /** Start attestation — get auth challenge with document hash as challenge */
+  reef.post("/passkeys/attest/start", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const documentHash = body.documentHash;
+    if (!documentHash) return c.json({ error: "Missing documentHash" }, 400);
+
+    // Use the document hash as the challenge so the signature binds to the document
+    const reg = webauthn.readRegistry();
+    const options = await webauthn.startAuthentication();
+    // Override the challenge with our document hash
+    options.challenge = documentHash;
+    // Store the real challenge for verification
+    reg.pendingChallenge = documentHash;
+    webauthn.writeRegistry(reg);
+
+    return c.json(options);
+  });
+
+  /** Store completed attestation */
+  reef.post("/passkeys/attest/finish", async (c) => {
+    const body = await c.req.json();
+    const { documentHash, document, summary, signatures } = body;
+    if (!documentHash || !signatures?.length) {
+      return c.json({ error: "Missing documentHash or signatures" }, 400);
+    }
+    webauthn.storeAttestation(documentHash, document, summary, signatures);
+    broadcast({ type: "attestation_updated", documentHash, sigCount: signatures.length });
+    return c.json({ stored: true, sigCount: signatures.length });
+  });
+
+  /** Get current attestation status */
+  reef.get("/passkeys/attest/status", (c) => {
+    const reg = webauthn.readRegistry() as any;
+    if (!reg.attestation) return c.json({ attested: false });
+    return c.json({
+      attested: true,
+      documentHash: reg.attestation.documentHash,
+      signedAt: reg.attestation.signedAt,
+      sigCount: reg.attestation.signatures.length,
+    });
+  });
+
   /** Export principal registry (for baking into child AGENTS.md / trust tree) */
   reef.get("/passkeys/registry", (c) => {
     const reg = webauthn.readRegistry();
@@ -1328,9 +1392,33 @@ export async function createReef(config: ReefConfig = {}) {
           <button class="pk-register-btn" data-hint="hybrid" data-label="Phone" style="background:#4f9;color:#000;border:none;padding:6px 16px;border-radius:4px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer">📱 Phone (QR scan)</button>
         </div>
         <div id="pk-status" style="color:#4f9;font-size:11px;min-height:16px;margin-top:8px"></div>
+
+        ${
+          creds.length > 0
+            ? `
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #333">
+          <div style="color:#888;font-size:11px;margin-bottom:8px">Fleet Attestation — sign AGENTS.md with your passkeys</div>
+          ${
+            (reg as any).attestation
+              ? `
+            <div style="color:#4f9;font-size:11px;margin-bottom:8px">
+              ✓ Last attested: ${new Date((reg as any).attestation.signedAt).toLocaleString()}
+              (${(reg as any).attestation.signatures.length} sig${(reg as any).attestation.signatures.length === 1 ? "" : "s"},
+              hash: ${(reg as any).attestation.documentHash.slice(0, 16)}…)
+            </div>
+          `
+              : `<div style="color:#f80;font-size:11px;margin-bottom:8px">⚠ No attestation yet — fleet children cannot verify your identity</div>`
+          }
+          <button id="pk-attest-btn" style="background:#f80;color:#000;border:none;padding:6px 16px;border-radius:4px;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer">${(reg as any).attestation ? "Re-attest AGENTS.md" : "Attest AGENTS.md"}</button>
+          <div id="pk-attest-preview" style="display:none;margin-top:8px;padding:8px;background:#111;border:1px solid #333;border-radius:4px;max-height:300px;overflow:auto;font-size:11px;color:#aaa"></div>
+          <div id="pk-attest-status" style="color:#4f9;font-size:11px;min-height:16px;margin-top:4px"></div>
+        </div>
+        `
+            : ""
+        }
         <script>
           (async function() {
-            const { startRegistration } = await import('https://cdn.jsdelivr.net/npm/@simplewebauthn/browser/dist/bundle/index.js');
+            const { startRegistration, startAuthentication } = await import('https://cdn.jsdelivr.net/npm/@simplewebauthn/browser/dist/bundle/index.js');
 
             const panelEl = document.getElementById('pk-status')?.closest('[data-api]');
             const api = panelEl?.dataset?.api || '';
@@ -1420,6 +1508,83 @@ export async function createReef(config: ReefConfig = {}) {
                 }
               });
             });
+            // --- Attestation ceremony ---
+            const attestBtn = document.getElementById('pk-attest-btn');
+            if (attestBtn) {
+              attestBtn.addEventListener('click', async function() {
+                const preview = document.getElementById('pk-attest-preview');
+                const aStatus = document.getElementById('pk-attest-status');
+                try {
+                  aStatus.style.color = '#4f9';
+                  aStatus.textContent = 'Loading preview...';
+
+                  const preRes = await fetch(api + '/reef/passkeys/attest/preview');
+                  const pre = await preRes.json();
+                  if (!preRes.ok) throw new Error(pre.error || 'Failed to load preview');
+
+                  // Show preview
+                  preview.style.display = 'block';
+                  preview.innerHTML = '<div style="margin-bottom:8px;padding:8px;background:#1a1a1a;border:1px solid #4f9;border-radius:4px">' +
+                    '<pre style="white-space:pre-wrap;margin:0;color:#4f9">' + pre.summary.replace(/</g, '&lt;') + '</pre></div>' +
+                    '<div style="margin-bottom:8px;font-size:11px;color:#888">Document hash: <code>' + pre.documentHash + '</code></div>' +
+                    '<details open><summary style="cursor:pointer;color:#ccc;font-size:12px;margin-bottom:4px">AGENTS.md (full document — read before signing)</summary>' +
+                    '<pre style="white-space:pre-wrap;margin:0;font-size:10px;max-height:400px;overflow:auto;padding:8px;background:#0a0a0a;border:1px solid #222;border-radius:4px">' +
+                    pre.document.replace(/</g, '&lt;') +
+                    '</pre></details>';
+
+                  aStatus.textContent = 'Review above, then tap each passkey to sign...';
+
+                  // Collect signatures from each registered passkey
+                  const signatures = [];
+                  const keysRes = await fetch(api + '/reef/passkeys');
+                  const keysData = await keysRes.json();
+
+                  for (let i = 0; i < keysData.credentials.length; i++) {
+                    const cred = keysData.credentials[i];
+                    aStatus.textContent = 'Tap passkey ' + (i + 1) + '/' + keysData.credentials.length + ' (' + (cred.label || cred.id.slice(0,8)) + ')...';
+
+                    const startRes = await fetch(api + '/reef/passkeys/attest/start', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ documentHash: pre.documentHash }),
+                    });
+                    const options = await startRes.json();
+                    if (!startRes.ok) throw new Error(options.error || 'Failed to start');
+
+                    const assertion = await startAuthentication({ optionsJSON: options });
+                    signatures.push({
+                      credentialId: assertion.id,
+                      clientDataJSON: assertion.response.clientDataJSON,
+                      authenticatorData: assertion.response.authenticatorData,
+                      signature: assertion.response.signature,
+                    });
+                  }
+
+                  // Store
+                  aStatus.textContent = 'Storing attestation...';
+                  const storeRes = await fetch(api + '/reef/passkeys/attest/finish', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      documentHash: pre.documentHash,
+                      document: pre.document,
+                      summary: pre.summary,
+                      signatures,
+                    }),
+                  });
+                  const storeData = await storeRes.json();
+                  if (!storeRes.ok) throw new Error(storeData.error || 'Failed to store');
+
+                  aStatus.textContent = '✓ Attested with ' + signatures.length + ' signature(s)!';
+                  preview.style.display = 'none';
+                } catch (err) {
+                  aStatus.style.color = '#f55';
+                  aStatus.textContent = err.name === 'NotAllowedError'
+                    ? 'Cancelled by user'
+                    : 'Error: ' + err.message;
+                }
+              });
+            }
           })();
         </script>
       </div>
