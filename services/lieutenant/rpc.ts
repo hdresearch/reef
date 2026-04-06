@@ -17,6 +17,23 @@ type EventHandler = (event: any) => void;
 export interface RpcHandle {
   send: (cmd: object) => void;
   onEvent: (handler: EventHandler) => () => void;
+  getSessionStats: () => Promise<{
+    sessionFile?: string;
+    sessionId: string;
+    userMessages: number;
+    assistantMessages: number;
+    toolCalls: number;
+    toolResults: number;
+    totalMessages: number;
+    tokens: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+      total: number;
+    };
+    cost: number;
+  }>;
   kill: () => Promise<void>;
   vmId: string;
   isAlive: () => boolean;
@@ -25,9 +42,15 @@ export interface RpcHandle {
 }
 
 export interface RemoteRpcOptions {
+  name?: string;
   llmProxyKey?: string;
   systemPrompt?: string;
   model?: string;
+  agentsMd?: string; // v2: full AGENTS.md content to write to child VM
+  directive?: string; // v2: hard guardrails (VERS_AGENT_DIRECTIVE)
+  effort?: string; // v2: thinking effort level (low, medium, high)
+  parentVmId?: string;
+  parentAgent?: string;
 }
 const versClient = new VersClient();
 
@@ -109,12 +132,6 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
       : process.env.LLM_PROXY_KEY
         ? `export LLM_PROXY_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
         : "",
-    // Alias ANTHROPIC_API_KEY to LLM_PROXY_KEY so punkin's AI package initializes
-    opts.llmProxyKey
-      ? `export ANTHROPIC_API_KEY='${escapeEnvValue(opts.llmProxyKey)}'`
-      : process.env.LLM_PROXY_KEY
-        ? `export ANTHROPIC_API_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
-        : "",
     versApiKey ? `export VERS_API_KEY='${escapeEnvValue(versApiKey)}'` : "",
     process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
     process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
@@ -127,10 +144,18 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
     process.env.PUNKIN_BIN ? `export PUNKIN_BIN='${escapeEnvValue(process.env.PUNKIN_BIN)}'` : "",
     `export PI_VERS_HOME='${escapeEnvValue(process.env.PI_VERS_HOME || "/root/pi-vers")}'`,
     `export SERVICES_DIR='${escapeEnvValue(process.env.SERVICES_DIR || "/root/reef/services-active")}'`,
-    "export REEF_CHILD_AGENT='true'",
-    "export VERS_AGENT_ROLE='lieutenant'",
-    process.env.VERS_AGENT_NAME
-      ? `export VERS_PARENT_AGENT='${escapeEnvValue(process.env.VERS_AGENT_NAME)}'`
+    // v2: category-based identity
+    "export REEF_CATEGORY='lieutenant'",
+    opts.name ? `export VERS_AGENT_NAME='${escapeEnvValue(opts.name)}'` : "",
+    opts.parentVmId || process.env.VERS_VM_ID
+      ? `export REEF_PARENT_VM_ID='${escapeEnvValue(opts.parentVmId || process.env.VERS_VM_ID || "")}'`
+      : "",
+    opts.parentVmId || process.env.VERS_VM_ID
+      ? `export REEF_ROOT_VM_ID='${escapeEnvValue(process.env.REEF_ROOT_VM_ID || process.env.VERS_VM_ID || "")}'`
+      : "",
+    opts.directive ? `export VERS_AGENT_DIRECTIVE='${escapeEnvValue(opts.directive)}'` : "",
+    opts.parentAgent || process.env.VERS_AGENT_NAME
+      ? `export VERS_PARENT_AGENT='${escapeEnvValue(opts.parentAgent || process.env.VERS_AGENT_NAME || "")}'`
       : "export VERS_PARENT_AGENT='reef'",
     "export GIT_EDITOR=true",
   ]
@@ -138,10 +163,6 @@ export function buildRemoteEnv(vmId: string, opts: RemoteRpcOptions): string {
     .join("; ");
 
   return exports;
-}
-
-function resolveModelProvider(): "vers" {
-  return "vers";
 }
 
 export async function createVersVmFromCommit(commitId: string): Promise<{ vmId: string }> {
@@ -192,11 +213,24 @@ export async function waitForRemoteRpcSession(vmId: string, attempts = 15, delay
 
 function createRemoteHandle(vmId: string, sshBaseArgs: string[], skipExistingOutput: boolean): RpcHandle {
   const handlers = createHandlerSet();
+  const pending = new Map<
+    string,
+    { resolve: (value: any) => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> }
+  >();
   let tailChild: ReturnType<typeof spawn> | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let killed = false;
   let lineBuffer = "";
   let linesProcessed = skipExistingOutput ? -1 : 0;
+  let requestCounter = 0;
+
+  const rejectPending = (message: string) => {
+    for (const [id, entry] of pending) {
+      clearTimeout(entry.timeout);
+      entry.reject(new Error(message));
+      pending.delete(id);
+    }
+  };
 
   const startTail = () => {
     if (killed) return;
@@ -217,7 +251,18 @@ function createRemoteHandle(vmId: string, sshBaseArgs: string[], skipExistingOut
         linesProcessed++;
         if (!line.trim()) continue;
         try {
-          handlers.emit(JSON.parse(line));
+          const event = JSON.parse(line);
+          if (event?.type === "response" && typeof event.id === "string" && pending.has(event.id)) {
+            const entry = pending.get(event.id)!;
+            clearTimeout(entry.timeout);
+            pending.delete(event.id);
+            if (event.success === false) {
+              entry.reject(new Error(event.error || `${event.command || "rpc"} failed`));
+            } else {
+              entry.resolve(event.data);
+            }
+          }
+          handlers.emit(event);
         } catch {
           // Ignore non-JSON output from the RPC stream.
         }
@@ -227,6 +272,7 @@ function createRemoteHandle(vmId: string, sshBaseArgs: string[], skipExistingOut
     tailChild.on("close", () => {
       if (killed) return;
       lineBuffer = "";
+      rejectPending(`RPC tail closed for VM ${vmId}`);
       reconnectTimer = setTimeout(() => {
         startTail();
       }, 3000);
@@ -262,9 +308,26 @@ function createRemoteHandle(vmId: string, sshBaseArgs: string[], skipExistingOut
     onEvent(handler: EventHandler) {
       return handlers.subscribe(handler);
     },
+    getSessionStats() {
+      if (killed) return Promise.reject(new Error(`RPC handle for VM ${vmId} is closed`));
+      const id = `usage-stats-${vmId}-${++requestCounter}`;
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`Timed out waiting for get_session_stats from VM ${vmId}`));
+        }, 15000);
+        pending.set(id, { resolve, reject, timeout });
+        const writer = spawn("ssh", [...sshBaseArgs, `cat > ${RPC_IN}`], {
+          stdio: ["pipe", "ignore", "ignore"],
+        });
+        writer.stdin.write(`${JSON.stringify({ id, type: "get_session_stats" })}\n`);
+        writer.stdin.end();
+      });
+    },
     async kill() {
       killed = true;
       suspendTail();
+      rejectPending(`RPC handle for VM ${vmId} was killed`);
       try {
         await versClient.exec(
           vmId,
@@ -295,8 +358,21 @@ export async function startRemoteRpcAgent(vmId: string, opts: RemoteRpcOptions):
   await versClient.exec(vmId, buildPersistVmIdScript(vmId));
   await versClient.exec(vmId, buildPersistKeysScript(opts));
 
+  // v2: Write inherited AGENTS.md to child VM
+  if (opts.agentsMd) {
+    const safeContent = opts.agentsMd.replace(/AGENTS_MD_EOF/g, "AGENTS_MD_E0F");
+    await versClient.exec(
+      vmId,
+      `mkdir -p /root/.pi/agent && cat > /root/.pi/agent/AGENTS.md << 'AGENTS_MD_EOF'\n${safeContent}\nAGENTS_MD_EOF`,
+    );
+  }
+
   let piCommand = `${resolveAgentBinary()} --mode rpc`;
-  if (opts.systemPrompt) {
+  if (opts.agentsMd) {
+    // v2: Use AGENTS.md as the system prompt (it includes inherited context)
+    piCommand += " --system-prompt /root/.pi/agent/AGENTS.md";
+  } else if (opts.systemPrompt) {
+    // v1 fallback: use the old system prompt
     const escapedPrompt = escapeEnvValue(opts.systemPrompt);
     await versClient.exec(
       vmId,
@@ -328,7 +404,9 @@ tmux has-session -t pi-rpc 2>/dev/null && echo daemon_started || echo daemon_fai
 
   const handle = createRemoteHandle(vmId, sshBaseArgs, false);
   if (opts.model) {
-    handle.send({ type: "set_model", provider: resolveModelProvider(), modelId: opts.model });
+    const setModelMsg: any = { type: "set_model", provider: "vers", modelId: opts.model };
+    if (opts.effort) setModelMsg.thinkingLevel = opts.effort;
+    handle.send(setModelMsg);
   }
   return handle;
 }

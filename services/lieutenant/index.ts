@@ -13,7 +13,7 @@
  *   reef_lt_pause    — Pause a VM lieutenant (preserves state)
  *   reef_lt_resume   — Resume a paused lieutenant
  *   reef_lt_destroy  — Tear down a lieutenant (or all)
- *   reef_lt_discover — Recover lieutenants from registry
+ *   reef_lt_discover — Recover lieutenants from vm-tree
  *
  * State: data/lieutenants.sqlite (via LieutenantStore)
  * Events: lieutenant:created, lieutenant:completed, lieutenant:paused,
@@ -22,6 +22,7 @@
 
 import { ServiceEventBus } from "../../src/core/events.js";
 import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
+import type { VMTreeStore } from "../vm-tree/store.js";
 import { createRoutes } from "./routes.js";
 import { LieutenantRuntime } from "./runtime.js";
 import { LieutenantStore } from "./store.js";
@@ -39,9 +40,11 @@ const lieutenant: ServiceModule = {
   routes,
 
   init(ctx: ServiceContext) {
+    const vmTreeHandle = ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree");
     runtime = new LieutenantRuntime({
       events: ctx.events,
       store,
+      vmTreeStore: vmTreeHandle?.vmTreeStore,
     });
     runtime.rehydrate().catch((err) => {
       console.error(`  [lieutenant] rehydrate failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -81,7 +84,7 @@ const lieutenant: ServiceModule = {
     },
   },
 
-  dependencies: ["store"],
+  dependencies: ["store", "vm-tree"],
   capabilities: ["agent.spawn", "agent.communicate", "agent.lifecycle"],
 
   routeDocs: {
@@ -96,6 +99,8 @@ const lieutenant: ServiceModule = {
           description: "Golden image commit ID (optional if a default golden is configured)",
         },
         llmProxyKey: { type: "string", description: "Vers LLM proxy key override (defaults to server env)" },
+        parentVmId: { type: "string", description: "Logical parent VM ID for lineage (defaults to caller/root)" },
+        spawnedBy: { type: "string", description: "Logical spawning agent name for provenance" },
       },
       response: "The created lieutenant object",
     },
@@ -153,7 +158,7 @@ const lieutenant: ServiceModule = {
       summary: "Destroy all lieutenants",
     },
     "POST /lieutenants/discover": {
-      summary: "Discover lieutenants from the registry",
+      summary: "Discover lieutenants from vm-tree",
       response: "{ results: [...] }",
     },
     "GET /_panel": {

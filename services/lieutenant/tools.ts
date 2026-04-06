@@ -48,6 +48,8 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           model: params.model,
           commitId: params.commitId,
           llmProxyKey: params.llmProxyKey,
+          parentVmId: client.vmId,
+          spawnedBy: client.agentName,
         });
         const loc = `[VM: ${result.vmId}]`;
         return client.ok(
@@ -69,6 +71,9 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       "  'prompt' (default when idle) — start a new task",
       "  'steer' — interrupt current work and redirect",
       "  'followUp' — queue message for after current task finishes",
+      "Optional post-task disposition:",
+      "  'stay_idle' — remain alive and idle after current work completes",
+      "  'stop_when_done' — stop after current work completes unless immediate context overrides it",
     ].join("\n"),
     parameters: Type.Object({
       name: Type.String({ description: "Lieutenant name" }),
@@ -76,6 +81,11 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
       mode: Type.Optional(
         Type.Union([Type.Literal("prompt"), Type.Literal("steer"), Type.Literal("followUp")], {
           description: "Message mode (default: prompt, auto-selects followUp if busy)",
+        }),
+      ),
+      postTaskDisposition: Type.Optional(
+        Type.Union([Type.Literal("stay_idle"), Type.Literal("stop_when_done")], {
+          description: "What the lieutenant should do after the current task completes",
         }),
       ),
     }),
@@ -88,6 +98,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
           {
             message: params.message,
             mode: params.mode,
+            postTaskDisposition: params.postTaskDisposition,
           },
         );
         const msg = params.message;
@@ -232,7 +243,7 @@ export function registerTools(pi: ExtensionAPI, client: FleetClient) {
   registerNamedTool(pi, ["reef_lt_discover"], {
     label: "Discover Lieutenants",
     description:
-      "Discover running lieutenants from the registry and reconnect to them. Use after session restart to recover lieutenant state.",
+      "Discover running lieutenants from vm-tree and reconnect to them. Use after session restart to recover lieutenant state.",
     parameters: Type.Object({}),
     async execute() {
       if (!client.getBaseUrl()) return client.noUrl();

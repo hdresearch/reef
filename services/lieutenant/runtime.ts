@@ -5,8 +5,10 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { type ResolveGoldenCommitResult, resolveGoldenCommit } from "@hdresearch/pi-v/core";
+import { type ResolveGoldenCommitResult, resolveGoldenCommit, VersClient } from "@hdresearch/pi-v/core";
+import { buildChildAgentsMd, readParentAgentsMd } from "../../src/core/agents-md.js";
 import type { ServiceEventBus } from "../../src/core/events.js";
+import type { VMTreeStore } from "../vm-tree/store.js";
 import {
   buildSystemPrompt,
   createVersVmFromCommit,
@@ -23,9 +25,12 @@ import {
 import type { Lieutenant, LieutenantStore } from "./store.js";
 import { ConflictError, NotFoundError, ValidationError } from "./store.js";
 
+const versClient = new VersClient();
+
 export interface LieutenantRuntimeOptions {
   events: ServiceEventBus;
   store: LieutenantStore;
+  vmTreeStore?: VMTreeStore;
   fetchImpl?: typeof fetch;
   getVmState?: typeof getVersVmState;
   resolveCommitId?: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
@@ -41,6 +46,10 @@ interface CreateParams {
   llmProxyKey?: string;
   model?: string;
   commitId?: string;
+  context?: string; // v2: situational context appended to inherited AGENTS.md
+  directive?: string; // v2: hard guardrails (VERS_AGENT_DIRECTIVE)
+  parentVmId?: string | null;
+  spawnedBy?: string;
 }
 
 export const DEFAULT_LIEUTENANT_MODEL = "claude-opus-4-6";
@@ -65,8 +74,11 @@ function readProfileContext(): string {
 
 export class LieutenantRuntime {
   private readonly handles = new Map<string, RpcHandle>();
+  private readonly usageStatsInflight = new Map<string, Promise<void>>();
+  private readonly usageStatsLastPulledAt = new Map<string, number>();
   private readonly events: ServiceEventBus;
   private readonly store: LieutenantStore;
+  private readonly vmTreeStore?: VMTreeStore;
   private readonly fetchImpl: typeof fetch;
   private readonly getVmState: typeof getVersVmState;
   private readonly resolveCommitId: (commitId?: string) => Promise<ResolveGoldenCommitResult>;
@@ -78,6 +90,7 @@ export class LieutenantRuntime {
   constructor(opts: LieutenantRuntimeOptions) {
     this.events = opts.events;
     this.store = opts.store;
+    this.vmTreeStore = opts.vmTreeStore;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.getVmState = opts.getVmState ?? getVersVmState;
     this.resolveCommitId = opts.resolveCommitId ?? ((commitId) => resolveGoldenCommit({ commitId, ensure: true }));
@@ -101,7 +114,7 @@ export class LieutenantRuntime {
       role: lt.role,
       address: `${lt.vmId}.vm.vers.sh`,
       createdAt: lt.createdAt,
-      parentVmId: process.env.VERS_VM_ID || null,
+      parentVmId: ((extra.parentVmId as string | null | undefined) ?? process.env.VERS_VM_ID) || null,
       ...extra,
     };
   }
@@ -130,9 +143,62 @@ export class LieutenantRuntime {
     return this.reconnectLieutenantHandle(name, lt.vmId);
   }
 
+  private requestUsageSnapshot(
+    name: string,
+    lt: Lieutenant,
+    options: { force?: boolean; provider?: string | null; model?: string | null; taskId?: string | null } = {},
+  ): void {
+    const handle = this.handles.get(name);
+    if (!handle?.isAlive()) return;
+
+    const now = Date.now();
+    const lastPulledAt = this.usageStatsLastPulledAt.get(name) || 0;
+    if (!options.force) {
+      if (this.usageStatsInflight.has(name)) return;
+      if (now - lastPulledAt < 5000) return;
+    }
+
+    const run = (async () => {
+      try {
+        const stats = await handle.getSessionStats();
+        this.usageStatsLastPulledAt.set(name, Date.now());
+        this.events.fire("usage:stats", {
+          agentId: lt.vmId,
+          agentName: lt.name,
+          taskId: options.taskId || null,
+          provider: options.provider || null,
+          model: options.model || null,
+          stats,
+        });
+      } catch {
+        // Best effort: raw per-message usage still exists as a fallback.
+      } finally {
+        this.usageStatsInflight.delete(name);
+      }
+    })();
+
+    this.usageStatsInflight.set(name, run);
+  }
+
   private async syncRemoteLieutenant(input: string | Lieutenant): Promise<Lieutenant | undefined> {
     const lt = typeof input === "string" ? this.store.getByName(input) : input;
     if (!lt || !lt.vmId) return lt;
+
+    const treeVm = this.vmTreeStore?.getVM(lt.vmId);
+    if (treeVm) {
+      if (treeVm.status === "destroyed" || treeVm.status === "rewound") {
+        return this.store.update(lt.name, { status: "destroyed" });
+      }
+      if (treeVm.status === "stopped") {
+        return this.store.update(lt.name, { status: "stopped" });
+      }
+      if (treeVm.status === "paused") {
+        return this.store.update(lt.name, { status: "paused" });
+      }
+      if (treeVm.status === "error") {
+        return this.store.update(lt.name, { status: "error" });
+      }
+    }
 
     try {
       const vmState = await this.getVmState(lt.vmId);
@@ -206,24 +272,87 @@ export class LieutenantRuntime {
       parentAgent: process.env.VERS_AGENT_NAME,
     });
 
+    let vmId: string | undefined;
     try {
       const resolvedCommit = await this.resolveCommitId(commitId);
       const remote = await createVersVmFromCommit(resolvedCommit.commitId);
-      this.store.update(name, { vmId: remote.vmId });
-      await this.waitForRemoteVm(remote.vmId);
+      vmId = remote.vmId;
+      this.store.update(name, { vmId });
 
-      const handle = await this.startRemoteHandle(remote.vmId, {
+      // Register in vm_tree immediately with status: creating
+      try {
+        this.vmTreeStore?.upsertVM({
+          vmId,
+          name,
+          category: "lieutenant",
+          parentId: (params.parentVmId ?? process.env.VERS_VM_ID) || null,
+          context: params.context,
+          directive: params.directive,
+          model: resolvedModel,
+          spawnedBy: params.spawnedBy || process.env.VERS_AGENT_NAME || "reef",
+          discovery: {
+            registeredVia: "lieutenant:create",
+            agentLabel: name,
+            reconnectKind: "lieutenant",
+            commitId: resolved.commitId,
+            roleHint: role,
+          },
+        });
+      } catch (err) {
+        console.warn(
+          `  [lieutenant] vm_tree pre-register failed for ${name}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+
+      await this.waitForRemoteVm(vmId);
+
+      // v2: Build inherited AGENTS.md with context
+      let agentsMd: string | undefined;
+      try {
+        const parentMd = readParentAgentsMd();
+        const parentName = process.env.VERS_AGENT_NAME || "reef";
+        agentsMd = buildChildAgentsMd(parentMd, parentName, params.context);
+      } catch (err) {
+        console.error(`  [lieutenant] AGENTS.md build failed for ${name}: ${err instanceof Error ? err.message : err}`);
+        if (params.context) {
+          throw new Error(`AGENTS.md injection failed: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
+      const handle = await this.startRemoteHandle(vmId, {
+        name,
         llmProxyKey: resolvedLlmProxyKey,
         model: resolvedModel,
         systemPrompt,
+        agentsMd,
+        directive: params.directive,
+        parentVmId: params.parentVmId || process.env.VERS_VM_ID || undefined,
+        parentAgent: params.spawnedBy || process.env.VERS_AGENT_NAME || "reef",
       });
       this.handles.set(name, handle);
 
       const ready = await waitForRpcReady(handle, 45_000);
-      if (!ready) throw new Error(`Pi RPC failed to start on ${remote.vmId}`);
+      if (!ready) throw new Error(`Pi RPC failed to start on ${vmId}`);
+
+      // Validate AGENTS.md and env vars
+      await this.validateInjection(vmId, name, {
+        expectAgentsMd: !!params.context,
+        expectedEnvVars: ["REEF_CATEGORY", "VERS_AGENT_NAME"],
+      });
 
       this.store.update(name, { status: "idle" });
       this.installEventHandler(name);
+
+      // Update vm_tree to running
+      try {
+        this.vmTreeStore?.updateVM(vmId, {
+          status: "running",
+          address: `${vmId}.vm.vers.sh`,
+          rpcStatus: "connected",
+        });
+      } catch {
+        /* event handlers also update */
+      }
 
       const created = this.store.getByName(name)!;
       this.events.fire(
@@ -233,12 +362,66 @@ export class LieutenantRuntime {
           commitIdSource: resolvedCommit.source,
           model,
           llmProxyKeyProvided: !!llmProxyKey,
+          parentVmId: (params.parentVmId ?? process.env.VERS_VM_ID) || null,
         }),
       );
       return created;
     } catch (err) {
+      // Mark vm_tree as error before cleaning up
+      if (vmId) {
+        try {
+          this.vmTreeStore?.updateVM(vmId, { status: "error" });
+        } catch {
+          /* ok */
+        }
+      }
       await this.cleanupFailedCreate(name);
       throw err;
+    }
+  }
+
+  private async validateInjection(
+    vmId: string,
+    label: string,
+    opts: { expectAgentsMd: boolean; expectedEnvVars: string[] },
+  ): Promise<void> {
+    const failures: string[] = [];
+
+    if (opts.expectAgentsMd) {
+      try {
+        const result = await versClient.exec(
+          vmId,
+          "test -f /root/.pi/agent/AGENTS.md && wc -c < /root/.pi/agent/AGENTS.md || echo 0",
+        );
+        const bytes = parseInt(String(result?.stdout ?? result).trim(), 10) || 0;
+        if (bytes === 0) {
+          failures.push("AGENTS.md missing or empty");
+        }
+      } catch {
+        failures.push("AGENTS.md validation failed (SSH error)");
+      }
+    }
+
+    if (opts.expectedEnvVars.length > 0) {
+      try {
+        const checkScript = opts.expectedEnvVars.map((v) => `echo "${v}=\${${v}:+SET}"`).join("; ");
+        const result = await versClient.exec(vmId, `bash -l -c '${checkScript}'`);
+        const output = String(result?.stdout ?? result);
+        for (const envVar of opts.expectedEnvVars) {
+          if (!output.includes(`${envVar}=SET`)) {
+            failures.push(`${envVar} not set`);
+          }
+        }
+      } catch {
+        failures.push("env var validation failed (SSH error)");
+      }
+    }
+
+    if (failures.length > 0) {
+      console.warn(`  [lieutenant] ${label}: validation warnings: ${failures.join(", ")}`);
+      if (failures.includes("AGENTS.md missing or empty")) {
+        throw new Error(`Validation failed: ${failures.join(", ")}`);
+      }
     }
   }
 
@@ -271,9 +454,30 @@ export class LieutenantRuntime {
     name: string,
     message: string,
     mode?: "prompt" | "steer" | "followUp",
+    postTaskDisposition?: "stay_idle" | "stop_when_done",
   ): Promise<{ sent: boolean; mode: string; note?: string }> {
     const lt = this.store.getByName(name);
     if (!lt || lt.status === "destroyed") throw new NotFoundError(`Lieutenant '${name}' not found`);
+    const treeVm = lt.vmId ? this.vmTreeStore?.getVM(lt.vmId) : undefined;
+    if (treeVm?.status === "destroyed" || treeVm?.status === "rewound") {
+      this.store.update(name, { status: "destroyed" });
+      throw new NotFoundError(`Lieutenant '${name}' not found`);
+    }
+    if (treeVm?.status === "stopped") {
+      this.store.update(name, { status: "stopped" });
+      throw new ValidationError(`Lieutenant '${name}' is stopped and is not a live task target.`);
+    }
+    if (treeVm?.status === "paused") {
+      this.store.update(name, { status: "paused" });
+      throw new ValidationError(`Lieutenant '${name}' is paused. Resume it first.`);
+    }
+    if (treeVm?.status === "error") {
+      this.store.update(name, { status: "error" });
+      throw new ValidationError(`Lieutenant '${name}' is in error state and is not a live task target.`);
+    }
+    if (lt.status === "stopped") {
+      throw new ValidationError(`Lieutenant '${name}' is stopped and is not a live task target.`);
+    }
     if (lt.status === "paused") throw new ValidationError(`Lieutenant '${name}' is paused. Resume it first.`);
 
     let handle = this.handles.get(name);
@@ -290,6 +494,10 @@ export class LieutenantRuntime {
     if (lt.status === "working" && actualMode === "prompt") {
       actualMode = "followUp";
       note = "auto-queued as follow-up since lieutenant is working";
+    }
+
+    if (this.vmTreeStore && lt.vmId && postTaskDisposition) {
+      this.vmTreeStore.updateVM(lt.vmId, { postTaskDisposition });
     }
 
     if (actualMode === "prompt") {
@@ -401,29 +609,18 @@ export class LieutenantRuntime {
       if (lt.vmId) candidates.set(lt.name, lt);
     }
 
-    const infraUrl = process.env.VERS_INFRA_URL;
-    const authToken = process.env.VERS_AUTH_TOKEN;
-    if (infraUrl && authToken) {
-      try {
-        const res = await fetch(`${infraUrl}/registry/vms?role=lieutenant`, {
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
-        if (res.ok) {
-          const data = (await res.json()) as { vms?: Array<Record<string, any>> };
-          for (const vm of data.vms || []) {
-            const name = vm.metadata?.agentId || vm.name;
-            if (candidates.has(name)) continue;
-            const lt = this.store.create({
-              name,
-              role: vm.metadata?.role || "recovered lieutenant",
-              vmId: vm.id,
-            });
-            candidates.set(name, lt);
-          }
-        }
-      } catch {
-        // Registry discovery is best-effort; fall back to the local store.
-      }
+    const discovered = (this.vmTreeStore?.listVMs({ category: "lieutenant" }) || []).filter(
+      (vm) => vm.status !== "destroyed" && vm.status !== "rewound",
+    );
+    for (const vm of discovered) {
+      const name = vm.discovery?.agentLabel || vm.name;
+      if (candidates.has(name)) continue;
+      const lt = this.store.create({
+        name,
+        role: vm.discovery?.roleHint || "recovered lieutenant",
+        vmId: vm.vmId,
+      });
+      candidates.set(name, lt);
     }
 
     for (const [name, candidate] of candidates) {
@@ -465,6 +662,10 @@ export class LieutenantRuntime {
         this.store.update(name, { status: "idle" });
 
         const completed = this.store.getByName(name);
+        this.requestUsageSnapshot(name, completed || lt, {
+          force: true,
+          model: completed?.model || lt.model || null,
+        });
         const rawOutput = completed?.outputHistory.at(-1)?.trim() || lt.lastOutput.trim();
         const summary = rawOutput.length > 200 ? `...${rawOutput.slice(-200)}` : rawOutput;
         const hasError = /\b(error|failed|exception|fatal)\b/i.test(rawOutput.slice(-500));
@@ -474,6 +675,20 @@ export class LieutenantRuntime {
           status: hasError ? "error" : "success",
           summary,
           taskCount: completed?.taskCount ?? lt.taskCount,
+        });
+        return;
+      }
+
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        this.events.fire("usage:message", {
+          agentId: lt.vmId,
+          agentName: lt.name,
+          taskId: null,
+          message: event.message,
+        });
+        this.requestUsageSnapshot(name, lt, {
+          provider: event.message.provider || event.message.api || null,
+          model: event.message.model || lt.model || null,
         });
         return;
       }

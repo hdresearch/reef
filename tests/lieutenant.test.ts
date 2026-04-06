@@ -8,14 +8,16 @@ import { createRoutes } from "../services/lieutenant/routes.js";
 import { buildPersistKeysScript, buildPersistVmIdScript, buildRemoteEnv } from "../services/lieutenant/rpc.js";
 import { LieutenantRuntime } from "../services/lieutenant/runtime.js";
 import { LieutenantStore, ValidationError } from "../services/lieutenant/store.js";
-import registry from "../services/registry/index.js";
 import vmTree from "../services/vm-tree/index.js";
+import { VMTreeStore } from "../services/vm-tree/store.js";
 
 const TMP_DIR = join(import.meta.dir, ".tmp-lieutenant");
 const AUTH_TOKEN = "test-token-12345";
 
 const ORIGINAL_ENV = {
   LLM_PROXY_KEY: process.env.LLM_PROXY_KEY,
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  REEF_MODEL_PROVIDER: process.env.REEF_MODEL_PROVIDER,
   VERS_API_KEY: process.env.VERS_API_KEY,
   VERS_AUTH_TOKEN: process.env.VERS_AUTH_TOKEN,
   VERS_GOLDEN_COMMIT_ID: process.env.VERS_GOLDEN_COMMIT_ID,
@@ -140,6 +142,8 @@ beforeEach(() => {
   process.env.LLM_PROXY_KEY = "sk-vers-test-key";
   process.env.VERS_AUTH_TOKEN = AUTH_TOKEN;
   process.env.VERS_AGENT_NAME = "reef-test";
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.REEF_MODEL_PROVIDER;
   delete process.env.VERS_INFRA_URL;
   delete process.env.VERS_VM_ID;
 });
@@ -153,6 +157,8 @@ afterEach(() => {
 describe("lieutenant routes and runtime", () => {
   test("remote lieutenant env exports VERS_VM_ID for child reef tools", () => {
     process.env.VERS_INFRA_URL = "https://root.example:3000";
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.REEF_MODEL_PROVIDER = "anthropic";
     const env = buildRemoteEnv("vm-child-123", {
       llmProxyKey: "sk-vers-test-key",
       model: "claude-test",
@@ -160,7 +166,9 @@ describe("lieutenant routes and runtime", () => {
 
     expect(env).toContain("export VERS_VM_ID='vm-child-123'");
     expect(env).toContain("export VERS_INFRA_URL='https://root.example:3000'");
-    expect(env).toContain("export VERS_AGENT_ROLE='lieutenant'");
+    expect(env).toContain("export REEF_CATEGORY='lieutenant'");
+    expect(env).not.toContain("ANTHROPIC_API_KEY");
+    expect(env).not.toContain("REEF_MODEL_PROVIDER");
   });
 
   test("post-restore VM identity script persists VERS_VM_ID into reef-agent.sh", () => {
@@ -175,6 +183,8 @@ describe("lieutenant routes and runtime", () => {
     process.env.VERS_API_KEY = "vers-key-abc";
     process.env.VERS_INFRA_URL = "https://root.example:3000";
     process.env.VERS_GOLDEN_COMMIT_ID = "golden-xyz";
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.REEF_MODEL_PROVIDER = "anthropic";
     const script = buildPersistKeysScript({ llmProxyKey: "sk-vers-test", model: "claude-test" });
     expect(script).toContain("touch /etc/profile.d/reef-agent.sh");
     expect(script).toContain("grep -q '^export LLM_PROXY_KEY='");
@@ -185,6 +195,8 @@ describe("lieutenant routes and runtime", () => {
     expect(script).toContain("export VERS_INFRA_URL='https://root.example:3000'");
     expect(script).toContain("grep -q '^export VERS_GOLDEN_COMMIT_ID='");
     expect(script).toContain("export VERS_GOLDEN_COMMIT_ID='golden-xyz'");
+    expect(script).not.toContain("ANTHROPIC_API_KEY");
+    expect(script).not.toContain("REEF_MODEL_PROVIDER");
   });
 
   test("buildPersistKeysScript omits LLM_PROXY_KEY when not provided", () => {
@@ -275,11 +287,11 @@ describe("lieutenant routes and runtime", () => {
   });
 });
 
-describe("registry and vm-tree event wiring", () => {
-  test("registers remote lieutenants from server events", async () => {
+describe("vm-tree lieutenant event wiring", () => {
+  test("registers and updates remote lieutenants from server events", async () => {
     process.env.VERS_VM_ID = "parent-root-1";
     const { app, events, liveModules } = await createServer({
-      modules: [registry, vmTree, lieutenant],
+      modules: [vmTree, lieutenant],
     });
 
     const vmId = `vm-test-${Date.now()}`;
@@ -293,32 +305,160 @@ describe("registry and vm-tree event wiring", () => {
       commitId: "commit-123",
     });
 
-    const registryList = await json(app, "/registry/vms?role=lieutenant", { auth: true });
-    expect(registryList.status).toBe(200);
-    expect(registryList.data.count).toBeGreaterThanOrEqual(1);
-    expect(registryList.data.vms.some((vm: any) => vm.id === vmId)).toBe(true);
-
     const vmTreeList = await json(app, "/vm-tree/vms?category=lieutenant", { auth: true });
     expect(vmTreeList.status).toBe(200);
-    expect(vmTreeList.data.vms.some((vm: any) => vm.vmId === vmId && vm.parentVmId === "parent-root-1")).toBe(true);
+    expect(
+      vmTreeList.data.vms.some(
+        (vm: any) => vm.vmId === vmId && vm.parentId === "parent-root-1" && vm.status === "running",
+      ),
+    ).toBe(true);
 
     await events.emit("lieutenant:paused", { vmId });
-    const paused = await json(app, `/registry/vms/${vmId}`, { auth: true });
+    const paused = await json(app, `/vm-tree/vms/${vmId}`, { auth: true });
     expect(paused.status).toBe(200);
     expect(paused.data.status).toBe("paused");
 
     await events.emit("lieutenant:resumed", { vmId });
-    const resumed = await json(app, `/registry/vms/${vmId}`, { auth: true });
+    const resumed = await json(app, `/vm-tree/vms/${vmId}`, { auth: true });
     expect(resumed.status).toBe(200);
     expect(resumed.data.status).toBe("running");
 
     await events.emit("lieutenant:destroyed", { vmId });
-    const afterDestroy = await json(app, "/registry/vms?role=lieutenant", { auth: true });
+    const afterDestroy = await json(app, `/vm-tree/vms/${vmId}`, { auth: true });
     expect(afterDestroy.status).toBe(200);
-    expect(afterDestroy.data.vms.some((vm: any) => vm.id === vmId)).toBe(false);
+    expect(afterDestroy.data.status).toBe("destroyed");
 
     for (const mod of liveModules.values()) {
+      if (mod.name === "vm-tree") continue;
       if (mod.store?.close) await mod.store.close();
     }
+  });
+});
+
+describe("lieutenant live-target gating", () => {
+  test("rejects sends to stopped lieutenants", async () => {
+    const store = new LieutenantStore(join(TMP_DIR, "stopped-send.sqlite"));
+    const remote = createFakeRemoteHandle();
+    const runtime = new LieutenantRuntime({
+      events: new ServiceEventBus(),
+      store,
+      getVmState: async () => "running",
+      reconnectRemoteHandle: async () => remote.handle as any,
+      waitForRemoteSession: async () => {},
+    });
+    const app = createRoutes(store, () => runtime);
+
+    const registered = await json(app, "/lieutenants/register", {
+      method: "POST",
+      body: {
+        name: "stopped-lt",
+        role: "stopped lieutenant",
+        vmId: "vm-stopped-1",
+      },
+    });
+    expect(registered.status).toBe(201);
+
+    store.update("stopped-lt", { status: "stopped" });
+
+    const sent = await json(app, "/lieutenants/stopped-lt/send", {
+      method: "POST",
+      body: { message: "should not deliver" },
+    });
+
+    expect(sent.status).toBe(400);
+    expect(sent.data.error).toContain("is stopped and is not a live task target");
+
+    await runtime.shutdown();
+    store.close();
+  });
+
+  test("rejects sends when vm-tree already marked the lieutenant stopped", async () => {
+    const store = new LieutenantStore(join(TMP_DIR, "vm-tree-stopped-send.sqlite"));
+    const vmTreeStore = new VMTreeStore(join(TMP_DIR, "vm-tree-stopped-send-fleet.sqlite"));
+    const remote = createFakeRemoteHandle();
+    const runtime = new LieutenantRuntime({
+      events: new ServiceEventBus(),
+      store,
+      vmTreeStore,
+      getVmState: async () => "running",
+      reconnectRemoteHandle: async () => remote.handle as any,
+      waitForRemoteSession: async () => {},
+    });
+    const app = createRoutes(store, () => runtime);
+
+    vmTreeStore.createVM({
+      vmId: "vm-stopped-tree-1",
+      name: "tree-stopped-lt",
+      category: "lieutenant",
+      status: "stopped",
+      parentId: "vm-root-1",
+      rpcStatus: "disconnected",
+    });
+
+    const registered = await json(app, "/lieutenants/register", {
+      method: "POST",
+      body: {
+        name: "tree-stopped-lt",
+        role: "stopped in vm-tree",
+        vmId: "vm-stopped-tree-1",
+      },
+    });
+    expect(registered.status).toBe(201);
+
+    // Simulate the race seen live: lieutenant store has not yet converged away from idle.
+    store.update("tree-stopped-lt", { status: "idle" });
+
+    const sent = await json(app, "/lieutenants/tree-stopped-lt/send", {
+      method: "POST",
+      body: { message: "should not deliver" },
+    });
+
+    expect(sent.status).toBe(400);
+    expect(sent.data.error).toContain("is stopped and is not a live task target");
+    expect(store.getByName("tree-stopped-lt")?.status).toBe("stopped");
+
+    await runtime.shutdown();
+    store.close();
+    vmTreeStore.close();
+  });
+});
+
+describe("vm-tree lieutenant discovery", () => {
+  test("discovers lieutenants from vm-tree without registry", async () => {
+    const store = new LieutenantStore(join(TMP_DIR, "discover-vm-tree.sqlite"));
+    const vmTreeStore = new VMTreeStore(join(TMP_DIR, "fleet.sqlite"));
+    vmTreeStore.createVM({
+      vmId: "vm-lt-1",
+      name: "lineage-lt",
+      category: "lieutenant",
+      status: "running",
+      parentId: "vm-root-1",
+      discovery: {
+        registeredVia: "lieutenant:create",
+        agentLabel: "lineage-lt",
+        reconnectKind: "lieutenant",
+        roleHint: "usage orchestrator",
+      },
+    });
+
+    const remote = createFakeRemoteHandle();
+    const runtime = new LieutenantRuntime({
+      events: new ServiceEventBus(),
+      store,
+      vmTreeStore,
+      getVmState: async () => "running",
+      reconnectRemoteHandle: async () => remote.handle as any,
+      waitForRemoteSession: async () => {},
+    });
+
+    const results = await runtime.discover();
+
+    expect(results.some((line) => line.includes("lineage-lt: available"))).toBe(true);
+    expect(store.getByName("lineage-lt")?.vmId).toBe("vm-lt-1");
+    expect(store.getByName("lineage-lt")?.role).toBe("usage orchestrator");
+
+    await runtime.shutdown();
+    store.close();
+    vmTreeStore.close();
   });
 });

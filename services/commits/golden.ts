@@ -56,28 +56,26 @@ async function localApi(method: string, path: string, body?: unknown): Promise<v
 }
 
 async function registerGoldenRecord(vmId: string, commitId: string, label: string): Promise<void> {
-  const metadata = {
-    commitId,
-    label,
-    kind: "golden-image",
-    createdBy: process.env.VERS_AGENT_NAME || "reef",
-  };
-
   try {
-    await localApi("POST", "/registry/vms", {
-      id: vmId,
+    await localApi("POST", "/vm-tree/vms", {
+      vmId,
       name: label,
-      role: "golden",
+      category: "resource_vm",
       address: `${vmId}.vm.vers.sh`,
-      registeredBy: "commits-service",
-      metadata,
+      parentVmId: process.env.VERS_VM_ID || null,
+      spawnedBy: "commits-service",
+      discovery: {
+        registeredVia: "commits:golden",
+        agentLabel: label,
+        reconnectKind: "resource_vm",
+        commitId,
+      },
     });
-    await localApi("PATCH", `/registry/vms/${encodeURIComponent(vmId)}`, {
+    await localApi("PATCH", `/vm-tree/vms/${encodeURIComponent(vmId)}`, {
       status: "stopped",
-      metadata,
     });
   } catch {
-    // Registry visibility is useful, but not required for the golden commit to exist.
+    // VM-tree visibility is useful, but not required for the golden commit to exist.
   }
 }
 

@@ -1,143 +1,223 @@
+---
+name: decompose
+description: Use when a task has multiple independent subsystems, needs recursive delegation, or requires a parent to split implementation and then integrate the results.
+---
+
 # Recursive Task Decomposition
 
-You are an agent in a recursive task tree. Your job is to either **do the work** or **break it down and delegate**.
+Use this skill when the task is too broad for one agent to finish cleanly without turning into a muddled giant workstream.
 
 ## The Rule
 
-**If a task has more than one independent subsystem, decompose it. If it's a single coherent module you can finish in ~15 minutes, do it yourself.**
+Every parent delegates implementation to children when the work warrants it.
 
-A "subsystem" is something with its own types, its own tests, and a clear interface boundary. Examples:
-- A SQL parser is one subsystem (lexer + AST + parser + tests — they're tightly coupled, one agent should do it)
-- A query planner is a separate subsystem from the parser
-- An auth module is a separate subsystem from a job scheduler
+The decision tree:
+1. Am I root? -> Delegate. Always. Pick the right fleet shape.
+2. Does my assigned slice have multiple independent subsystems? -> Decompose into children.
+3. Is it one coherent slice I can finish cleanly? -> Do it myself.
 
-**Target depth of 3-4 levels.** The root should NOT directly spawn leaf workers. The root decomposes into major areas, those decompose into subsystems, those decompose into modules if needed.
+Root never reaches step 3. Root's job is orchestration. Non-root parents reach step 3 only after confirming the slice is truly coherent -- no independent subsystems hiding inside.
 
-Example tree structure:
-```
-Root: "Build DataForge"
-├── "Rust Data Engine"                    ← Level 1: spawns own VM
-│   ├── "SQL Parser (lexer + AST + parser + tests)"    ← Level 2: leaf, does the work
-│   ├── "Query Planner (logical + physical + optimizer)" ← Level 2: leaf
-│   ├── "Execution Engine (operators + eval)"            ← Level 2: leaf
-│   ├── "Storage Layer (parquet + delta + catalog)"      ← Level 2: leaf
-│   └── "Arrow Flight Server"                            ← Level 2: leaf
-├── "Elixir Control Plane"               ← Level 1: spawns own VM
-│   ├── "Auth + Tenant isolation"                        ← Level 2: leaf
-│   ├── "Job Orchestrator"                               ← Level 2: leaf
-│   ├── "Cluster Manager"                                ← Level 2: leaf
-│   ├── "Notebook Sessions"                              ← Level 2: leaf
-│   └── "Phoenix API Gateway + Router"                   ← Level 2: leaf
-├── "Shared Protos + CLI"                ← Level 1: could be leaf or decompose
-└── "Integration Tests + Docker"         ← Level 1: runs after others finish
-```
+The independence test: "Could two children do these pieces without touching each other's files?" If yes, decompose.
 
-**Do NOT put everything in 3 fat children like last time.** The Elixir control plane child should NOT write all of auth, jobs, cluster, notebooks, and API itself — it should spawn 5 children.
+Independent subsystems usually have:
+- separate owned paths or modules
+- separate test boundaries
+- separate interfaces or contracts
+- limited need for overlapping edits
 
-## Each Child Gets Its Own VM
+Examples:
+- parser vs planner vs execution engine
+- auth vs billing vs scheduler
+- backend API vs frontend integration vs test harness
 
-Every child task runs on a fresh VM restored from the golden commit. This enables recursive decomposition — your children can spawn their own children.
+Do not create one fat child that owns multiple unrelated subsystems just because it is convenient.
 
-### Spawning a child:
+## When Decomposition Helps
 
-**Step 1: Create a child VM**
-Use the `vers_vm_restore` tool with the GOLDEN_COMMIT_ID from your task prompt. Save the returned VM ID.
+Decompose rather than implementing locally when any of these are true:
+- the task spans multiple modules or subsystems
+- the task mixes infrastructure/bootstrap work with application code
+- multiple languages, runtimes, or toolchains are involved
+- long-running trial-and-error or test-heavy iteration is likely
+- the work benefits from a durable coordinator plus separate owned slices
 
-**Step 2: Spawn the task on the child's reef**
-The child VM already has reef running from the golden snapshot:
-```bash
-TASK_ID=$(curl -s -X POST "https://${CHILD_VM_ID}.vm.vers.sh:3000/agent/tasks" \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "task": "YOUR DETAILED SUBTASK DESCRIPTION"
-  }' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-echo "Spawned task $TASK_ID on VM $CHILD_VM_ID"
-```
+Root should orient first, then decide whether the smallest effective next step is:
+- a bounded local probe
+- direct implementation of one coherent slice
+- or decomposition into children
 
-**Step 3: Repeat for all children** (spawn them all before waiting)
+For non-trivial repo builds, root should assign the first implementation owner early and delegate the main implementation path by default.
+Do not let root remain the implicit worker just because no child has been chosen yet.
 
-**Step 4: Poll until all children complete**
-```bash
-while true; do
-  ALL_DONE=true
-  for child in "${CHILDREN[@]}"; do
-    VM_ID="${child%%:*}"
-    TASK_ID="${child##*:}"
-    STATUS=$(curl -s "https://${VM_ID}.vm.vers.sh:3000/agent/tasks/${TASK_ID}" \
-      -H "Authorization: Bearer $VERS_AUTH_TOKEN" | python3 -c "
-import sys,json; print(json.load(sys.stdin)['status'])")
-    echo "$TASK_ID on $VM_ID: $STATUS"
-    if [ "$STATUS" != "done" ] && [ "$STATUS" != "error" ]; then
-      ALL_DONE=false
-    fi
-  done
-  if $ALL_DONE; then break; fi
-  sleep 30
-done
-```
+For repo implementation work, orientation should include repo-local handoff material when present:
+- `AGENTS.md`
+- `HANDOFF.md`
+- `docs/working/handoffs/`
+- `docs/working/subspecs/`
 
-**Step 5: Collect results** — `vers_vm_copy vm:${CHILD_VM_ID}:/root/workspace/<dir>/ /root/workspace/<dir>/`
+## Parent Responsibilities
 
-**Step 6: Clean up** — `vers_vm_delete $CHILD_VM_ID`
+Parents own:
+- deciding whether to decompose
+- choosing child type
+- assigning clean ownership
+- integrating child outputs
+- resolving cross-child conflicts
+- running parent-level verification
+- reporting upward with receipts
 
-## Identity
+Do not delegate integration and then disappear. Recursive decomposition works only if each parent remains accountable for the slice it decomposed.
 
-Your VM ID is at `/etc/vm_id`:
-```bash
-MY_VM_ID=$(cat /etc/vm_id)
-```
+## Choose The Right Child Type
 
-## Subtask Prompt Template
+- `lieutenant`
+  - use for a durable subtree coordinator
+  - best for a major area that may need multiple children, repeated follow-up, or ongoing integration
 
-Every child MUST receive the golden commit ID so it can decompose further:
+- `agent_vm`
+  - use for a cohesive autonomous workstream
+  - best for a bounded module that may still need its own children
 
-```
-You are a subtask agent in a recursive decomposition tree.
+- `swarm_vm`
+  - use for short parallel leaf work
+  - best for burst checks, narrow edits, grep/review fan-out, or clearly separable leaf slices
 
-GOLDEN VM COMMIT: <commit-id>
-Use vers_vm_restore to create child VMs if you need to decompose further.
+- `resource_vm`
+  - use for infrastructure, not implementation labor
+  - databases, services, test rigs, webhook sinks, build machines
+  - use when the task clearly needs separate support infrastructure or a side environment
 
-PARENT VM: <your-vm-id>
-TASK: [specific deliverable]
-DIRECTORY: /root/workspace/<path> — put ALL your work here
-INTERFACES: [what your module must expose]
-DEPENDENCIES: [what sibling modules will provide]
-DONE WHEN: [concrete acceptance criteria]
+For ongoing operational systems, prefer durable ownership:
+- use a `lieutenant` to own the operating loop
+- use a `resource_vm` for persistent stateful infrastructure
+- let root supervise and integrate rather than becoming the permanent operator or default builder
 
-If this task has multiple independent subsystems, decompose further by spawning child VMs. Read skills/decompose/SKILL.md.
+## How To Spawn In The Current Reef Model
 
-If it's a single coherent module (~15 min of work), do it yourself: write code, write tests, make them pass.
-```
+Use Reef-native tools, not raw Vers APIs.
 
-## Leaf Node Work
+### Root spawning a major subtree
+- `reef_lt_create(...)`
+- `reef_lt_send(...)`
 
-When you're a leaf (single coherent module):
-- Write the code in your assigned directory
-- Write tests, make them pass
-- Log to feed:
-```bash
-curl -X POST localhost:3000/feed/events \
-  -H "Authorization: Bearer $VERS_AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"type":"task.complete","agent":"'$(cat /etc/vm_id)'","data":{"summary":"what you built","files":["list","of","files"]}}'
-```
+### Lieutenant or agent spawning a cohesive child workstream
+- `reef_agent_spawn(...)`
+- later reuse with `reef_agent_task(...)` if the child is alive and idle
 
-## Integration (Parent Nodes)
+### Any agent spawning parallel leaf workers
+- `reef_swarm_spawn(...)`
+- `reef_swarm_task(...)`
+- `reef_swarm_wait(...)`
 
-After all children complete:
-1. Copy each child's work via `vers_vm_copy`
-2. Wire modules together — imports, shared types, build configs
-3. Run the full test suite
-4. Fix integration issues
-5. Delete child VMs
+### Infrastructure support
+- `reef_resource_spawn(...)`
 
-## Building Your Own Tools
+## Child Task Packet
 
-If you need coordination primitives, build them as reef services using `reef_deploy`. Read `skills/create-service/SKILL.md`.
+Every delegated task should include the same packet shape.
 
-## Error Handling
+Required fields:
+- **objective** — what this child is responsible for delivering
+- **owned path/module** — the write scope
+- **interfaces/contract** — what the child must expose or preserve
+- **dependencies** — what siblings/parent provide or expect
+- **done criteria** — how the parent will judge completion
+- **test expectation** — what to run or what evidence to provide if tests are deferred
+- **post-task disposition** — `stay_idle` or `stop_when_done` if you care
+- **recursion expectation** — whether the child should recurse further if it finds multiple subsystems
 
-- If a child fails, read its output and retry or do the work yourself
-- If a child VM is unresponsive, check with `vers_vms` and `vers_vm_state`
-- Fall back to `vers_vm_use` + direct bash if reef is down
+If a child packet does not make ownership and done criteria obvious, fix the packet before spawning.
+
+## Ownership Rules
+
+- assign clean write scopes
+- avoid overlapping edits unless the parent explicitly owns the integration boundary
+- if two children must touch the same file, that is usually a sign the decomposition is wrong
+
+Parents should decompose by interfaces and paths, not by vague themes.
+
+## Recursion Rule
+
+Children may recurse further if their assigned slice still contains multiple independent subsystems.
+
+They should use the same rules:
+- if one coherent slice -> do it
+- if multiple independent slices -> decompose further
+
+Root should not directly spawn every leaf. Major parents should own their subtree and recurse downward as needed.
+
+## Ownership Discipline
+
+Once a parent assigns a slice to a child, that slice belongs to the child until the parent changes ownership explicitly.
+
+Do not silently bypass a live child and do the same work yourself. If the current plan is wrong:
+- steer the child
+- replace the child
+- or reclaim the slice explicitly and log or signal why
+
+Ownership should be assigned early enough that implementation does not start in an ambiguous state.
+For repo builds, identify early:
+- who owns the main implementation slice
+- who owns persistent operations
+- who owns support infrastructure
+
+If execution path changes without an ownership change, scheduled checks, receipts, and supervision state become misleading.
+
+## Do Not Decompose By Superficial Multiplicity
+
+Do not spawn extra children just because there are multiple repos, sources, or entities involved.
+
+Decompose by:
+- write boundaries
+- interfaces
+- operational independence
+- real concurrency opportunities
+
+Do not force swarm-style parallelism onto workloads whose storage or integration layer is fundamentally serial.
+
+## Waiting And Coordination
+
+Use the current Reef primitives:
+- `reef_inbox_wait` for child message arrival in the current turn
+- `reef_store_wait` for barriers/readiness state
+- `reef_swarm_wait` for swarm completion
+- `reef_schedule_check` for attention that must outlive the current turn
+
+Do not invent polling loops if the existing primitives already match the problem.
+
+## Integration After Children Finish
+
+After child work returns:
+1. read the receipts from each child
+2. collect changed files, branches, store keys, logs, or artifact pointers
+3. wire modules together
+4. resolve integration issues in the parent-owned boundary
+5. run higher-level verification
+6. report upward with enough receipts that your parent does not need to rediscover everything
+
+If children produce overlapping or contradictory work, that is the parent’s integration problem.
+
+## Reporting Expectations
+
+Child `done` should include:
+- files changed
+- tests run and result
+- artifact pointers
+- unresolved risks
+- whether the child remains alive/idle or stopped
+
+Read `skills/reporting-checkpointing/SKILL.md` for the reporting shape.
+
+## Escalation And Recovery
+
+If a child fails:
+- inspect its output
+- decide whether to retry, steer, replace, or absorb the work yourself
+
+If decomposition is clearly making the task worse:
+- stop adding more children
+- collapse the work back upward
+- log the decision and continue with a simpler plan
+
+Recursive decomposition is a tool, not a ritual.

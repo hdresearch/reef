@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { createReef } from "./reef.js";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { createReef, isCreditExhaustedError, isTransientProviderError } from "./reef.js";
 import type { ConversationTree } from "./tree.js";
 
 const TOKEN = "test-token-reef";
@@ -14,6 +15,56 @@ process.env.REEF_DATA_DIR = TEST_DATA_DIR;
 afterAll(() => {
   if (existsSync(TEST_DATA_DIR)) rmSync(TEST_DATA_DIR, { recursive: true });
 });
+
+function writeResponsivePiScript(dir: string): string {
+  const scriptPath = join(process.cwd(), dir, "responsive-pi.js");
+  writeFileSync(
+    scriptPath,
+    String.raw`#!/usr/bin/env node
+const readline = require("node:readline");
+
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
+
+  if (msg.type === "get_state") {
+    process.stdout.write(JSON.stringify({ type: "response", id: msg.id, command: "get_state", data: {} }) + "\n");
+    return;
+  }
+
+  if (msg.type === "set_auto_retry") {
+    process.stdout.write(JSON.stringify({ type: "response", id: msg.id, command: "set_auto_retry", data: {} }) + "\n");
+    return;
+  }
+
+  if (msg.type === "set_model") {
+    process.stdout.write(JSON.stringify({ type: "response", id: msg.id, command: "set_model", data: {} }) + "\n");
+    return;
+  }
+});
+
+setInterval(() => {}, 1000);
+`,
+  );
+  chmodSync(scriptPath, 0o755);
+  return scriptPath;
+}
+
+function killTaskChildren(local: { piProcesses: Map<string, { child?: { kill: (signal?: string) => void } }> }) {
+  for (const task of local.piProcesses.values()) {
+    try {
+      task.child?.kill("SIGTERM");
+    } catch {
+      // ignore cleanup errors in tests
+    }
+  }
+}
 
 describe("reef", () => {
   let app: any;
@@ -48,6 +99,128 @@ describe("reef", () => {
     expect(data.mode).toBe("agent");
     expect(data.activeTasks).toBe(0);
     expect(data.totalNodes).toBe(1); // system prompt
+  });
+
+  test("scheduled:fired resumes the most recent open root conversation when idle", async () => {
+    const prevDataDir = process.env.REEF_DATA_DIR;
+    const prevVmId = process.env.VERS_VM_ID;
+    const prevAgentName = process.env.VERS_AGENT_NAME;
+    const prevPiPath = process.env.PI_PATH;
+    const localDir = `${TEST_DATA_DIR}-scheduled-idle`;
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    mkdirSync(localDir, { recursive: true });
+
+    process.env.REEF_DATA_DIR = localDir;
+    process.env.VERS_VM_ID = "vm-root-scheduled-idle";
+    process.env.VERS_AGENT_NAME = "root-reef";
+    process.env.PI_PATH = writeResponsivePiScript(localDir);
+
+    const local = await createReef({ server: { modules: [] } });
+    const existing = local.tree.startTask("main-chat", "main visible chat", local.tree.getRef("main") ?? null);
+    local.tree.completeTask("main-chat", { summary: "initial turn complete", filesChanged: [] });
+    local.tree.setRef("main-chat", existing.id);
+
+    await local.events.emit("scheduled:fired", {
+      checkId: "check-idle-1",
+      targetAgent: "root-reef",
+      targetCategory: "infra_vm",
+      kind: "follow_up",
+      message: "wake root while idle",
+      reason: "delivered to root-reef",
+    });
+
+    const task = local.tree.getTask("main-chat");
+    expect(task).toBeTruthy();
+    expect(task!.status).toBe("running");
+    const leafId = local.tree.getRef("main-chat");
+    expect(leafId).toBeTruthy();
+    const leaf = local.tree.get(leafId!);
+    expect(leaf?.role).toBe("user");
+    expect(leaf?.content).toContain("wake root while idle");
+    expect(local.tree.getTask("scheduled-check-idle-1")).toBeUndefined();
+
+    killTaskChildren(local);
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    process.env.REEF_DATA_DIR = prevDataDir;
+    process.env.VERS_VM_ID = prevVmId;
+    process.env.VERS_AGENT_NAME = prevAgentName;
+    process.env.PI_PATH = prevPiPath;
+  });
+
+  test("scheduled:fired falls back to a scheduled conversation when no open conversation exists", async () => {
+    const prevDataDir = process.env.REEF_DATA_DIR;
+    const prevVmId = process.env.VERS_VM_ID;
+    const prevAgentName = process.env.VERS_AGENT_NAME;
+    const prevPiPath = process.env.PI_PATH;
+    const localDir = `${TEST_DATA_DIR}-scheduled-idle-fallback`;
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    mkdirSync(localDir, { recursive: true });
+
+    process.env.REEF_DATA_DIR = localDir;
+    process.env.VERS_VM_ID = "vm-root-scheduled-idle-fallback";
+    process.env.VERS_AGENT_NAME = "root-reef";
+    process.env.PI_PATH = writeResponsivePiScript(localDir);
+
+    const local = await createReef({ server: { modules: [] } });
+
+    await local.events.emit("scheduled:fired", {
+      checkId: "check-idle-fallback-1",
+      targetAgent: "root-reef",
+      targetCategory: "infra_vm",
+      kind: "follow_up",
+      message: "wake root with fallback conversation",
+      reason: "delivered to root-reef",
+    });
+
+    const task = local.tree.getTask("scheduled-check-idle-fallback-1");
+    expect(task).toBeTruthy();
+    expect(task!.status).toBe("running");
+    expect(task!.trigger).toContain("wake root with fallback conversation");
+
+    killTaskChildren(local);
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    process.env.REEF_DATA_DIR = prevDataDir;
+    process.env.VERS_VM_ID = prevVmId;
+    process.env.VERS_AGENT_NAME = prevAgentName;
+    process.env.PI_PATH = prevPiPath;
+  });
+
+  test("scheduled:fired stays queued when root already has a running turn", async () => {
+    const prevDataDir = process.env.REEF_DATA_DIR;
+    const prevVmId = process.env.VERS_VM_ID;
+    const prevAgentName = process.env.VERS_AGENT_NAME;
+    const localDir = `${TEST_DATA_DIR}-scheduled-busy`;
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+
+    process.env.REEF_DATA_DIR = localDir;
+    process.env.VERS_VM_ID = "vm-root-scheduled-busy";
+    process.env.VERS_AGENT_NAME = "root-reef";
+
+    const local = await createReef({ server: { modules: [] } });
+    local.piProcesses.set("busy-task", {
+      id: "busy-task",
+      prompt: "busy",
+      status: "running",
+      output: "",
+      events: [],
+      startedAt: Date.now(),
+    });
+
+    await local.events.emit("scheduled:fired", {
+      checkId: "check-busy-1",
+      targetAgent: "root-reef",
+      targetCategory: "infra_vm",
+      kind: "follow_up",
+      message: "do not interrupt busy root",
+      reason: "delivered to root-reef",
+    });
+
+    expect(local.tree.getTask("scheduled-check-busy-1")).toBeUndefined();
+
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    process.env.REEF_DATA_DIR = prevDataDir;
+    process.env.VERS_VM_ID = prevVmId;
+    process.env.VERS_AGENT_NAME = prevAgentName;
   });
 
   test("GET /reef/tree — has system root", async () => {
@@ -141,6 +314,58 @@ describe("reef", () => {
     const node = tree.get(data.nodeId);
     const mainId = tree.getRef("main");
     expect(node!.parentId).toBe(mainId);
+  });
+
+  test("POST /reef/submit — startup timeout retries once before failing a silent agent", async () => {
+    const prevDataDir = process.env.REEF_DATA_DIR;
+    const prevPiPath = process.env.PI_PATH;
+    const prevTimeout = process.env.REEF_TASK_STARTUP_TIMEOUT_MS;
+    const prevAttempts = process.env.REEF_TASK_STARTUP_MAX_ATTEMPTS;
+    const localDir = `${TEST_DATA_DIR}-startup-timeout`;
+    const scriptPath = join(process.cwd(), localDir, "silent-pi.sh");
+
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    mkdirSync(localDir, { recursive: true });
+    writeFileSync(
+      scriptPath,
+      `#!/bin/sh
+while true; do
+  sleep 1
+done
+`,
+    );
+    chmodSync(scriptPath, 0o755);
+
+    process.env.REEF_DATA_DIR = localDir;
+    process.env.PI_PATH = scriptPath;
+    process.env.REEF_TASK_STARTUP_TIMEOUT_MS = "50";
+    process.env.REEF_TASK_STARTUP_MAX_ATTEMPTS = "2";
+
+    const local = await createReef({ server: { modules: [] } });
+    const res = await local.app.fetch(
+      new Request("http://localhost/reef/submit", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ task: "hang on startup", taskId: "startup-timeout" }),
+      }),
+    );
+    expect(res.status).toBe(202);
+
+    let finalTask = local.tree.getTask("startup-timeout");
+    for (let i = 0; i < 20 && finalTask?.status === "running"; i += 1) {
+      await Bun.sleep(25);
+      finalTask = local.tree.getTask("startup-timeout");
+    }
+
+    expect(finalTask).toBeTruthy();
+    expect(finalTask!.status).toBe("error");
+    expect(finalTask!.artifacts?.error).toContain("pi startup timed out before first response after 2 attempts");
+
+    if (existsSync(localDir)) rmSync(localDir, { recursive: true });
+    process.env.REEF_DATA_DIR = prevDataDir;
+    process.env.PI_PATH = prevPiPath;
+    process.env.REEF_TASK_STARTUP_TIMEOUT_MS = prevTimeout;
+    process.env.REEF_TASK_STARTUP_MAX_ATTEMPTS = prevAttempts;
   });
 
   test("POST /reef/conversations — creates persisted conversation metadata", async () => {
@@ -322,5 +547,20 @@ describe("reef", () => {
     const { data } = await json("/reef/state");
     expect(data.totalTasks).toBeGreaterThan(0);
     expect(data.totalNodes).toBeGreaterThan(1);
+  });
+
+  test("classifies credit exhaustion errors", () => {
+    expect(isCreditExhaustedError("429 out of credits on vers account")).toBe(true);
+    expect(isCreditExhaustedError("Error: quota exceeded")).toBe(false);
+  });
+
+  test("classifies transient provider errors", () => {
+    expect(
+      isTransientProviderError(
+        'Error: {"type":"error","error":{"details":null,"type":"api_error","message":"Internal server error"}}',
+      ),
+    ).toBe(true);
+    expect(isTransientProviderError("503 service unavailable")).toBe(true);
+    expect(isTransientProviderError("No API key found for anthropic")).toBe(false);
   });
 });

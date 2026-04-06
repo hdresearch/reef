@@ -13,10 +13,7 @@
   },
   "keywords": ["pi-package"],
   "pi": {
-    "extensions": [
-      "./src/extension.ts",
-      "./extensions/reminders.ts"
-    ],
+    "extensions": ["./src/extension.ts"],
     "skills": ["./skills"]
   },
   "dependencies": {

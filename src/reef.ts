@@ -98,9 +98,79 @@ function profileContext(): string {
   return `[user profile]\n${parts.join("\n")}`;
 }
 
+function buildScheduledWakePrompt(data: {
+  checkId: string;
+  kind: string;
+  message: string;
+  reason?: string | null;
+  payload?: Record<string, unknown> | null;
+}) {
+  const lines = [
+    "A scheduled check fired while root was idle.",
+    "Treat this as a new bounded supervisory turn.",
+    "",
+    `Scheduled check ID: ${data.checkId}`,
+    `Kind: ${data.kind}`,
+    `Message: ${data.message}`,
+  ];
+
+  if (data.reason) lines.push(`Reason: ${data.reason}`);
+  if (data.payload && Object.keys(data.payload).length > 0) {
+    lines.push(`Payload: ${JSON.stringify(data.payload)}`);
+  }
+
+  lines.push(
+    "",
+    "Use current reef world state to decide whether action is needed. If no action is needed, say so briefly and conclude the turn.",
+  );
+  return lines.join("\n");
+}
+
+function pickScheduledWakeConversation(tree: ConversationTree): string | null {
+  const candidates = tree
+    .listTasks()
+    .filter((task) => !task.info.closed)
+    .sort((a, b) => b.info.lastActivityAt - a.info.lastActivityAt);
+  return candidates[0]?.name || null;
+}
+
 let taskCounter = 0;
 export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6";
 const ROOT_REEF_PROVIDER = "vers";
+
+export function isCreditExhaustedError(raw: string) {
+  const normalized = raw.toLowerCase();
+  return (
+    (normalized.includes("429") && (normalized.includes("credit") || normalized.includes("quota"))) ||
+    normalized.includes("no-credits") ||
+    normalized.includes("no credits") ||
+    normalized.includes("out of credits")
+  );
+}
+
+export function isTransientProviderError(raw: string) {
+  const normalized = raw.toLowerCase();
+  return (
+    normalized.includes("internal server error") ||
+    normalized.includes("server error") ||
+    normalized.includes("internal error") ||
+    normalized.includes("service unavailable") ||
+    normalized.includes("overloaded") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("connection error") ||
+    normalized.includes("connection refused") ||
+    normalized.includes("other side closed") ||
+    normalized.includes("upstream connect") ||
+    normalized.includes("reset before headers") ||
+    normalized.includes("terminated") ||
+    normalized.includes("retry delay") ||
+    normalized.includes("too many requests") ||
+    normalized.includes("rate limit") ||
+    /\b(?:429|500|502|503|504)\b/.test(normalized) ||
+    (normalized.includes("api_error") &&
+      (normalized.includes("internal") || normalized.includes("server") || normalized.includes("overloaded")))
+  );
+}
 
 function conversationPayload(tree: ConversationTree, id: string) {
   const info = tree.getTask(id);
@@ -147,116 +217,324 @@ function spawnTask(
   opts: {
     model?: string;
     attachments?: Attachment[];
+    onChild?: (child: ChildProcess) => void;
     onEvent: (event: any) => void;
+    onUsageStats?: (payload: {
+      provider?: string | null;
+      model?: string | null;
+      stats: {
+        sessionFile?: string;
+        sessionId: string;
+        userMessages: number;
+        assistantMessages: number;
+        toolCalls: number;
+        toolResults: number;
+        totalMessages: number;
+        tokens: {
+          input: number;
+          output: number;
+          cacheRead: number;
+          cacheWrite: number;
+          total: number;
+        };
+        cost: number;
+      };
+    }) => void;
     onDone: (output: string) => void;
     onError: (err: string) => void;
   },
 ): ChildProcess {
   const piPath = resolveAgentBinary();
   const cwd = process.env.REEF_DIR ?? process.cwd();
+  const startupTimeoutMs = Math.max(1, Number.parseInt(process.env.REEF_TASK_STARTUP_TIMEOUT_MS ?? "8000", 10) || 8000);
+  const maxStartupAttempts = Math.max(1, Number.parseInt(process.env.REEF_TASK_STARTUP_MAX_ATTEMPTS ?? "2", 10) || 2);
+  let activeAttempt = 0;
 
-  const child = spawn(piPath, ["--mode", "rpc", "--no-session", "--append-system-prompt", treeContext], {
-    stdio: ["pipe", "pipe", "pipe"],
-    cwd,
-    env: {
-      ...process.env,
-      PI_PATH: process.env.PI_PATH || piPath,
-      ...(opts.model ? { PI_MODEL: opts.model } : {}),
-    },
-  });
+  const startAttempt = (provider: "vers"): ChildProcess => {
+    activeAttempt += 1;
+    const attemptId = activeAttempt;
+    const child = spawn(piPath, ["--mode", "rpc", "--no-session", "--append-system-prompt", treeContext], {
+      stdio: ["pipe", "pipe", "pipe"],
+      cwd,
+      env: {
+        ...process.env,
+        PI_PATH: process.env.PI_PATH || piPath,
+        ...(opts.model ? { PI_MODEL: opts.model } : {}),
+      },
+    });
 
-  let lineBuf = "";
-  let output = "";
-  let prompted = false;
-  let modelConfigured = !opts.model;
-  let modelSelectionRequested = false;
+    opts.onChild?.(child);
 
-  // Poll for pi readiness, then send the prompt
-  const readyCheck = setInterval(() => {
-    try {
-      child.stdin.write(`${JSON.stringify({ id: "ready-check", type: "get_state" })}\n`);
-    } catch {
-      clearInterval(readyCheck);
-    }
-  }, 1000);
+    let lineBuf = "";
+    let output = "";
+    let prompted = false;
+    let modelConfigured = !opts.model;
+    let modelSelectionRequested = false;
+    let autoRetryConfigured = false;
+    let autoRetryRequested = false;
+    let finished = false;
+    let startupReady = false;
+    let requestCounter = 0;
+    let lastUsageStatsPullAt = 0;
+    let usageStatsInflight: Promise<void> | null = null;
+    let lastUsageProvider: string | null = provider;
+    let lastUsageModel: string | null = opts.model || null;
+    const pending = new Map<
+      string,
+      {
+        resolve: (value: any) => void;
+        reject: (error: Error) => void;
+        timeout: ReturnType<typeof setTimeout>;
+      }
+    >();
 
-  function handleEvent(event: any) {
-    // Wait for ready response before selecting the model and sending the prompt.
-    if (!prompted && event.type === "response" && event.command === "get_state") {
-      if (!modelConfigured && !modelSelectionRequested && opts.model) {
-        modelSelectionRequested = true;
+    const readyCheck = setInterval(() => {
+      try {
+        child.stdin.write(`${JSON.stringify({ id: "ready-check", type: "get_state" })}\n`);
+      } catch {
         clearInterval(readyCheck);
-        child.stdin.write(
-          `${JSON.stringify({ id: "set-model", type: "set_model", provider: ROOT_REEF_PROVIDER, modelId: opts.model })}\n`,
-        );
+      }
+    }, 1000);
+
+    let startupTimeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      if (attemptId !== activeAttempt || finished || startupReady) return;
+
+      clearInterval(readyCheck);
+      rejectPending("RPC startup timed out before first response");
+
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+
+      if (attemptId < maxStartupAttempts) {
+        opts.onEvent({
+          type: "task_retry",
+          reason: "startup_timeout",
+          attempt: attemptId,
+          nextAttempt: attemptId + 1,
+        });
+        startAttempt(provider);
         return;
       }
 
-      prompted = true;
+      finished = true;
+      opts.onError(
+        `pi startup timed out before first response after ${attemptId} attempt${attemptId === 1 ? "" : "s"}`,
+      );
+    }, startupTimeoutMs);
+
+    const clearStartupTimeout = () => {
+      if (!startupTimeout) return;
+      clearTimeout(startupTimeout);
+      startupTimeout = null;
+    };
+
+    const markStartupReady = () => {
+      if (startupReady) return;
+      startupReady = true;
+      clearStartupTimeout();
+    };
+
+    const rejectPending = (message: string) => {
+      for (const [id, entry] of pending) {
+        clearTimeout(entry.timeout);
+        entry.reject(new Error(message));
+        pending.delete(id);
+      }
+    };
+
+    const requestSessionStats = async (
+      options: { force?: boolean; provider?: string | null; model?: string | null } = {},
+    ) => {
+      if (!opts.onUsageStats) return;
+      if (child.killed) return;
+
+      const now = Date.now();
+      if (!options.force) {
+        if (usageStatsInflight) return usageStatsInflight;
+        if (now - lastUsageStatsPullAt < 5000) return;
+      }
+
+      const requestId = `usage-stats-${++requestCounter}`;
+      const run = (async () => {
+        try {
+          const stats = await new Promise<any>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              pending.delete(requestId);
+              reject(new Error("Timed out waiting for get_session_stats response"));
+            }, 5000);
+            pending.set(requestId, { resolve, reject, timeout });
+            child.stdin.write(`${JSON.stringify({ id: requestId, type: "get_session_stats" })}\n`);
+          });
+          lastUsageStatsPullAt = Date.now();
+          opts.onUsageStats?.({
+            provider: options.provider ?? lastUsageProvider ?? null,
+            model: options.model ?? lastUsageModel ?? null,
+            stats,
+          });
+        } catch {
+          // Best effort: raw message-level usage remains available as fallback.
+        } finally {
+          if (usageStatsInflight === run) usageStatsInflight = null;
+        }
+      })();
+
+      usageStatsInflight = run;
+      return run;
+    };
+
+    async function handleEvent(event: any) {
+      if (attemptId !== activeAttempt) return;
+      markStartupReady();
+
+      if (event.type === "response" && event.id && pending.has(event.id)) {
+        const entry = pending.get(event.id)!;
+        clearTimeout(entry.timeout);
+        pending.delete(event.id);
+        if (event.success === false)
+          entry.reject(new Error(event.error || `RPC command ${event.command || event.id} failed`));
+        else entry.resolve(event.data);
+        return;
+      }
+
+      if (!prompted && event.type === "response" && event.command === "get_state") {
+        if (!autoRetryConfigured && !autoRetryRequested) {
+          autoRetryRequested = true;
+          clearInterval(readyCheck);
+          child.stdin.write(`${JSON.stringify({ id: "set-auto-retry", type: "set_auto_retry", enabled: true })}\n`);
+          return;
+        }
+
+        if (!modelConfigured && !modelSelectionRequested && opts.model) {
+          modelSelectionRequested = true;
+          clearInterval(readyCheck);
+          child.stdin.write(
+            `${JSON.stringify({ id: "set-model", type: "set_model", provider, modelId: opts.model, thinkingLevel: "high" })}\n`,
+          );
+          return;
+        }
+
+        prompted = true;
+        clearInterval(readyCheck);
+        const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+        child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
+      }
+
+      if (!prompted && event.type === "response" && event.command === "set_auto_retry") {
+        autoRetryConfigured = true;
+
+        if (!modelConfigured && !modelSelectionRequested && opts.model) {
+          modelSelectionRequested = true;
+          child.stdin.write(
+            `${JSON.stringify({ id: "set-model", type: "set_model", provider, modelId: opts.model, thinkingLevel: "high" })}\n`,
+          );
+          return;
+        }
+
+        prompted = true;
+        const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+        child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
+      }
+
+      if (!prompted && event.type === "response" && event.command === "set_model") {
+        modelConfigured = true;
+        prompted = true;
+        const rpcMessage = buildRpcMessage(prompt, opts.attachments);
+        child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
+      }
+
+      opts.onEvent(event);
+
+      if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+        output += event.assistantMessageEvent.delta;
+      }
+
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        lastUsageProvider = event.message.provider || event.message.api || lastUsageProvider || null;
+        lastUsageModel = event.message.model || lastUsageModel || null;
+        void requestSessionStats({
+          provider: lastUsageProvider,
+          model: lastUsageModel,
+        });
+      }
+
+      if ((event.type === "message_end" || event.type === "turn_end") && event.message?.errorMessage && !output) {
+        const raw = event.message.errorMessage;
+        if (isCreditExhaustedError(raw)) {
+          output = "Error: No credits available on your Vers account.";
+        } else if (isTransientProviderError(raw)) {
+          output =
+            `Transient provider/backend failure after retries. Your prompt was not rejected, but this turn could not complete. ` +
+            `Retry the request or send a short follow-up message to continue from the existing conversation context.\n\n` +
+            `Provider error: ${raw}`;
+        } else {
+          output = `Error: ${raw}`;
+        }
+      }
+
+      if (event.type === "agent_end") {
+        if (finished) return;
+        finished = true;
+        clearStartupTimeout();
+        await requestSessionStats({
+          force: true,
+          provider: lastUsageProvider,
+          model: lastUsageModel,
+        });
+        child.kill("SIGTERM");
+        opts.onDone(output);
+      }
+    }
+
+    child.stdout.on("data", (data: Buffer) => {
+      if (attemptId !== activeAttempt) return;
+      lineBuf += data.toString();
+      const lines = lineBuf.split("\n");
+      lineBuf = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          void handleEvent(JSON.parse(line));
+        } catch {
+          /* not JSON */
+        }
+      }
+    });
+
+    child.stderr.on("data", (data: Buffer) => {
+      if (attemptId !== activeAttempt) return;
+      const msg = data.toString().trim();
+      if (msg) console.error(`  [pi] ${msg}`);
+    });
+
+    child.on("error", (err) => {
       clearInterval(readyCheck);
-      const rpcMessage = buildRpcMessage(prompt, opts.attachments);
-      child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
-    }
+      clearStartupTimeout();
+      rejectPending(`RPC process error: ${err.message}`);
+      if (attemptId !== activeAttempt) return;
+      if (finished) return;
+      finished = true;
+      opts.onError(`Failed to spawn pi: ${err.message}`);
+    });
 
-    if (!prompted && event.type === "response" && event.command === "set_model") {
-      modelConfigured = true;
-      prompted = true;
-      const rpcMessage = buildRpcMessage(prompt, opts.attachments);
-      child.stdin.write(`${JSON.stringify({ type: "prompt", message: rpcMessage })}\n`);
-    }
-
-    opts.onEvent(event);
-
-    if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-      output += event.assistantMessageEvent.delta;
-    }
-
-    // Capture LLM errors (e.g. 429 no credits) so they surface to the user
-    if ((event.type === "message_end" || event.type === "turn_end") && event.message?.errorMessage && !output) {
-      const raw = event.message.errorMessage;
-      if (raw.includes("no-credits") || raw.includes("no credits")) {
-        output = "Error: No credits available on the Vers account. Please add credits to continue.";
-      } else {
-        output = `Error: ${raw}`;
+    child.on("close", (code) => {
+      clearInterval(readyCheck);
+      clearStartupTimeout();
+      rejectPending(code && code !== 0 ? `RPC process exited with code ${code}` : "RPC process closed");
+      if (attemptId !== activeAttempt) return;
+      if (finished) return;
+      if (code && code !== 0) {
+        finished = true;
+        opts.onError(`pi exited with code ${code}`);
       }
-    }
+    });
 
-    if (event.type === "agent_end") {
-      child.kill("SIGTERM");
-      opts.onDone(output);
-    }
-  }
+    return child;
+  };
 
-  child.stdout.on("data", (data: Buffer) => {
-    lineBuf += data.toString();
-    const lines = lineBuf.split("\n");
-    lineBuf = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        handleEvent(JSON.parse(line));
-      } catch {
-        /* not JSON */
-      }
-    }
-  });
-
-  child.stderr.on("data", (data: Buffer) => {
-    const msg = data.toString().trim();
-    if (msg) console.error(`  [pi] ${msg}`);
-  });
-
-  child.on("error", (err) => {
-    clearInterval(readyCheck);
-    opts.onError(`Failed to spawn pi: ${err.message}`);
-  });
-
-  child.on("close", (code) => {
-    clearInterval(readyCheck);
-    if (code && code !== 0) opts.onError(`pi exited with code ${code}`);
-  });
-
-  return child;
+  return startAttempt(ROOT_REEF_PROVIDER);
 }
 
 // =============================================================================
@@ -284,10 +562,12 @@ export async function createReef(config: ReefConfig = {}) {
 
   // Only add system prompt if tree is empty (fresh start)
   if (tree.size() === 0) {
-    const systemPrompt =
-      config.agent?.systemPrompt ??
-      process.env.REEF_SYSTEM_PROMPT ??
-      "You are a reef agent. You have tools to manage VMs, spawn swarms, deploy services, and store state. When given a task, decide the best approach — do it yourself, delegate to a swarm, or decompose it. You build your own tools.";
+    // v2: Load AGENTS.md as the system prompt
+    let systemPrompt = config.agent?.systemPrompt ?? process.env.REEF_SYSTEM_PROMPT ?? "";
+    if (!systemPrompt) {
+      const { readParentAgentsMd } = await import("./core/agents-md.js");
+      systemPrompt = readParentAgentsMd();
+    }
     const sysNode = tree.add(null, "system", systemPrompt);
     tree.setRef("main", sysNode.id);
   }
@@ -372,6 +652,9 @@ export async function createReef(config: ReefConfig = {}) {
       task.child = spawnTask(task.prompt, treeContext, {
         model: agentModel,
         attachments,
+        onChild(child) {
+          task.child = child;
+        },
         onEvent(event) {
           task.events.push(event);
           if (task.events.length > 500) task.events.shift();
@@ -416,7 +699,26 @@ export async function createReef(config: ReefConfig = {}) {
             return;
           }
 
+          if (event.type === "message_end" && event.message?.role === "assistant") {
+            events.fire("usage:message", {
+              agentId: process.env.VERS_VM_ID || "root",
+              agentName: process.env.VERS_AGENT_NAME || "root-reef",
+              taskId,
+              message: event.message,
+            });
+          }
+
           broadcast({ taskId, ...event });
+        },
+        onUsageStats(payload) {
+          events.fire("usage:stats", {
+            agentId: process.env.VERS_VM_ID || "root",
+            agentName: process.env.VERS_AGENT_NAME || "root-reef",
+            taskId,
+            provider: payload.provider || null,
+            model: payload.model || null,
+            stats: payload.stats,
+          });
         },
         onDone(output) {
           task.status = "done";
@@ -515,6 +817,53 @@ export async function createReef(config: ReefConfig = {}) {
 
     return { taskId, userNode, continuing };
   }
+
+  events.on("scheduled:fired", async (data: any) => {
+    const rootAgentName = process.env.VERS_AGENT_NAME || "root-reef";
+    if (!data || data.targetAgent !== rootAgentName) return;
+    if (data.targetCategory === "resource_vm") return;
+
+    const runningTasks = [...piProcesses.values()].filter((task) => task.status === "running");
+    if (runningTasks.length > 0) {
+      broadcast({
+        type: "scheduled_attention_queued",
+        targetAgent: rootAgentName,
+        checkId: data.checkId,
+        reason: "root already has a running turn",
+      });
+      return;
+    }
+
+    const prompt = buildScheduledWakePrompt({
+      checkId: data.checkId,
+      kind: data.kind,
+      message: data.message,
+      reason: data.reason || null,
+      payload: data.payload || null,
+    });
+    const conversationId = pickScheduledWakeConversation(tree) || `scheduled-${data.checkId}`;
+
+    try {
+      const result = await submitPrompt({
+        prompt,
+        conversationId,
+      });
+      broadcast({
+        type: "scheduled_attention_started",
+        targetAgent: rootAgentName,
+        checkId: data.checkId,
+        conversationId: result.taskId,
+        nodeId: result.userNode.id,
+      });
+    } catch (err: any) {
+      broadcast({
+        type: "scheduled_attention_error",
+        targetAgent: rootAgentName,
+        checkId: data.checkId,
+        error: err?.message || String(err),
+      });
+    }
+  });
 
   reef.post("/submit", async (c) => {
     const body = await c.req.json();

@@ -14,7 +14,7 @@ import { ulid } from "ulid";
 // Types
 // =============================================================================
 
-export type LtStatus = "starting" | "idle" | "working" | "paused" | "error" | "destroyed";
+export type LtStatus = "starting" | "idle" | "working" | "paused" | "stopped" | "error" | "destroyed";
 
 export interface Lieutenant {
   id: string;
@@ -78,7 +78,7 @@ export class ConflictError extends Error {
 // Constants
 // =============================================================================
 
-const VALID_STATUSES = new Set<string>(["starting", "idle", "working", "paused", "error", "destroyed"]);
+const VALID_STATUSES = new Set<string>(["starting", "idle", "working", "paused", "stopped", "error", "destroyed"]);
 const MAX_OUTPUT_HISTORY = 20;
 
 // =============================================================================

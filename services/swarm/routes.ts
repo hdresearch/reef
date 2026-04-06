@@ -4,7 +4,7 @@
 
 import { Hono } from "hono";
 import type { SwarmRuntime } from "./runtime.js";
-import { NotFoundError } from "./runtime.js";
+import { NotFoundError, ValidationError } from "./runtime.js";
 
 export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
   const routes = new Hono();
@@ -13,16 +13,43 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
   routes.post("/agents", async (c) => {
     try {
       const body = await c.req.json();
-      const { commitId, count, labels, llmProxyKey, model } = body;
+      const {
+        commitId,
+        count,
+        labels,
+        llmProxyKey,
+        model,
+        context,
+        category,
+        directive,
+        postTaskDisposition,
+        effort,
+        parentVmId,
+        spawnedBy,
+      } = body;
 
       if (!count || typeof count !== "number" || count < 1) {
         return c.json({ error: "count is required and must be >= 1" }, 400);
       }
 
-      const result = await getRuntime().spawn({ commitId, count, labels, llmProxyKey, model });
+      const result = await getRuntime().spawn({
+        commitId,
+        count,
+        labels,
+        llmProxyKey,
+        model,
+        context,
+        category,
+        directive,
+        postTaskDisposition,
+        effort,
+        parentVmId,
+        spawnedBy,
+      });
       return c.json(
         {
           agents: result.agents.map((a) => ({ id: a.id, vmId: a.vmId, status: a.status })),
+          results: result.results,
           messages: result.messages,
           count: result.agents.length,
         },
@@ -75,13 +102,14 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
   routes.post("/agents/:id/task", async (c) => {
     try {
       const body = await c.req.json();
-      const { task } = body;
+      const { task, postTaskDisposition } = body;
       if (!task || typeof task !== "string") return c.json({ error: "task is required" }, 400);
 
-      getRuntime().sendTask(c.req.param("id"), task);
-      return c.json({ sent: true, agentId: c.req.param("id"), task });
+      getRuntime().sendTask(c.req.param("id"), task, postTaskDisposition);
+      return c.json({ sent: true, agentId: c.req.param("id"), task, postTaskDisposition: postTaskDisposition || null });
     } catch (e) {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
+      if (e instanceof ValidationError) return c.json({ error: e.message }, 400);
       throw e;
     }
   });
@@ -115,7 +143,7 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
     return c.json(result);
   });
 
-  // POST /discover — discover agents from registry
+  // POST /discover — discover agents from vm-tree
   routes.post("/discover", async (c) => {
     const results = await getRuntime().discover();
     return c.json({
@@ -133,6 +161,12 @@ export function createRoutes(getRuntime: () => SwarmRuntime): Hono {
       if (e instanceof NotFoundError) return c.json({ error: e.message }, 404);
       throw e;
     }
+  });
+
+  // POST /orphan-cleanup — sweep stuck VMs
+  routes.post("/orphan-cleanup", async (c) => {
+    const result = await getRuntime().cleanupOrphans();
+    return c.json(result);
   });
 
   // POST /teardown — destroy all agents

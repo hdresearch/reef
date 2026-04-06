@@ -11,7 +11,7 @@
  *   reef_swarm_status   — Overview of all swarm workers
  *   reef_swarm_read     — Read a worker's latest output
  *   reef_swarm_wait     — Block until workers finish, return results
- *   reef_swarm_discover — Recover workers from registry
+ *   reef_swarm_discover — Recover workers from vm-tree
  *   reef_swarm_teardown — Destroy all workers and VMs
  *
  * Events: swarm:agent_spawned, swarm:agent_destroyed, swarm:agent_task_sent,
@@ -20,6 +20,7 @@
 
 import { ServiceEventBus } from "../../src/core/events.js";
 import type { FleetClient, ServiceContext, ServiceModule } from "../../src/core/types.js";
+import type { VMTreeStore } from "../vm-tree/store.js";
 import { createRoutes } from "./routes.js";
 import { SwarmRuntime } from "./runtime.js";
 import { registerTools } from "./tools.js";
@@ -33,7 +34,12 @@ const swarm: ServiceModule = {
   routes,
 
   init(ctx: ServiceContext) {
-    runtime = new SwarmRuntime({ events: ctx.events });
+    const vmTreeHandle = ctx.getStore<{ vmTreeStore: VMTreeStore }>("vm-tree");
+    runtime = new SwarmRuntime({
+      events: ctx.events,
+      vmTreeStore: vmTreeHandle?.vmTreeStore,
+    });
+    runtime.startOrphanCleanup();
   },
 
   store: {
@@ -65,7 +71,7 @@ const swarm: ServiceModule = {
     },
   },
 
-  dependencies: ["lieutenant"],
+  dependencies: ["lieutenant", "vm-tree"],
   capabilities: ["swarm.spawn", "swarm.communicate", "swarm.lifecycle"],
 
   routeDocs: {
@@ -77,6 +83,8 @@ const swarm: ServiceModule = {
         labels: { type: "string[]", description: "Labels for each agent" },
         llmProxyKey: { type: "string", description: "Vers LLM proxy key override" },
         model: { type: "string", description: "Model ID (default: claude-sonnet-4-6)" },
+        parentVmId: { type: "string", description: "Logical parent VM ID for lineage (defaults to caller/root)" },
+        spawnedBy: { type: "string", description: "Logical spawning agent name for provenance" },
       },
       response: "{ agents, messages, count }",
     },
@@ -110,7 +118,7 @@ const swarm: ServiceModule = {
       response: "{ elapsed, timedOut, agents }",
     },
     "POST /discover": {
-      summary: "Discover workers from registry",
+      summary: "Discover workers from vm-tree",
       response: "{ results, summary }",
     },
     "DELETE /agents/:id": {

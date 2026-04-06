@@ -44,6 +44,70 @@ function taskLabel(status) {
 }
 
 const $ = (id) => document.getElementById(id);
+const appShell = $('app');
+const panelAreaEl = $('panel-area');
+const panelViewsEl = $('panel-views');
+const mobileMq = window.matchMedia('(max-width: 900px)');
+
+let mobileView = 'chat';
+let memexExpanded = true;
+
+function isMobileViewport() {
+  return mobileMq.matches;
+}
+
+function updateMobileMeta() {
+  const chatsDetail = $('mobile-nav-chats-detail');
+  if (chatsDetail) {
+    const openCount = [...conversations.values()].filter((conversation) => !conversation.closed).length;
+    chatsDetail.textContent = conversations.size ? `${openCount} open` : 'none';
+  }
+
+  const panelsDetail = $('mobile-nav-panels-detail');
+  if (panelsDetail) {
+    panelsDetail.textContent = loadedPanels.size ? `${loadedPanels.size} live` : 'syncing';
+  }
+}
+
+function updateMobileView() {
+  if (!appShell) return;
+  const currentView = isMobileViewport() ? (activePanel ? 'panel' : mobileView) : 'desktop';
+  appShell.dataset.mobileView = currentView;
+  document.querySelectorAll('.mobile-nav-btn').forEach((button) => {
+    button.classList.toggle('active', button.dataset.mobileView === currentView);
+  });
+  updateMobileMeta();
+}
+
+function closeActivePanel(nextView = null) {
+  panelAreaEl.className = 'closed';
+  $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === 'feed'));
+  activePanel = null;
+  $('panel-shell-title').textContent = 'panel';
+  if (isMobileViewport()) {
+    mobileView = nextView || (mobileView === 'panel' ? 'panels' : mobileView);
+  }
+  syncMobilePanelList();
+  updateMobileView();
+}
+
+function setMobileView(view) {
+  mobileView = view;
+  if (activePanel && view !== 'panel') {
+    closeActivePanel(view);
+    return;
+  }
+  if (view === 'panels') syncMobilePanelList();
+  updateMobileView();
+}
+
+function setMemexExpanded(expanded) {
+  memexExpanded = expanded;
+  $('branch').classList.toggle('memex-collapsed', !expanded);
+  const button = $('branch-memex-toggle');
+  button.setAttribute('aria-expanded', String(expanded));
+  button.classList.toggle('collapsed', !expanded);
+}
 
 function autoScroll(el) {
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -206,15 +270,19 @@ function renderConversationLists() {
     items.filter((conversation) => conversation.closed),
     'No closed conversations.',
   );
+  updateMobileMeta();
 }
 
 function renderConversationHeader() {
   const label = $('branch-label');
   const meta = $('branch-meta');
   const toggle = $('branch-toggle');
+  const close = $('branch-close');
   const empty = $('branch-empty');
   const input = $('branch-text');
   const send = $('branch-send');
+  close.textContent = isMobileViewport() ? 'chats' : '✕';
+  close.title = isMobileViewport() ? 'Open chats' : 'Clear selection';
 
   if (!activeConversationId || !conversations.has(activeConversationId)) {
     label.textContent = 'select a conversation';
@@ -315,6 +383,7 @@ async function loadConversation(conversationId) {
 
 async function selectConversation(conversationId) {
   if (!conversationId) return;
+  if (isMobileViewport()) setMobileView('chat');
   activeConversationId = conversationId;
   ensureConversation(conversationId);
   renderConversationLists();
@@ -335,6 +404,7 @@ function deselectConversation() {
   activeConversationId = null;
   renderConversationLists();
   renderConversationHeader();
+  if (isMobileViewport()) setMobileView('chat');
   $('branch-text').focus();
 }
 
@@ -574,7 +644,8 @@ function reconnectSSE() {
   // Catch up on any state changes that happened while disconnected
   syncConversationList();
   updateStatus();
-  if (activePanel && LIVE_REFRESH_PANELS.has(activePanel)) {
+  scheduleMemexRefresh(0);
+  if (activePanel) {
     refreshPanel(activePanel).catch(() => {});
   }
   connectSSE();
@@ -716,6 +787,8 @@ function handleEvent(event) {
       feedAdd(nodeId, parentId, 'error', (event.error || 'failed').slice(0, 80));
       break;
   }
+
+  scheduleMemexRefresh();
 }
 
 // =============================================================================
@@ -864,7 +937,7 @@ async function updateStatus() {
   try {
     const [stateRes, vmsRes, ltsRes, sessionRes] = await Promise.all([
       fetch(`${API}/reef/state`),
-      fetch(`${API}/registry/vms`).catch(() => null),
+      fetch(`${API}/vm-tree/fleet/status`).catch(() => null),
       fetch(`${API}/lieutenant/lieutenants`).catch(() => null),
       fetch('/ui/session').catch(() => null),
     ]);
@@ -875,7 +948,7 @@ async function updateStatus() {
     let vmCount = 1; // root reef VM is always running
     if (vmsRes?.ok) {
       const vmsData = await vmsRes.json();
-      vmCount = Math.max(1, vmsData.count || 0);
+      vmCount = Math.max(1, vmsData.alive || 0);
     }
 
     let ltCount = 0;
@@ -914,12 +987,243 @@ async function updateStatus() {
 }
 
 // =============================================================================
+// Reef memex
+// =============================================================================
+
+function moneyStr(value) {
+  const amount = Number(value || 0);
+  return `$${amount.toFixed(2)}`;
+}
+
+function flattenVmTree(nodes, acc = []) {
+  for (const node of nodes || []) {
+    if (node?.vm) acc.push(node.vm);
+    if (node?.children?.length) flattenVmTree(node.children, acc);
+  }
+  return acc;
+}
+
+function setMemexBody(id, html) {
+  const el = $(id);
+  if (el) el.innerHTML = html;
+}
+
+function memexEmpty(text) {
+  return `<div class="memex-empty">${esc(text)}</div>`;
+}
+
+function memexList(items) {
+  return `<div class="memex-list">${items.join('')}</div>`;
+}
+
+function memexItem(name, meta, sub = '') {
+  return `
+    <div class="memex-item">
+      <div class="memex-item-top">
+        <div class="memex-item-name">${esc(name)}</div>
+        <div class="memex-item-meta">${esc(meta)}</div>
+      </div>
+      ${sub ? `<div class="memex-item-sub">${esc(sub)}</div>` : ''}
+    </div>
+  `;
+}
+
+function memexTag(text, kind = '') {
+  return `<span class="memex-tag ${kind}">${esc(text)}</span>`;
+}
+
+function inferMemexNotices({ activeSignals, activeNodes, pendingChecks }) {
+  const notices = [];
+  const failedOrBlocked = (activeSignals || []).filter((signal) => signal.signalType === 'failed' || signal.signalType === 'blocked');
+  if (failedOrBlocked.length) notices.push({ label: 'urgent inbox', kind: 'error' });
+  const errorNodes = (activeNodes || []).filter((vm) => vm.status === 'error');
+  if (errorNodes.length) notices.push({ label: 'error state', kind: 'error' });
+  if ((pendingChecks || []).length) notices.push({ label: 'scheduled', kind: 'warn' });
+  if (!notices.length) notices.push({ label: 'steady state', kind: 'ok' });
+  return notices;
+}
+
+let memexSnapshot = {
+  state: null,
+  fleet: null,
+  treeData: null,
+  scheduledData: null,
+  usageData: null,
+  signalsData: null,
+  logsData: null,
+  recentSignalsData: null,
+};
+let memexRefreshTimer = null;
+
+async function fetchJsonSoft(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function scheduleMemexRefresh(delay = 250) {
+  if (memexRefreshTimer) clearTimeout(memexRefreshTimer);
+  memexRefreshTimer = setTimeout(() => {
+    memexRefreshTimer = null;
+    updateMemex().catch(() => {});
+  }, delay);
+}
+
+async function updateMemex() {
+  try {
+    const [state, fleet, treeData, scheduledData, usageData] = await Promise.all([
+      fetchJsonSoft(`${API}/reef/state`),
+      fetchJsonSoft(`${API}/vm-tree/fleet/status`),
+      fetchJsonSoft(`${API}/vm-tree/tree`),
+      fetchJsonSoft(`${API}/scheduled?status=pending&limit=6`),
+      fetchJsonSoft(`${API}/usage/summary?windowMinutes=60`),
+    ]);
+    memexSnapshot = {
+      ...memexSnapshot,
+      ...(state ? { state } : {}),
+      ...(fleet ? { fleet } : {}),
+      ...(treeData ? { treeData } : {}),
+      ...(scheduledData ? { scheduledData } : {}),
+      ...(usageData ? { usageData } : {}),
+    };
+    if (!memexSnapshot.state || !memexSnapshot.fleet || !memexSnapshot.treeData) {
+      throw new Error("Unable to read reef world state.");
+    }
+
+    const rootVm = memexSnapshot.treeData.tree?.[0]?.vm || null;
+    const rootName = rootVm?.name || 'root-reef';
+    const activeNodes = flattenVmTree(memexSnapshot.treeData.tree || []).filter((vm) => vm.vmId !== rootVm?.vmId);
+
+    const [signalsData, logsData] = await Promise.all([
+      fetchJsonSoft(`${API}/signals/?to=${encodeURIComponent(rootName)}&acknowledged=false&limit=8`),
+      fetchJsonSoft(`${API}/logs/?agent=${encodeURIComponent(rootName)}&limit=8`),
+    ]);
+    memexSnapshot = {
+      ...memexSnapshot,
+      ...(signalsData ? { signalsData } : {}),
+      ...(logsData ? { logsData } : {}),
+    };
+
+    const pendingChecks = memexSnapshot.scheduledData?.checks || [];
+    let pendingSignals = memexSnapshot.signalsData?.signals || [];
+    let receivingMode = 'pending';
+    if (!pendingSignals.length) {
+      const recentSignalsData = await fetchJsonSoft(`${API}/signals/?to=${encodeURIComponent(rootName)}&limit=8`);
+      if (recentSignalsData) memexSnapshot = { ...memexSnapshot, recentSignalsData };
+      pendingSignals = memexSnapshot.recentSignalsData?.signals || [];
+      receivingMode = 'recent';
+    }
+    const rootLogs = memexSnapshot.logsData?.logs || [];
+    const summary = memexSnapshot.usageData?.summary || memexSnapshot.usageData;
+    const usageTotals = summary?.totals || null;
+
+    $('branch-memex-meta').textContent = `reef world state · ${memexSnapshot.fleet.alive || 0} active VM${(memexSnapshot.fleet.alive || 0) === 1 ? '' : 's'} · ${pendingSignals.length} inbox · ${pendingChecks.length} scheduled`;
+
+    const notices = inferMemexNotices({ activeSignals: pendingSignals, activeNodes, pendingChecks });
+    setMemexBody('memex-overview', `
+      <div class="memex-stack">
+        <div class="memex-line"><span class="memex-key">root</span><span class="memex-value">${esc(rootName)}</span></div>
+        <div class="memex-line"><span class="memex-key">active work</span><span class="memex-value">${memexSnapshot.state.activeTasks || 0} task${memexSnapshot.state.activeTasks === 1 ? '' : 's'}</span></div>
+        <div class="memex-line"><span class="memex-key">convos</span><span class="memex-value">${memexSnapshot.state.conversations || conversations.size}</span></div>
+        <div class="memex-line"><span class="memex-key">1h usage</span><span class="memex-value">${usageTotals ? `${Number(usageTotals.totalTokens || 0).toLocaleString()} tok · ${moneyStr(usageTotals.totalCost)}` : 'unavailable'}</span></div>
+        <div class="memex-line"><span class="memex-key">noticing</span><span class="memex-value">${notices.map((item) => memexTag(item.label, item.kind)).join(' ')}</span></div>
+      </div>
+    `);
+
+    const observingItems = activeNodes.slice(0, 6).map((vm) =>
+      memexItem(vm.name, `${vm.category} · ${vm.status}`, vm.parentVmId ? `parent ${vm.parentVmId.slice(0, 8)}` : 'root child'),
+    );
+    setMemexBody('memex-observing', observingItems.length ? memexList(observingItems) : memexEmpty('No active child VMs outside root.'));
+
+    const receivingItems = pendingSignals.slice(0, 6).map((signal) => {
+      const payload = signal.payload || {};
+      const summaryText = payload.summary || payload.reason || payload.message || 'pending root attention';
+      return memexItem(`${signal.fromAgent} → ${signal.signalType}`, relativeTime(signal.createdAt), String(summaryText));
+    });
+    setMemexBody(
+      'memex-receiving',
+      receivingItems.length
+        ? `${receivingMode === 'recent' ? '<div class="memex-empty" style="margin-bottom:6px">No pending inbox. Showing recent root-directed signals.</div>' : ''}${memexList(receivingItems)}`
+        : memexEmpty('Root inbox is quiet.'),
+    );
+
+    const trackingItems = pendingChecks.slice(0, 6).map((check) =>
+      memexItem(`${check.kind} · ${check.targetAgent || check.ownerAgent}`, check.dueAt === 0 ? 'condition-first' : relativeTime(check.dueAt), check.message || ''),
+    );
+    setMemexBody('memex-tracking', trackingItems.length ? memexList(trackingItems) : memexEmpty('No pending scheduled checks.'));
+
+    const reasoningLogs = rootLogs
+      .filter((log) => ['warn', 'error'].includes(log.level) || ['decision', 'state_change'].includes(log.category || ''))
+      .slice(0, 6);
+    const reasoningItems = reasoningLogs.map((log) =>
+      memexItem(`${log.level}${log.category ? ` · ${log.category}` : ''}`, relativeTime(log.createdAt), log.message),
+    );
+    setMemexBody(
+      'memex-reasoning',
+      reasoningItems.length ? memexList(reasoningItems) : memexEmpty('No recent supervisory decisions or anomalies logged.'),
+    );
+  } catch (error) {
+    if (!memexSnapshot.state && !memexSnapshot.fleet && !memexSnapshot.treeData) {
+      $('branch-memex-meta').textContent = 'memex unavailable';
+      setMemexBody('memex-overview', memexEmpty(error?.message || 'Unable to read reef world state.'));
+      setMemexBody('memex-observing', memexEmpty('Unavailable.'));
+      setMemexBody('memex-receiving', memexEmpty('Unavailable.'));
+      setMemexBody('memex-tracking', memexEmpty('Unavailable.'));
+      setMemexBody('memex-reasoning', memexEmpty('Unavailable.'));
+    }
+  }
+}
+
+// =============================================================================
 // Panel discovery
 // =============================================================================
 
 const loadedPanels = new Map();
-const LIVE_REFRESH_PANELS = new Set(['registry', 'vm-tree', 'lieutenant', 'commits', 'store', 'installer']);
+// v2: ALL panels live-refresh — no whitelist needed
 let activePanel = null;
+
+// v2: Friendly display names for tabs
+const TAB_LABELS = { 'vm-tree': 'fleet', 'github': 'github', 'signals': 'signals', 'logs': 'logs', 'store': 'store', 'cron': 'cron', 'usage': 'usage' };
+
+function syncMobilePanelList() {
+  const list = $('mobile-panel-list');
+  if (!list) return;
+
+  const tabs = [...$('tabs').querySelectorAll('.tab')].filter((tab) => tab.dataset.view && tab.dataset.view !== 'feed');
+  list.innerHTML = '';
+
+  if (!tabs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'panel-directory-empty';
+    empty.textContent = 'Modules are loading...';
+    list.appendChild(empty);
+    updateMobileMeta();
+    return;
+  }
+
+  for (const tab of tabs) {
+    const button = document.createElement('button');
+    button.className = 'mobile-panel-link' + (activePanel === tab.dataset.view ? ' active' : '');
+    button.type = 'button';
+    button.innerHTML = `
+      <span class="mobile-panel-link-label">${esc(tab.textContent || tab.dataset.view)}</span>
+      <span class="mobile-panel-link-meta">${esc(tab.dataset.view)}</span>
+    `;
+    button.addEventListener('click', () => togglePanel(tab.dataset.view));
+    list.appendChild(button);
+  }
+
+  updateMobileMeta();
+}
+
+function panelLabel(name) {
+  const tab = $('tabs').querySelector(`.tab[data-view="${name}"]`);
+  return tab?.textContent || TAB_LABELS[name] || name;
+}
 
 async function fetchPanel(name) {
   const response = await fetch(`${API}/${name}/_panel`);
@@ -930,9 +1234,14 @@ async function fetchPanel(name) {
 
 async function refreshPanel(name) {
   if (!loadedPanels.has(name)) return;
+  const existing = loadedPanels.get(name);
+  if (existing?.__panelRefresh) {
+    await existing.__panelRefresh();
+    return;
+  }
   const panel = await fetchPanel(name);
   if (!panel) return;
-  injectPanel(loadedPanels.get(name), panel.html);
+  injectPanel(existing, panel.html);
 }
 
 async function loadProfilePanel() {
@@ -954,9 +1263,10 @@ async function loadProfilePanel() {
     container.className = 'panel-view';
     container.id = 'panel-profile';
     container.dataset.api = API;
-    $('panel-area').appendChild(container);
+    panelViewsEl.appendChild(container);
     injectPanel(container, html);
     loadedPanels.set('profile', container);
+    syncMobilePanelList();
   } catch {}
 }
 
@@ -966,9 +1276,18 @@ async function discoverPanels() {
     if (!response.ok) return;
     const data = await response.json();
     const services = data.modules || data.services || [];
-    const SKIP_PANELS = new Set(['ui', 'agent-context', 'store', 'bootloader', 'vers-config', 'installer']);
+    // v2: Skip v1 holdovers and internal services — vm-tree is the fleet view
+    const SKIP_PANELS = new Set(['ui', 'agent-context', 'bootloader', 'vers-config', 'installer', 'registry', 'lieutenant', 'swarm', 'docs', 'services']);
     const results = await Promise.allSettled(services.filter((service) => !SKIP_PANELS.has(service.name)).map((service) => fetchPanel(service.name)));
     const panels = results.filter((result) => result.status === 'fulfilled' && result.value).map((result) => result.value);
+
+    // v2: Sort panels in a sensible order
+    const TAB_ORDER = ['vm-tree', 'usage', 'signals', 'logs', 'store', 'commits', 'github', 'cron'];
+    panels.sort((a, b) => {
+      const ai = TAB_ORDER.indexOf(a.name);
+      const bi = TAB_ORDER.indexOf(b.name);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
 
     for (const panel of panels) {
       if (loadedPanels.has(panel.name) || panel.name === 'feed') continue;
@@ -976,7 +1295,7 @@ async function discoverPanels() {
       const button = document.createElement('button');
       button.className = 'tab';
       button.dataset.view = panel.name;
-      button.textContent = panel.name;
+      button.textContent = TAB_LABELS[panel.name] || panel.name;
       button.addEventListener('click', () => togglePanel(panel.name));
       $('tabs').appendChild(button);
 
@@ -984,30 +1303,33 @@ async function discoverPanels() {
       container.className = 'panel-view';
       container.id = `panel-${panel.name}`;
       container.dataset.api = API;
-      $('panel-area').appendChild(container);
+      panelViewsEl.appendChild(container);
       injectPanel(container, panel.html);
       loadedPanels.set(panel.name, container);
     }
+    syncMobilePanelList();
   } catch {}
 }
 
 function togglePanel(name) {
   if (activePanel === name) {
-    $('panel-area').className = 'closed';
-    $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === 'feed'));
-    activePanel = null;
+    closeActivePanel();
     return;
   }
   activePanel = name;
-  $('panel-area').className = 'open';
+  panelAreaEl.className = 'open';
+  $('panel-shell-title').textContent = panelLabel(name);
   document.querySelectorAll('.panel-view').forEach((view) => view.classList.toggle('active', view.id === `panel-${name}`));
   $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === name));
-  // Always refresh immediately when switching to a live panel
-  if (LIVE_REFRESH_PANELS.has(name)) refreshPanel(name).catch(() => {});
+  // v2: Always refresh immediately when switching panels
+  if (isMobileViewport()) mobileView = 'panel';
+  syncMobilePanelList();
+  updateMobileView();
+  refreshPanel(name).catch(() => {});
 }
 
 function refreshActivePanel() {
-  if (!activePanel || !LIVE_REFRESH_PANELS.has(activePanel)) return;
+  if (!activePanel) return;
   refreshPanel(activePanel).catch(() => {});
 }
 
@@ -1029,9 +1351,7 @@ function injectPanel(container, html) {
 
 $('tabs').querySelector('[data-view="feed"]').addEventListener('click', () => {
   if (!activePanel) return;
-  $('panel-area').className = 'closed';
-  $('tabs').querySelectorAll('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === 'feed'));
-  activePanel = null;
+  closeActivePanel('activity');
 });
 
 // =============================================================================
@@ -1316,7 +1636,13 @@ document.addEventListener('keydown', (event) => {
 });
 $('branch-text').addEventListener('input', () => resizeInput('branch-text'));
 
-$('branch-close').addEventListener('click', deselectConversation);
+$('branch-close').addEventListener('click', () => {
+  if (isMobileViewport()) {
+    setMobileView('chats');
+    return;
+  }
+  deselectConversation();
+});
 $('branch-toggle').addEventListener('click', () => {
   if (!activeConversationId) return;
   const conversation = conversations.get(activeConversationId);
@@ -1325,23 +1651,59 @@ $('branch-toggle').addEventListener('click', () => {
     console.error(error);
   });
 });
+$('branch-memex-toggle').addEventListener('click', () => {
+  setMemexExpanded(!memexExpanded);
+});
 
 $('new-chat').addEventListener('click', () => {
   deselectConversation();
 });
+$('panel-directory-close').addEventListener('click', () => {
+  setMobileView('chat');
+});
+$('panel-shell-close').addEventListener('click', () => {
+  closeActivePanel(isMobileViewport() ? 'panels' : null);
+});
+document.querySelectorAll('.mobile-nav-btn').forEach((button) => {
+  button.addEventListener('click', () => {
+    setMobileView(button.dataset.mobileView || 'chat');
+  });
+});
+
+function syncViewportMode() {
+  if (isMobileViewport()) {
+    if (mobileView === 'desktop') mobileView = 'chat';
+    if (!memexExpanded) {
+      updateMobileView();
+      return;
+    }
+    setMemexExpanded(false);
+    updateMobileView();
+    return;
+  }
+  setMemexExpanded(true);
+  updateMobileView();
+}
+
+if (mobileMq.addEventListener) mobileMq.addEventListener('change', syncViewportMode);
+else if (mobileMq.addListener) mobileMq.addListener(syncViewportMode);
 
 // =============================================================================
 // Init
 // =============================================================================
 
 Promise.all([loadConversationList(), loadFeedHistory()]).then(() => {
+  syncMobilePanelList();
+  syncViewportMode();
   connectSSE();
   updateStatus();
+  updateMemex();
   loadProfilePanel();
   discoverPanels();
   setInterval(discoverPanels, 30000);
-  setInterval(refreshActivePanel, 10000);
+  setInterval(refreshActivePanel, 2000);
   setInterval(updateStatus, 10000);
+  setInterval(() => scheduleMemexRefresh(0), 4000);
   // Periodically sync conversation list to catch changes from other clients
   setInterval(syncConversationList, 15000);
 });

@@ -41,10 +41,13 @@ export interface FleetClient {
   /** This agent's VM ID, if set */
   readonly vmId: string | undefined;
 
-  /** This agent's role (from VERS_AGENT_ROLE or "worker") */
+  /** This agent's role (from VERS_AGENT_ROLE or "worker") — v1 compat */
   readonly agentRole: string;
 
-  /** Whether this agent is a child VM pointed at a root reef */
+  /** This agent's category (from REEF_CATEGORY) — v2 identity */
+  readonly agentCategory: string;
+
+  /** Whether this agent is a child VM pointed at a root reef — v1 compat */
   readonly isChildAgent: boolean;
 
   /** Build a successful tool result */

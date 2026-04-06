@@ -34,7 +34,7 @@ describe("bootloader", () => {
     expect(res.data.script).toContain("bun install");
     expect(res.data.script).toContain("nohup bun run src/main.ts");
     expect(res.data.script).toContain('category": "infra_vm"');
-    expect(res.data.script).toContain('role": "infra"');
+    expect(res.data.script).toContain("VERS_AGENT_ROLE=infra");
     expect(res.data.script).not.toContain("git clone https://github.com/hdresearch/pi-vers.git");
     expect(res.data.script).not.toContain("git clone https://github.com/hdresearch/punkin-pi.git");
     expect(res.data.script).not.toContain("install /root/pi-vers");
