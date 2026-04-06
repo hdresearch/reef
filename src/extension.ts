@@ -6,9 +6,9 @@
  * Each VM category gets a specific set of services.
  */
 
+import { dirname, join } from "node:path";
 import { discoverServiceModules, filterClientModules } from "./core/discover.js";
 import { createExtension } from "./core/extension.js";
-import { DEFAULT_SERVICES_DIR } from "./core/server.js";
 
 /**
  * Resolve which services this agent should load based on its category.
@@ -51,7 +51,7 @@ export function resolveClientServiceSelection(env: NodeJS.ProcessEnv = process.e
   }
 }
 
-const servicesDir = process.env.SERVICES_DIR ?? DEFAULT_SERVICES_DIR;
+const servicesDir = process.env.SERVICES_DIR ?? join(dirname(import.meta.dir), "services");
 const allModules = await discoverServiceModules(servicesDir, {
   includeNames: resolveClientServiceSelection(),
 });

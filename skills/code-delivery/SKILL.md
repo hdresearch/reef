@@ -1,6 +1,6 @@
 ---
 name: code-delivery
-description: Use when doing code work that must be integration-friendly: branches, commits, tests, PR-ready receipts, owned paths, and parent-friendly handoff.
+description: "Use when doing code work that must be integration-friendly: branches, commits, tests, PR-ready receipts, owned paths, and parent-friendly handoff."
 ---
 
 # Code Delivery
