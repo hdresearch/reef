@@ -16,6 +16,8 @@ const AUTH_TOKEN = "test-token-12345";
 
 const ORIGINAL_ENV = {
   LLM_PROXY_KEY: process.env.LLM_PROXY_KEY,
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  REEF_MODEL_PROVIDER: process.env.REEF_MODEL_PROVIDER,
   VERS_API_KEY: process.env.VERS_API_KEY,
   VERS_AUTH_TOKEN: process.env.VERS_AUTH_TOKEN,
   VERS_GOLDEN_COMMIT_ID: process.env.VERS_GOLDEN_COMMIT_ID,
@@ -140,6 +142,8 @@ beforeEach(() => {
   process.env.LLM_PROXY_KEY = "sk-vers-test-key";
   process.env.VERS_AUTH_TOKEN = AUTH_TOKEN;
   process.env.VERS_AGENT_NAME = "reef-test";
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.REEF_MODEL_PROVIDER;
   delete process.env.VERS_INFRA_URL;
   delete process.env.VERS_VM_ID;
 });
@@ -153,6 +157,8 @@ afterEach(() => {
 describe("lieutenant routes and runtime", () => {
   test("remote lieutenant env exports VERS_VM_ID for child reef tools", () => {
     process.env.VERS_INFRA_URL = "https://root.example:3000";
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.REEF_MODEL_PROVIDER = "anthropic";
     const env = buildRemoteEnv("vm-child-123", {
       llmProxyKey: "sk-vers-test-key",
       model: "claude-test",
@@ -161,6 +167,8 @@ describe("lieutenant routes and runtime", () => {
     expect(env).toContain("export VERS_VM_ID='vm-child-123'");
     expect(env).toContain("export VERS_INFRA_URL='https://root.example:3000'");
     expect(env).toContain("export REEF_CATEGORY='lieutenant'");
+    expect(env).not.toContain("ANTHROPIC_API_KEY");
+    expect(env).not.toContain("REEF_MODEL_PROVIDER");
   });
 
   test("post-restore VM identity script persists VERS_VM_ID into reef-agent.sh", () => {
@@ -175,6 +183,8 @@ describe("lieutenant routes and runtime", () => {
     process.env.VERS_API_KEY = "vers-key-abc";
     process.env.VERS_INFRA_URL = "https://root.example:3000";
     process.env.VERS_GOLDEN_COMMIT_ID = "golden-xyz";
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.REEF_MODEL_PROVIDER = "anthropic";
     const script = buildPersistKeysScript({ llmProxyKey: "sk-vers-test", model: "claude-test" });
     expect(script).toContain("touch /etc/profile.d/reef-agent.sh");
     expect(script).toContain("grep -q '^export LLM_PROXY_KEY='");
@@ -185,6 +195,8 @@ describe("lieutenant routes and runtime", () => {
     expect(script).toContain("export VERS_INFRA_URL='https://root.example:3000'");
     expect(script).toContain("grep -q '^export VERS_GOLDEN_COMMIT_ID='");
     expect(script).toContain("export VERS_GOLDEN_COMMIT_ID='golden-xyz'");
+    expect(script).not.toContain("ANTHROPIC_API_KEY");
+    expect(script).not.toContain("REEF_MODEL_PROVIDER");
   });
 
   test("buildPersistKeysScript omits LLM_PROXY_KEY when not provided", () => {

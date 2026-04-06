@@ -121,14 +121,12 @@ function buildWorkerEnv(
   opts: { llmProxyKey?: string; directive?: string; category?: string; parentVmId?: string; parentAgent?: string },
 ): string {
   const versApiKey = process.env.VERS_API_KEY || loadVersKeyFromDisk();
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY || "";
   const exports = [
     opts.llmProxyKey
       ? `export LLM_PROXY_KEY='${escapeEnvValue(opts.llmProxyKey)}'`
       : process.env.LLM_PROXY_KEY
         ? `export LLM_PROXY_KEY='${escapeEnvValue(process.env.LLM_PROXY_KEY)}'`
         : "",
-    anthropicApiKey ? `export ANTHROPIC_API_KEY='${escapeEnvValue(anthropicApiKey)}'` : "",
     versApiKey ? `export VERS_API_KEY='${escapeEnvValue(versApiKey)}'` : "",
     process.env.VERS_BASE_URL ? `export VERS_BASE_URL='${escapeEnvValue(process.env.VERS_BASE_URL)}'` : "",
     process.env.VERS_INFRA_URL ? `export VERS_INFRA_URL='${escapeEnvValue(process.env.VERS_INFRA_URL)}'` : "",
@@ -154,9 +152,6 @@ function buildWorkerEnv(
     opts.parentAgent || process.env.VERS_AGENT_NAME
       ? `export VERS_PARENT_AGENT='${escapeEnvValue(opts.parentAgent || process.env.VERS_AGENT_NAME || "")}'`
       : "export VERS_PARENT_AGENT='reef'",
-    process.env.REEF_MODEL_PROVIDER
-      ? `export REEF_MODEL_PROVIDER='${escapeEnvValue(process.env.REEF_MODEL_PROVIDER)}'`
-      : "",
     "export GIT_EDITOR=true",
   ]
     .filter(Boolean)
@@ -333,12 +328,6 @@ rm -rf ${RPC_DIR}`,
   };
 }
 
-function resolveModelProvider(): "vers" | "anthropic" {
-  if (process.env.REEF_MODEL_PROVIDER === "anthropic") return "anthropic";
-  if (!process.env.LLM_PROXY_KEY && process.env.ANTHROPIC_API_KEY) return "anthropic";
-  return "vers";
-}
-
 export async function startWorkerRpcAgent(
   vmId: string,
   opts: {
@@ -391,7 +380,7 @@ tmux has-session -t pi-rpc 2>/dev/null && echo daemon_started || echo daemon_fai
 
   const handle = createRemoteHandle(vmId, sshBaseArgs, false);
   if (opts.model) {
-    const setModelMsg: any = { type: "set_model", provider: resolveModelProvider(), modelId: opts.model };
+    const setModelMsg: any = { type: "set_model", provider: "vers", modelId: opts.model };
     if (opts.effort) setModelMsg.thinkingLevel = opts.effort;
     handle.send(setModelMsg);
   }

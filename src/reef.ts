@@ -137,17 +137,6 @@ function pickScheduledWakeConversation(tree: ConversationTree): string | null {
 let taskCounter = 0;
 export const DEFAULT_ROOT_REEF_MODEL = "claude-opus-4-6";
 const ROOT_REEF_PROVIDER = "vers";
-const ANTHROPIC_PROVIDER = "anthropic";
-
-function hasAnthropicFallbackKey() {
-  return !!process.env.ANTHROPIC_API_KEY?.trim();
-}
-
-function resolveRootProvider(): "vers" | "anthropic" {
-  if (process.env.REEF_MODEL_PROVIDER === ANTHROPIC_PROVIDER) return ANTHROPIC_PROVIDER;
-  if (!process.env.LLM_PROXY_KEY?.trim() && hasAnthropicFallbackKey()) return ANTHROPIC_PROVIDER;
-  return ROOT_REEF_PROVIDER;
-}
 
 export function isCreditExhaustedError(raw: string) {
   const normalized = raw.toLowerCase();
@@ -261,7 +250,7 @@ function spawnTask(
   const maxStartupAttempts = Math.max(1, Number.parseInt(process.env.REEF_TASK_STARTUP_MAX_ATTEMPTS ?? "2", 10) || 2);
   let activeAttempt = 0;
 
-  const startAttempt = (provider: "vers" | "anthropic"): ChildProcess => {
+  const startAttempt = (provider: "vers"): ChildProcess => {
     activeAttempt += 1;
     const attemptId = activeAttempt;
     const child = spawn(piPath, ["--mode", "rpc", "--no-session", "--append-system-prompt", treeContext], {
@@ -283,7 +272,6 @@ function spawnTask(
     let modelSelectionRequested = false;
     let autoRetryConfigured = false;
     let autoRetryRequested = false;
-    let fallingBack = false;
     let finished = false;
     let startupReady = false;
     let requestCounter = 0;
@@ -309,7 +297,7 @@ function spawnTask(
     }, 1000);
 
     let startupTimeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      if (attemptId !== activeAttempt || fallingBack || finished || startupReady) return;
+      if (attemptId !== activeAttempt || finished || startupReady) return;
 
       clearInterval(readyCheck);
       rejectPending("RPC startup timed out before first response");
@@ -347,40 +335,6 @@ function spawnTask(
       if (startupReady) return;
       startupReady = true;
       clearStartupTimeout();
-    };
-
-    const maybeFallbackToAnthropic = (raw: string) => {
-      const reason = isCreditExhaustedError(raw)
-        ? "credit_exhausted"
-        : isTransientProviderError(raw)
-          ? "transient_provider_error"
-          : null;
-      if (
-        fallingBack ||
-        attemptId !== activeAttempt ||
-        provider !== ROOT_REEF_PROVIDER ||
-        !hasAnthropicFallbackKey() ||
-        !reason
-      ) {
-        return false;
-      }
-
-      fallingBack = true;
-      clearInterval(readyCheck);
-      process.env.REEF_MODEL_PROVIDER = ANTHROPIC_PROVIDER;
-      opts.onEvent({
-        type: "provider_fallback",
-        from: ROOT_REEF_PROVIDER,
-        to: ANTHROPIC_PROVIDER,
-        reason,
-      });
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-      startAttempt(ANTHROPIC_PROVIDER);
-      return true;
     };
 
     const rejectPending = (message: string) => {
@@ -508,9 +462,8 @@ function spawnTask(
 
       if ((event.type === "message_end" || event.type === "turn_end") && event.message?.errorMessage && !output) {
         const raw = event.message.errorMessage;
-        if (maybeFallbackToAnthropic(raw)) return;
         if (isCreditExhaustedError(raw)) {
-          output = "Error: No credits available on your Vers account and no alternate provider was available.";
+          output = "Error: No credits available on your Vers account.";
         } else if (isTransientProviderError(raw)) {
           output =
             `Transient provider/backend failure after retries. Your prompt was not rejected, but this turn could not complete. ` +
@@ -570,7 +523,7 @@ function spawnTask(
       clearInterval(readyCheck);
       clearStartupTimeout();
       rejectPending(code && code !== 0 ? `RPC process exited with code ${code}` : "RPC process closed");
-      if (attemptId !== activeAttempt || fallingBack) return;
+      if (attemptId !== activeAttempt) return;
       if (finished) return;
       if (code && code !== 0) {
         finished = true;
@@ -581,7 +534,7 @@ function spawnTask(
     return child;
   };
 
-  return startAttempt(resolveRootProvider());
+  return startAttempt(ROOT_REEF_PROVIDER);
 }
 
 // =============================================================================
