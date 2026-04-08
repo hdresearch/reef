@@ -112,6 +112,28 @@ export function createRoutes(): Hono {
     }
   });
 
+  // --- Credit top-up proxy (forwards to vers-landing) ---
+
+  routes.post("/ui/api/topup-credits", async (c) => {
+    const VERS_LANDING_URL = process.env.VERS_LANDING_URL || "https://vers.sh";
+
+    try {
+      const body = await c.req.arrayBuffer();
+      const resp = await fetch(`${VERS_LANDING_URL}/api/reef/topup-credits`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${AUTH_TOKEN}`,
+        },
+        body,
+      });
+      const text = await resp.text();
+      return c.body(text, resp.status as any, { "Content-Type": "application/json" });
+    } catch (e) {
+      return c.json({ error: "Top-up proxy error", details: String(e) }, 502);
+    }
+  });
+
   // --- API proxy (injects bearer token so browser never needs it) ---
 
   routes.all("/ui/api/*", async (c) => {

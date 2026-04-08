@@ -528,6 +528,67 @@ function finishConversation(conversationId, fallbackSummary) {
     addConversationMessage(conversationId, 'assistant', fallbackSummary);
   }
   conversation.working = false;
+
+  // Show credit top-up widget when credits are exhausted
+  const text = (conversation.messages.length > 0 && conversation.messages[conversation.messages.length - 1]?.dataset?.rawContent) || fallbackSummary || '';
+  if (text && text.includes('No credits available')) {
+    showCreditTopup(conversationId);
+  }
+}
+
+function showCreditTopup(conversationId) {
+  const el = document.createElement('div');
+  el.className = 'credit-topup';
+  el.innerHTML = `
+    <div class="credit-topup-header">Credits exhausted</div>
+    <div class="credit-topup-body">
+      <span>Add credits to continue:</span>
+      <div class="credit-topup-amounts">
+        <button class="credit-btn" data-cents="500">$5</button>
+        <button class="credit-btn" data-cents="1000">$10</button>
+        <button class="credit-btn" data-cents="2500">$25</button>
+        <button class="credit-btn" data-cents="5000">$50</button>
+      </div>
+      <div class="credit-topup-status"></div>
+    </div>
+  `;
+  el.querySelectorAll('.credit-btn').forEach((btn) => {
+    btn.addEventListener('click', () => handleCreditTopup(el, Number(btn.dataset.cents), conversationId));
+  });
+  const messagesEl = $('branch-messages');
+  if (messagesEl) {
+    messagesEl.appendChild(el);
+    autoScroll($('branch-scroll'));
+  }
+}
+
+async function handleCreditTopup(widget, amountCents, conversationId) {
+  const statusEl = widget.querySelector('.credit-topup-status');
+  const buttons = widget.querySelectorAll('.credit-btn');
+  buttons.forEach((b) => { b.disabled = true; });
+  statusEl.textContent = 'Charging card...';
+  statusEl.className = 'credit-topup-status';
+
+  try {
+    const resp = await fetch(`${API}/topup-credits`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amountCents }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      statusEl.textContent = data.error || 'Top-up failed';
+      statusEl.className = 'credit-topup-status error';
+      buttons.forEach((b) => { b.disabled = false; });
+      return;
+    }
+    statusEl.textContent = `Added $${(amountCents / 100).toFixed(2)} in credits. You can continue working.`;
+    statusEl.className = 'credit-topup-status success';
+  } catch (err) {
+    statusEl.textContent = 'Network error — try again';
+    statusEl.className = 'credit-topup-status error';
+    buttons.forEach((b) => { b.disabled = false; });
+  }
 }
 
 async function setConversationClosed(conversationId, closed) {
@@ -1687,6 +1748,62 @@ function syncViewportMode() {
 
 if (mobileMq.addEventListener) mobileMq.addEventListener('change', syncViewportMode);
 else if (mobileMq.addListener) mobileMq.addListener(syncViewportMode);
+
+// =============================================================================
+// Credits menu (header)
+// =============================================================================
+
+(function initCreditsMenu() {
+  const trigger = $('credits-trigger');
+  const dropdown = $('credits-dropdown');
+  if (!trigger || !dropdown) return;
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    dropdown.classList.toggle('open');
+  });
+
+  document.addEventListener('click', () => dropdown.classList.remove('open'));
+  dropdown.addEventListener('click', (e) => e.stopPropagation());
+
+  dropdown.querySelectorAll('.credit-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const cents = Number(btn.dataset.cents);
+      const statusEl = $('credits-dropdown-status');
+      const buttons = dropdown.querySelectorAll('.credit-btn');
+      buttons.forEach((b) => { b.disabled = true; });
+      statusEl.textContent = 'Charging card...';
+      statusEl.className = 'credits-dropdown-status';
+
+      fetch(`${API}/topup-credits`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amountCents: cents }),
+      })
+        .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
+        .then(({ ok, data }) => {
+          if (!ok) {
+            statusEl.textContent = data.error || 'Top-up failed';
+            statusEl.className = 'credits-dropdown-status error';
+            buttons.forEach((b) => { b.disabled = false; });
+          } else {
+            statusEl.textContent = `Added $${(cents / 100).toFixed(2)}`;
+            statusEl.className = 'credits-dropdown-status success';
+            setTimeout(() => {
+              dropdown.classList.remove('open');
+              statusEl.textContent = '';
+              buttons.forEach((b) => { b.disabled = false; });
+            }, 2000);
+          }
+        })
+        .catch(() => {
+          statusEl.textContent = 'Network error';
+          statusEl.className = 'credits-dropdown-status error';
+          buttons.forEach((b) => { b.disabled = false; });
+        });
+    });
+  });
+})();
 
 // =============================================================================
 // Init
