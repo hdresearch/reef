@@ -1045,7 +1045,8 @@ header h1 {
 }
 
 /* Credits menu (header) */
-.credits-menu { position: relative; margin-left: 8px; }
+.credits-menu { position: relative; margin-left: 8px; display: flex; align-items: center; gap: 6px; }
+.credits-balance { color: var(--text-dim); font-size: 11px; cursor: default; }
 .credits-trigger {
   padding: 3px 10px;
   background: transparent;

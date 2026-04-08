@@ -112,7 +112,19 @@ export function createRoutes(): Hono {
     }
   });
 
-  // --- Credit top-up proxy (forwards to vers-landing) ---
+  // --- Credit balance + top-up proxy (forwards to vers-landing) ---
+
+  routes.get("/ui/api/credits", async (c) => {
+    try {
+      const resp = await fetch("https://vers.sh/api/reef/credits", {
+        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      });
+      const text = await resp.text();
+      return c.body(text, resp.status as any, { "Content-Type": "application/json" });
+    } catch {
+      return c.json({ credits: 0, spend: 0, remaining: 0 }, 200);
+    }
+  });
 
   routes.post("/ui/api/topup-credits", async (c) => {
     try {
