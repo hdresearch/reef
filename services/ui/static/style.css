@@ -1073,6 +1073,16 @@ header h1 {
 .credits-dropdown.open { display: block; }
 .credits-dropdown-title { color: var(--text-bright); font-weight: 600; margin-bottom: 8px; font-size: 12px; }
 .credits-dropdown-amounts { display: flex; gap: 6px; flex-wrap: wrap; }
+.credits-dropdown-custom {
+  display: flex; align-items: center; gap: 4px; margin-top: 6px;
+}
+.credits-dropdown-custom span { color: var(--text-dim); font-size: 13px; }
+.credits-dropdown-custom input {
+  width: 70px; padding: 4px 6px;
+  background: var(--bg); border: 1px solid var(--border-light); border-radius: 4px;
+  color: var(--text-bright); font-family: var(--font); font-size: 13px;
+}
+.credits-dropdown-custom input:focus { outline: none; border-color: var(--accent-dim); }
 .credits-dropdown-status { font-size: 11px; color: var(--text-dim); margin-top: 8px; min-height: 1em; }
 .credits-dropdown-status.success { color: var(--accent); }
 .credits-dropdown-status.error { color: var(--error); }
