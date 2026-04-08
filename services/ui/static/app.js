@@ -549,12 +549,26 @@ function showCreditTopup(conversationId) {
         <button class="credit-btn" data-cents="2500">$25</button>
         <button class="credit-btn" data-cents="5000">$50</button>
       </div>
+      <div class="credits-dropdown-custom">
+        <span>$</span>
+        <input type="number" min="5" max="1000" step="1" placeholder="custom" class="credits-custom-input" />
+        <button class="credit-btn credits-custom-btn">add</button>
+      </div>
       <div class="credit-topup-status"></div>
     </div>
   `;
-  el.querySelectorAll('.credit-btn').forEach((btn) => {
+  el.querySelectorAll('.credit-btn[data-cents]').forEach((btn) => {
     btn.addEventListener('click', () => handleCreditTopup(el, Number(btn.dataset.cents), conversationId));
   });
+  const customBtn = el.querySelector('.credits-custom-btn');
+  const customInput = el.querySelector('.credits-custom-input');
+  if (customBtn && customInput) {
+    customBtn.addEventListener('click', () => {
+      const dollars = parseInt(customInput.value, 10);
+      if (!dollars || dollars < 5 || dollars > 1000) { customInput.focus(); return; }
+      handleCreditTopup(el, dollars * 100, conversationId);
+    });
+  }
   const messagesEl = $('branch-messages');
   if (messagesEl) {
     messagesEl.appendChild(el);
@@ -582,7 +596,7 @@ async function handleCreditTopup(widget, amountCents, conversationId) {
       buttons.forEach((b) => { b.disabled = false; });
       return;
     }
-    statusEl.textContent = `Added $${(amountCents / 100).toFixed(2)} in credits. You can continue working.`;
+    statusEl.textContent = `Added $${amountCents / 100} in credits. You can continue working.`;
     statusEl.className = 'credit-topup-status success';
   } catch (err) {
     statusEl.textContent = 'Network error — try again';
@@ -1766,43 +1780,57 @@ else if (mobileMq.addListener) mobileMq.addListener(syncViewportMode);
   document.addEventListener('click', () => dropdown.classList.remove('open'));
   dropdown.addEventListener('click', (e) => e.stopPropagation());
 
-  dropdown.querySelectorAll('.credit-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const cents = Number(btn.dataset.cents);
-      const statusEl = $('credits-dropdown-status');
-      const buttons = dropdown.querySelectorAll('.credit-btn');
-      buttons.forEach((b) => { b.disabled = true; });
-      statusEl.textContent = 'Charging card...';
-      statusEl.className = 'credits-dropdown-status';
+  function chargeDropdown(cents) {
+    const statusEl = $('credits-dropdown-status');
+    const buttons = dropdown.querySelectorAll('.credit-btn');
+    buttons.forEach((b) => { b.disabled = true; });
+    statusEl.textContent = 'Charging card...';
+    statusEl.className = 'credits-dropdown-status';
 
-      fetch(`${API}/topup-credits`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amountCents: cents }),
-      })
-        .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
-        .then(({ ok, data }) => {
-          if (!ok) {
-            statusEl.textContent = data.error || 'Top-up failed';
-            statusEl.className = 'credits-dropdown-status error';
-            buttons.forEach((b) => { b.disabled = false; });
-          } else {
-            statusEl.textContent = `Added $${(cents / 100).toFixed(2)}`;
-            statusEl.className = 'credits-dropdown-status success';
-            setTimeout(() => {
-              dropdown.classList.remove('open');
-              statusEl.textContent = '';
-              buttons.forEach((b) => { b.disabled = false; });
-            }, 2000);
-          }
-        })
-        .catch(() => {
-          statusEl.textContent = 'Network error';
+    fetch(`${API}/topup-credits`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amountCents: cents }),
+    })
+      .then((r) => r.json().then((d) => ({ ok: r.ok, data: d })))
+      .then(({ ok, data }) => {
+        if (!ok) {
+          statusEl.textContent = data.error || 'Top-up failed';
           statusEl.className = 'credits-dropdown-status error';
           buttons.forEach((b) => { b.disabled = false; });
-        });
-    });
+        } else {
+          statusEl.textContent = `Added $${(cents / 100)}`;
+          statusEl.className = 'credits-dropdown-status success';
+          setTimeout(() => {
+            dropdown.classList.remove('open');
+            statusEl.textContent = '';
+            buttons.forEach((b) => { b.disabled = false; });
+          }, 2000);
+        }
+      })
+      .catch(() => {
+        statusEl.textContent = 'Network error';
+        statusEl.className = 'credits-dropdown-status error';
+        buttons.forEach((b) => { b.disabled = false; });
+      });
+  }
+
+  dropdown.querySelectorAll('.credit-btn[data-cents]').forEach((btn) => {
+    btn.addEventListener('click', () => chargeDropdown(Number(btn.dataset.cents)));
   });
+
+  const customBtn = $('credits-custom-btn');
+  const customInput = $('credits-custom-amount');
+  if (customBtn && customInput) {
+    customBtn.addEventListener('click', () => {
+      const dollars = parseInt(customInput.value, 10);
+      if (!dollars || dollars < 5 || dollars > 1000) { customInput.focus(); return; }
+      chargeDropdown(dollars * 100);
+    });
+    customInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') customBtn.click();
+    });
+  }
 })();
 
 // =============================================================================
