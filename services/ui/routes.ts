@@ -115,11 +115,9 @@ export function createRoutes(): Hono {
   // --- Credit top-up proxy (forwards to vers-landing) ---
 
   routes.post("/ui/api/topup-credits", async (c) => {
-    const VERS_LANDING_URL = process.env.VERS_LANDING_URL || "https://vers.sh";
-
     try {
       const body = await c.req.arrayBuffer();
-      const resp = await fetch(`${VERS_LANDING_URL}/api/reef/topup-credits`, {
+      const resp = await fetch("https://vers.sh/api/reef/topup-credits", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
