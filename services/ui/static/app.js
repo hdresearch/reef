@@ -598,6 +598,7 @@ async function handleCreditTopup(widget, amountCents, conversationId) {
     }
     statusEl.textContent = `Added $${amountCents / 100} in credits. You can continue working.`;
     statusEl.className = 'credit-topup-status success';
+    refreshCreditBalance();
   } catch (err) {
     statusEl.textContent = 'Network error — try again';
     statusEl.className = 'credit-topup-status error';
@@ -1767,10 +1768,26 @@ else if (mobileMq.addListener) mobileMq.addListener(syncViewportMode);
 // Credits menu (header)
 // =============================================================================
 
+function refreshCreditBalance() {
+  const el = $('credits-balance');
+  if (!el) return;
+  fetch(`${API}/credits`)
+    .then((r) => r.ok ? r.json() : null)
+    .then((data) => {
+      if (!data) return;
+      el.textContent = `$${Math.max(0, data.remaining).toFixed(2)}`;
+      el.title = `LLM credits: $${data.remaining.toFixed(2)} remaining, $${data.spend.toFixed(2)} used`;
+    })
+    .catch(() => {});
+}
+
 (function initCreditsMenu() {
   const trigger = $('credits-trigger');
   const dropdown = $('credits-dropdown');
   if (!trigger || !dropdown) return;
+
+  refreshCreditBalance();
+  setInterval(refreshCreditBalance, 30000);
 
   trigger.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1801,6 +1818,7 @@ else if (mobileMq.addListener) mobileMq.addListener(syncViewportMode);
         } else {
           statusEl.textContent = `Added $${(cents / 100)}`;
           statusEl.className = 'credits-dropdown-status success';
+          refreshCreditBalance();
           setTimeout(() => {
             dropdown.classList.remove('open');
             statusEl.textContent = '';
